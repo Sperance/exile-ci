@@ -1,0 +1,87 @@
+# Проверка секретов, токенов и доступов CI без вывода значений: только «есть / работает / нет». Запуск - вручную
+# (workflow_dispatch) или правкой этого файла. Ничего не меняет, кроме проверочных метки и тега в ExileForge (сразу удаляются).
+name: Doctor
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths: [ .github/workflows/doctor.yml ]
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  doctor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      SOURCE_TOKEN: ${{ secrets.SOURCE_TOKEN }}
+      EXILEFORGE_TOKEN: ${{ secrets.EXILEFORGE_TOKEN }}
+      GH_ISSUES_TOKEN: ${{ secrets.GH_ISSUES_TOKEN }}
+      LOG_KEY: ${{ secrets.LOG_KEY }}
+      DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+      DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+      RELEASE_KEYSTORE: ${{ secrets.RELEASE_KEYSTORE }}
+      RELEASE_KEYSTORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
+      RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+      RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+      DEPLOY_ENABLED: ${{ vars.DEPLOY_ENABLED }}
+    steps:
+      - name: Secrets and tokens
+        run: |
+          fail=0
+          ok() { echo "OK    $*"; }
+          bad() { echo "FAIL  $*"; fail=1; }
+          api() { curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $1" -H "Accept: application/vnd.github+json" "${@:2}" 2>/dev/null || echo 000; }
+          for name in SOURCE_TOKEN EXILEFORGE_TOKEN GH_ISSUES_TOKEN LOG_KEY DEPLOY_HOST DEPLOY_SSH_KEY; do
+            [ -n "${!name}" ] && ok "secret $name is set" || bad "secret $name is missing"
+          done
+          [ "$DEPLOY_ENABLED" = true ] && ok "variable DEPLOY_ENABLED=true" || bad "variable DEPLOY_ENABLED is '$DEPLOY_ENABLED', need true"
+          [ ${#LOG_KEY} -ge 16 ] && ok "LOG_KEY length ${#LOG_KEY}" || bad "LOG_KEY shorter than 16"
+
+          for repo in ExileForge ktor-bestgame; do
+            git ls-remote "https://x-access-token:$SOURCE_TOKEN@github.com/Sperance/$repo.git" HEAD >/dev/null 2>&1 \
+              && ok "SOURCE_TOKEN reads $repo" || bad "SOURCE_TOKEN cannot read $repo (Contents: Read)"
+          done
+
+          R=https://api.github.com/repos/Sperance/ExileForge
+          label="ci-doctor-$GITHUB_RUN_ID"
+          for t in EXILEFORGE_TOKEN GH_ISSUES_TOKEN; do
+            v=${!t}
+            [ "$(api "$v" "$R")" = 200 ] && ok "$t sees ExileForge" || bad "$t cannot see ExileForge"
+            [ "$(api "$v" "$R/issues?per_page=1")" = 200 ] && ok "$t reads issues" || bad "$t cannot read issues"
+            [ "$(api "$v" "$R/releases?per_page=1")" = 200 ] && ok "$t reads releases (Contents: Read)" || bad "$t cannot read releases (Contents: Read)"
+            made=$(api "$v" -X POST "$R/labels" -d "{\"name\":\"$label-$t\",\"color\":\"cccccc\"}")
+            if [ "$made" = 201 ]; then ok "$t writes issues (label)"; api "$v" -X DELETE "$R/labels/$label-$t" >/dev/null; else bad "$t cannot write issues: HTTP $made (Issues: Read and write)"; fi
+          done
+          head=$(curl -fsS -H "Authorization: Bearer $EXILEFORGE_TOKEN" "$R/commits/master" | python3 -c 'import json,sys; print(json.load(sys.stdin)["sha"])' 2>/dev/null || true)
+          made=$(api "$EXILEFORGE_TOKEN" -X POST "$R/git/refs" -d "{\"ref\":\"refs/tags/$label\",\"sha\":\"$head\"}")
+          if [ "$made" = 201 ]; then ok "EXILEFORGE_TOKEN writes contents (tag)"; api "$EXILEFORGE_TOKEN" -X DELETE "$R/git/refs/tags/$label" >/dev/null; else bad "EXILEFORGE_TOKEN cannot write contents: HTTP $made (Contents: Read and write)"; fi
+
+          [[ $DEPLOY_HOST =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ || $DEPLOY_HOST =~ ^[a-zA-Z0-9.-]+$ ]] && ok "DEPLOY_HOST looks like a host" || bad "DEPLOY_HOST is not an IP or host name"
+          timeout 10 bash -c "</dev/tcp/$DEPLOY_HOST/22" 2>/dev/null && ok "DEPLOY_HOST port 22 is open" || bad "DEPLOY_HOST port 22 unreachable"
+          install -m 600 /dev/null "$RUNNER_TEMP/k" && printf '%s\n' "$DEPLOY_SSH_KEY" > "$RUNNER_TEMP/k"
+          if ssh-keygen -y -f "$RUNNER_TEMP/k" > "$RUNNER_TEMP/k.pub" 2>/dev/null; then
+            ok "DEPLOY_SSH_KEY is a valid private key, public fingerprint: $(ssh-keygen -lf "$RUNNER_TEMP/k.pub" | cut -d' ' -f2)"
+          else bad "DEPLOY_SSH_KEY is not a valid private key (copy it with the BEGIN/END lines)"; fi
+          rm -f "$RUNNER_TEMP/k" "$RUNNER_TEMP/k.pub"
+
+          if [ -n "$RELEASE_KEYSTORE" ]; then
+            echo "$RELEASE_KEYSTORE" | base64 -d > "$RUNNER_TEMP/r.jks" 2>/dev/null
+            keytool -list -keystore "$RUNNER_TEMP/r.jks" -storepass "$RELEASE_KEYSTORE_PASSWORD" -alias "$RELEASE_KEY_ALIAS" >/dev/null 2>&1 \
+              && ok "signing keystore opens, alias found" || bad "signing keystore or its password or alias is wrong"
+            rm -f "$RUNNER_TEMP/r.jks"
+          else echo "WAIT  signing secrets not copied yet (Claude copies them from ExileForge)"; fi
+          exit $fail
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Server image access
+        run: |
+          docker buildx imagetools inspect ghcr.io/sperance/ktor-bestgame:claude-tender-pasteur-a36kj2 >/dev/null 2>&1 \
+            && echo "OK    exile-ci reads the GHCR package ktor-bestgame" \
+            || { echo "FAIL  exile-ci has no access to the GHCR package ktor-bestgame (Package settings - Manage Actions access)"; exit 1; }
