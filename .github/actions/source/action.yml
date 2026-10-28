@@ -1,0 +1,41 @@
+# Исходники приватного клиента Sperance/ExileForge в src/ (с сабмодулем сервера backend/), JDK и Gradle - общая подготовка
+# job'ов client.yml. Токен - SOURCE_TOKEN (Contents: read на ExileForge и ktor-bestgame).
+name: Client source
+description: Checks out the private client with its server submodule and sets up JDK and Gradle
+inputs:
+  sha:
+    description: Client commit
+    required: true
+  token:
+    description: Read token for ExileForge and ktor-bestgame
+    required: true
+  java:
+    description: JDK version
+    default: '17'
+  fetch-depth:
+    description: Client history depth (0 - all, with tags)
+    default: '1'
+runs:
+  using: composite
+  steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: Sperance/ExileForge
+        ref: ${{ inputs.sha }}
+        token: ${{ inputs.token }}
+        path: src
+        submodules: true
+        fetch-depth: ${{ inputs.fetch-depth }}
+    # История клиента Gradle не нужна, история сабмодуля - нужна: версию закреплённого сервера он считает по коммитам backend/
+    - shell: bash
+      run: '[ "$(git -C src/backend rev-parse --is-shallow-repository)" = false ] || git -C src/backend fetch --quiet --unshallow'
+    - uses: actions/setup-java@v4
+      with:
+        distribution: temurin
+        java-version: ${{ inputs.java }}
+    - uses: gradle/actions/setup-gradle@v4
+      with:
+        # Неиспользуемые файлы кэша удаляются перед сохранением: кэш не копится до лимита GitHub
+        cache-cleanup: on-success
+        # Сводка job'а перечисляла бы задачи Gradle клиента в публичном журнале
+        add-job-summary: never

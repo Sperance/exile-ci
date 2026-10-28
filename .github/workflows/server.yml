@@ -1,0 +1,351 @@
+# CI и авто-деплой приватного сервера Sperance/ktor-bestgame на бесплатных минутах публичного репозитория.
+# Код сервера здесь не хранится: каждый job скачивает нужный коммит токеном SOURCE_TOKEN (fine-grained, Contents: read
+# на ExileForge и ktor-bestgame). Журналы публичны, поэтому сборка, проверки и деплой идут через ci/quiet.sh: в журнал - только итог
+# шага, полный вывод падения - в зашифрованном артефакте (ключ LOG_KEY).
+#
+# Запуск:
+#   repository_dispatch server-push   - пуш в рабочую ветку сервера (job `forward` в deploy.yml сервера): проверки, браузерная
+#                                       проверка графиков панели и сборка образа параллельно, затем деплой проверенного образа;
+#   repository_dispatch server-deploy - workflow_dispatch сервера (job `release` client.yml после релиза клиента): деплой головы
+#                                       ветки, если её образ уже проверен;
+#   workflow_dispatch                 - вручную, те же два режима.
+# Образ уходит в приватный пакет ghcr.io/sperance/ktor-bestgame черновым тегом :build-<sha>, после зелёных проверок получает
+# :<sha> и :<ветка>; на VPS по SSH запускается deploy/update.sh сервера с этим sha.
+# Секреты: SOURCE_TOKEN, LOG_KEY, DEPLOY_HOST, DEPLOY_SSH_KEY, GH_ISSUES_TOKEN. Переменная DEPLOY_ENABLED=true включает образ и деплой.
+# Пакету в GHCR выдан доступ этого репозитория (Package settings - Manage Actions access - Write).
+name: Server
+
+on:
+  repository_dispatch:
+    types: [ server-push, server-deploy ]
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'push - checks, image and deploy; deploy - deploy the checked head image'
+        type: choice
+        options: [ deploy, push ]
+        default: deploy
+      sha:
+        description: 'Server commit (empty - head of the working branch)'
+        required: false
+
+# Чужой код здесь не исполняется: триггеров pull_request нет, токен job'ов по умолчанию только читает.
+permissions:
+  contents: read
+
+env:
+  IMAGE: ghcr.io/sperance/ktor-bestgame
+  SERVER_REPO: Sperance/ktor-bestgame
+  BRANCH: claude/tender-pasteur-a36kj2
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    outputs:
+      sha: ${{ steps.target.outputs.sha }}
+      mode: ${{ steps.target.outputs.mode }}
+    steps:
+      - name: Target commit
+        id: target
+        env:
+          EVENT: ${{ github.event_name }}
+          ACTION: ${{ github.event.action }}
+          PAYLOAD_SHA: ${{ github.event.client_payload.sha }}
+          INPUT_MODE: ${{ inputs.mode }}
+          INPUT_SHA: ${{ inputs.sha }}
+          TOKEN: ${{ secrets.SOURCE_TOKEN }}
+        run: |
+          if [ "$EVENT" = repository_dispatch ]; then mode=${ACTION#server-}; sha=$PAYLOAD_SHA; else mode=$INPUT_MODE; sha=$INPUT_SHA; fi
+          if [ -z "$sha" ]; then
+            sha=$(git ls-remote "https://x-access-token:$TOKEN@github.com/$SERVER_REPO.git" "refs/heads/$BRANCH" | cut -f1)
+          fi
+          [[ $sha =~ ^[0-9a-f]{40}$ ]] || { echo "::error::bad server commit: '$sha'"; exit 1; }
+          [[ $mode == push || $mode == deploy ]] || { echo "::error::bad mode: '$mode'"; exit 1; }
+          echo "server $sha, mode $mode"
+          { echo "sha=$sha"; echo "mode=$mode"; } >> "$GITHUB_OUTPUT"
+
+  checks:
+    needs: resolve
+    if: ${{ needs.resolve.outputs.mode == 'push' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Новый пуш отменяет проверки устаревшего: выкатывать всё равно будут его
+    concurrency:
+      group: server-checks
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.SERVER_REPO }}
+          ref: ${{ needs.resolve.outputs.sha }}
+          token: ${{ secrets.SOURCE_TOKEN }}
+          path: server
+          persist-credentials: false
+          # Версию сервера Gradle считает по истории (patch - число коммитов после правки server-version)
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      # Тесты чистой логики редактора формул панели идут на Node (scripts/check.sh js)
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-cleanup: on-success
+          # Сводка job'а перечисляла бы задачи Gradle сервера в публичном журнале
+          add-job-summary: never
+      - name: Content and contract checks
+        working-directory: server
+        env:
+          LOG_KEY: ${{ secrets.LOG_KEY }}
+        run: bash ../ci/quiet.sh checks bash scripts/check.sh all
+      - name: Encrypted log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: checks-log
+          path: logs
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # Графики панели баланса на настоящем контенте: сервер без базы (scripts/check.sh panel), Chromium обходит разделы с графиками.
+  # Отчёт проверки не выкладывается: в нём страницы панели.
+  panel:
+    needs: resolve
+    if: ${{ needs.resolve.outputs.mode == 'push' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    concurrency:
+      group: server-panel
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.SERVER_REPO }}
+          ref: ${{ needs.resolve.outputs.sha }}
+          token: ${{ secrets.SOURCE_TOKEN }}
+          path: server
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-cleanup: on-success
+          add-job-summary: never
+      - name: Browser check of the panel charts
+        working-directory: server
+        env:
+          LOG_KEY: ${{ secrets.LOG_KEY }}
+        run: bash ../ci/quiet.sh panel bash scripts/check.sh panel
+      - name: Encrypted log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: panel-log
+          path: logs
+          retention-days: 7
+          if-no-files-found: ignore
+
+  image:
+    needs: resolve
+    if: ${{ needs.resolve.outputs.mode == 'push' && vars.DEPLOY_ENABLED == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    concurrency:
+      group: server-image
+      cancel-in-progress: true
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.SERVER_REPO }}
+          ref: ${{ needs.resolve.outputs.sha }}
+          token: ${{ secrets.SOURCE_TOKEN }}
+          path: server
+          persist-credentials: false
+          # Вся история: patch версии - число коммитов после правки server-version, плюс список изменений в метке образа
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-cleanup: on-success
+          add-job-summary: never
+      # buildkit - с зеркала Google: Docker Hub отвечал таймаутом и toomanyrequests
+      - uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: image=mirror.gcr.io/moby/buildkit:buildx-stable-1
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      # Метаданные и сборка - одним шагом: список коммитов (метка образа) не попадает ни в env шага, ни в команду в журнале.
+      # Одинаковые библиотеки дают одинаковый слой (время файлов обнулено): VPS докачивает только слой app.
+      - name: Build and push the image
+        working-directory: server
+        env:
+          LOG_KEY: ${{ secrets.LOG_KEY }}
+          SHA: ${{ needs.resolve.outputs.sha }}
+          SOURCE_DATE_EPOCH: 0
+        run: |
+          bash ../ci/quiet.sh layout bash gradlew dockerLayers
+          # Версию посчитал Gradle из git (server-version.properties) - та же, что сервер отдаёт в манифесте.
+          SERVER_VERSION=$(sed -n 's/^version=//p' build/generated/serverVersion/server-version.properties)
+          [[ -n $SERVER_VERSION && $SERVER_VERSION != *-dev ]] || { echo "::error::server version not resolved from git history"; exit 1; }
+          API_REVISION=$(sed -nE 's/^const val API_REVISION = ([0-9]+)/\1/p' src/main/kotlin/ru/descend/exileforge/Constants.kt)
+          CHANGELOG=$(git log --format='%h %s' -30 | base64 -w0)
+          REVISION=$SHA
+          export SERVER_VERSION API_REVISION CHANGELOG REVISION
+          echo "server $SERVER_VERSION, API $API_REVISION"
+          bash ../ci/quiet.sh image docker buildx build . --provenance=false \
+            --output "type=image,name=$IMAGE:build-$SHA,push=true,rewrite-timestamp=true" \
+            --build-arg REVISION --build-arg SERVER_VERSION --build-arg API_REVISION --build-arg CHANGELOG
+      - name: Encrypted log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-log
+          path: logs
+          retention-days: 7
+          if-no-files-found: ignore
+
+  deploy:
+    needs: [ resolve, checks, panel, image ]
+    # Пуш - после зелёных проверок, проверки панели и образа; режим deploy (релиз клиента или вручную) - сразу, по голове ветки.
+    if: ${{ !cancelled() && needs.resolve.result == 'success' && vars.DEPLOY_ENABLED == 'true' && (needs.resolve.outputs.mode == 'deploy' || (needs.checks.result == 'success' && needs.panel.result == 'success' && needs.image.result == 'success')) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: deploy
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: write
+    env:
+      SHA: ${{ needs.resolve.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      # Нужен только Constants.kt (API_REVISION) - остальной код сервера деплою не нужен
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.SERVER_REPO }}
+          ref: ${{ needs.resolve.outputs.sha }}
+          token: ${{ secrets.SOURCE_TOKEN }}
+          path: server
+          persist-credentials: false
+          sparse-checkout: src/main/kotlin/ru/descend/exileforge/Constants.kt
+          sparse-checkout-cone-mode: false
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Токен GitHub Issues (0.14.1, GH-ISSUES) - на каждом прогоне, до деплоя, значение не печатается: пусто - предупреждение;
+      # иначе чтение репозитория, Issues и меток - 200, запись - созданием метки from-game, если её нет. Деплой не валит.
+      - name: GitHub Issues token
+        continue-on-error: true
+        env:
+          T: ${{ secrets.GH_ISSUES_TOKEN }}
+          REPO: Sperance/ExileForge
+        run: |
+          if [ -z "$T" ]; then echo "::warning::GH_ISSUES_TOKEN не задан: отчёты не уходят в GitHub, статусы не синхронизируются"; exit 0; fi
+          api() { curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $T" -H "Accept: application/vnd.github+json" "$@" 2>/dev/null || true; }
+          repo=$(api "https://api.github.com/repos/$REPO")
+          issues=$(api "https://api.github.com/repos/$REPO/issues?per_page=1")
+          labels=$(api "https://api.github.com/repos/$REPO/labels?per_page=1")
+          if [ "$repo" != 200 ] || [ "$issues" != 200 ] || [ "$labels" != 200 ]; then
+            echo "::warning::GH_ISSUES_TOKEN: нет чтения $REPO (репозиторий $repo, issues $issues, метки $labels) - токен истёк или без доступа к репозиторию"
+            exit 0
+          fi
+          echo "GH_ISSUES_TOKEN: ok (issues read)"
+          for label in from-game; do
+            code=$(api "https://api.github.com/repos/$REPO/labels/$label")
+            if [ "$code" = 200 ]; then continue; fi
+            made=$(api -X POST "https://api.github.com/repos/$REPO/labels" -d "{\"name\":\"$label\",\"color\":\"8FD3FF\"}")
+            if [ "$made" = 201 ]; then echo "GH_ISSUES_TOKEN: метка $label создана (issues write ok)"; else echo "::warning::GH_ISSUES_TOKEN: метку $label создать не удалось ($made) - нет права Issues: write"; fi
+          done
+
+      # Проверки прошли: тот же манифест получает проверенные теги, без пересборки и перекачки слоёв.
+      - name: Mark the image as checked
+        if: ${{ needs.resolve.outputs.mode == 'push' }}
+        run: docker buildx imagetools create -t "$IMAGE:$SHA" -t "$IMAGE:${BRANCH//\//-}" "$IMAGE:build-$SHA" >/dev/null
+
+      # Запуск от релиза клиента: голова ветки выкатывается, только если её образ уже проверен. Иначе её пуш ещё
+      # в работе и выкатит сам - релиз клиента к этому моменту уже опубликован.
+      - name: Checked image of the branch head
+        id: image
+        run: |
+          if docker buildx imagetools inspect "$IMAGE:$SHA" >/dev/null 2>&1; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::no checked image for $SHA yet: its push run deploys it"
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Сервер не встаёт раньше клиента (1.81.5): новый API_REVISION уезжает на VPS только когда опубликован релиз
+      # клиента, который на нём говорит (update.json последнего релиза exile-ci). Нет релиза - прогон зелёный без
+      # деплоя: его запустит job `release` клиента. Несколько попыток - ссылка latest после публикации догоняет не сразу.
+      - name: Client release on this API
+        id: client
+        if: ${{ steps.image.outputs.ready == 'true' }}
+        env:
+          LATEST: https://github.com/Sperance/exile-ci/releases/latest/download/update.json
+        run: |
+          api=$(sed -nE 's/^const val API_REVISION = ([0-9]+)/\1/p' server/src/main/kotlin/ru/descend/exileforge/Constants.kt)
+          [[ -n $api ]] || { echo "::error::API_REVISION not found"; exit 1; }
+          for attempt in 1 2 3 4 5; do
+            client=$(curl -fsSL "$LATEST" | python3 -c 'import json, sys; print(json.load(sys.stdin)["apiRevision"])' || echo 0)
+            if (( client >= api )); then
+              echo "client release speaks API $client, server $api: deploying"
+              echo "ready=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "::notice::client release speaks API $client, server needs $api: the client release job triggers the deploy"
+          echo "ready=false" >> "$GITHUB_OUTPUT"
+
+      - name: Update the server on the VPS
+        if: ${{ steps.client.outputs.ready == 'true' }}
+        env:
+          HOST: ${{ secrets.DEPLOY_HOST }}
+          KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          GH_ISSUES_TOKEN: ${{ secrets.GH_ISSUES_TOKEN }}
+          LOG_KEY: ${{ secrets.LOG_KEY }}
+        run: |
+          install -m 600 /dev/null "$RUNNER_TEMP/key" && printf '%s\n' "$KEY" > "$RUNNER_TEMP/key"
+          # Ключ на VPS привязан к одной команде (update.sh без вопросов): её код выхода - итог деплоя.
+          # Строка команды доходит до update.sh как SSH_ORIGINAL_COMMAND - из неё он берёт sha образа.
+          # Токен GitHub Issues (0.14.1, GH-ISSUES) - первой строкой stdin: в строку команды и журналы он не попадает.
+          printf '%s\n' "$GH_ISSUES_TOKEN" | bash ci/quiet.sh deploy \
+            ssh -i "$RUNNER_TEMP/key" -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 "root@$HOST" "deploy $SHA"
+      - name: Encrypted log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deploy-log
+          path: logs
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Forget the key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/key"

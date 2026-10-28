@@ -1,0 +1,576 @@
+# CI и релизы приватного клиента Sperance/ExileForge на бесплатных минутах публичного репозитория.
+# Код клиента здесь не хранится: job'ы скачивают нужный коммит токеном SOURCE_TOKEN (.github/actions/source). Журналы и
+# артефакты публичны: сборки и тесты идут через ci/quiet.sh (в журнал - только итог шага), артефакты зашифрованы ci/seal.sh
+# (ключ LOG_KEY) - APK UI-тестов не ужат, отчёты и снимки экранов раскрывают код.
+#
+# Запуск:
+#   repository_dispatch client-push - пуш в рабочую ветку клиента (job `forward` в android.yml ExileForge): sha и before;
+#   workflow_dispatch               - вручную: push - как пуш (все проверки, релиз новой версии); shots - UI-тесты на эмуляторе
+#                                     и снимки ключевых экранов (KeyScreensShotTest), без релиза.
+# Релиз: versionName без релиза в exile-ci после зелёных проверок - тег v<versionName> здесь с APK, update.json и заметками
+# RELEASE_NOTES.md (их читает игра, Updates.kt); карта R8 mapping.txt - только в релиз того же тега приватного ExileForge
+# (её качает сервер, ReleaseMappings). Затем Issues, что называют коммиты релиза «Closes #N», закрываются, и запускается
+# деплой сервера (server.yml, режим deploy).
+# Секреты: SOURCE_TOKEN, EXILEFORGE_TOKEN (Contents и Issues: write на ExileForge), LOG_KEY, RELEASE_KEYSTORE,
+# RELEASE_KEYSTORE_PASSWORD, RELEASE_KEY_ALIAS, RELEASE_KEY_PASSWORD.
+name: Client
+
+on:
+  repository_dispatch:
+    types: [ client-push ]
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'push - checks and release of a new version; shots - emulator UI tests and key screen shots, no release'
+        type: choice
+        options: [ push, shots ]
+        default: push
+      sha:
+        description: 'Client commit (empty - head of the working branch)'
+        required: false
+
+# Чужой код здесь не исполняется: триггеров pull_request нет, токен job'ов по умолчанию только читает.
+permissions:
+  contents: read
+
+env:
+  CLIENT_REPO: Sperance/ExileForge
+  BRANCH: claude/sharp-bardeen-6i3dkz
+
+# Каждый job проверок в своей группе: новый пуш отменяет устаревший прогон, а начатую публикацию (job `release`) - нет.
+jobs:
+  # Что затронуто и будет ли релиз: от этого зависят тяжёлые job ниже.
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    concurrency:
+      group: client-changes
+      cancel-in-progress: true
+    outputs:
+      sha: ${{ steps.target.outputs.sha }}
+      core: ${{ steps.diff.outputs.core }}
+      app: ${{ steps.diff.outputs.app }}
+      release: ${{ steps.release.outputs.pending }}
+      shots: ${{ steps.target.outputs.mode == 'shots' }}
+    steps:
+      - name: Target commit
+        id: target
+        env:
+          EVENT: ${{ github.event_name }}
+          PAYLOAD_SHA: ${{ github.event.client_payload.sha }}
+          INPUT_MODE: ${{ inputs.mode }}
+          INPUT_SHA: ${{ inputs.sha }}
+          TOKEN: ${{ secrets.SOURCE_TOKEN }}
+        run: |
+          if [ "$EVENT" = repository_dispatch ]; then mode=push; sha=$PAYLOAD_SHA; else mode=$INPUT_MODE; sha=$INPUT_SHA; fi
+          if [ -z "$sha" ]; then
+            sha=$(git ls-remote "https://x-access-token:$TOKEN@github.com/$CLIENT_REPO.git" "refs/heads/$BRANCH" | cut -f1)
+          fi
+          [[ $sha =~ ^[0-9a-f]{40}$ ]] || { echo "::error::bad client commit: '$sha'"; exit 1; }
+          [[ $mode == push || $mode == shots ]] || { echo "::error::bad mode: '$mode'"; exit 1; }
+          echo "client $sha, mode $mode"
+          { echo "sha=$sha"; echo "mode=$mode"; } >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.CLIENT_REPO }}
+          ref: ${{ steps.target.outputs.sha }}
+          token: ${{ secrets.SOURCE_TOKEN }}
+          path: src
+          persist-credentials: false
+          fetch-depth: 0
+      # Затронутое - по разнице с прошлой головой ветки (before пуша). Ручной запуск, первый пуш или неизвестный before - всё.
+      # core и закреплённый сервер: от них зависят тесты core и клиент-серверный контракт; app (TEST-01) - тесты core:
+      # UiStringsTest читает ключи `ui("…")` из исходников app
+      - name: Changed parts
+        id: diff
+        working-directory: src
+        env:
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.client_payload.before }}
+          SHA: ${{ steps.target.outputs.sha }}
+        run: |
+          if [ "$EVENT" != repository_dispatch ] || [[ ! $BEFORE =~ ^[0-9a-f]{40}$ || $BEFORE =~ ^0+$ ]] || ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            core=true; app=true
+          else
+            files=$(git diff --name-only "$BEFORE" "$SHA")
+            grep -qE '^app/' <<<"$files" && app=true || app=false
+            grep -qE '^(core/|backend$|scripts/client_server_test\.py$|gradle/|[^/]+\.gradle\.kts$|gradle\.properties$)' <<<"$files" && core=true || core=false
+          fi
+          echo "core=$core app=$app"
+          { echo "core=$core"; echo "app=$app"; } >> "$GITHUB_OUTPUT"
+      # Релиз будет, если это пуш и у versionName ещё нет релиза здесь: только тогда собираются R8-сборки и идёт эмулятор.
+      - id: release
+        working-directory: src
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MODE: ${{ steps.target.outputs.mode }}
+        run: |
+          version=$(sed -n 's/.*versionName = "\(.*\)".*/\1/p' app/build.gradle.kts | head -1)
+          if [ "$MODE" = push ] && ! gh release view "v$version" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then pending=true; else pending=false; fi
+          echo "pending=$pending" >> "$GITHUB_OUTPUT"
+          echo "v$version: release pending=$pending"
+
+  core:
+    needs: changes
+    # Перед релизом - всегда (TEST-01): релиз не выходит без словарей и тестов core
+    if: ${{ needs.changes.outputs.core == 'true' || needs.changes.outputs.app == 'true' || needs.changes.outputs.release == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    concurrency:
+      group: client-core
+      cancel-in-progress: true
+    env:
+      LOG_KEY: ${{ secrets.LOG_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/source
+        with:
+          sha: ${{ needs.changes.outputs.sha }}
+          token: ${{ secrets.SOURCE_TOKEN }}
+      # Задачи job - в scripts/check.sh клиента: та же проверка перед пушем
+      - working-directory: src
+        run: bash ../ci/quiet.sh core bash scripts/check.sh core
+      - name: Encrypted log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: core-log
+          path: logs
+          retention-days: 7
+          if-no-files-found: ignore
+
+  app:
+    needs: changes
+    # При правке app, перед релизом и по ручному запуску; правка только core или сервера сторожей app не трогает
+    if: ${{ needs.changes.outputs.app == 'true' || needs.changes.outputs.release == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: client-app
+      cancel-in-progress: true
+    env:
+      LOG_KEY: ${{ secrets.LOG_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/source
+        with:
+          sha: ${{ needs.changes.outputs.sha }}
+          token: ${{ secrets.SOURCE_TOKEN }}
+      # Отладочной сборки нет нигде: lint - по релизному варианту, APK - только R8-сборки ниже
+      - working-directory: src
+        run: bash ../ci/quiet.sh app bash scripts/check.sh app --no-compile
+      - name: Encrypted log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-log
+          path: logs
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # Сжатые R8 сборки с инструментальным APK (единственные тестовые, отладочной нет): `-PuiTests` - для всех UI-тестов
+  # (код приложения не ужат - артефакт только зашифрованным), без флага - строгий смоук R8.
+  minified:
+    needs: changes
+    if: ${{ needs.changes.outputs.release == 'true' || needs.changes.outputs.shots == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: client-minified
+      cancel-in-progress: true
+    env:
+      LOG_KEY: ${{ secrets.LOG_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/source
+        with:
+          sha: ${{ needs.changes.outputs.sha }}
+          token: ${{ secrets.SOURCE_TOKEN }}
+      - name: Build UI test APKs
+        working-directory: src
+        run: |
+          bash ../ci/quiet.sh minified bash gradlew :app:assembleMinifiedTest :app:assembleMinifiedTestAndroidTest -PuiTests
+          mkdir -p ui-apks
+          cp app/build/outputs/apk/minifiedTest/app-minifiedTest.apk ui-apks/app.apk
+          cp app/build/outputs/apk/androidTest/minifiedTest/app-minifiedTest-androidTest.apk ui-apks/app-androidTest.apk
+          bash ../ci/seal.sh ../sealed/ui-apks.enc ui-apks
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ui-apks
+          path: sealed/ui-apks.enc
+          if-no-files-found: error
+          retention-days: 1
+      - name: Encrypted log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: minified-log
+          path: logs
+          retention-days: 7
+          if-no-files-found: ignore
+
+  minified-strict:
+    needs: changes
+    if: ${{ needs.changes.outputs.release == 'true' || needs.changes.outputs.shots == 'true' }}
+    runs-on: ubuntu-latest
+    # Строгий смоук R8: код приложения ужат, рядом с minified (UI-тесты на APK без ужатия кода)
+    timeout-minutes: 30
+    concurrency:
+      group: client-minified-strict
+      cancel-in-progress: true
+    env:
+      LOG_KEY: ${{ secrets.LOG_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/source
+        with:
+          sha: ${{ needs.changes.outputs.sha }}
+          token: ${{ secrets.SOURCE_TOKEN }}
+      - working-directory: src
+        run: |
+          bash ../ci/quiet.sh minified-strict bash gradlew :app:assembleMinifiedTest :app:assembleMinifiedTestAndroidTest
+          bash ../ci/seal.sh ../sealed/ui-apks-minified.enc app/build/outputs/apk/minifiedTest app/build/outputs/apk/androidTest/minifiedTest
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ui-apks-minified
+          path: sealed/ui-apks-minified.enc
+          if-no-files-found: error
+          retention-days: 1
+      - name: Encrypted log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: minified-strict-log
+          path: logs
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # Подписанный релиз собирается один раз, здесь, и уходит в job `release` зашифрованным артефактом: там больше не пересобирают.
+  release-apk:
+    needs: changes
+    if: ${{ needs.changes.outputs.release == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: client-release-apk
+      cancel-in-progress: true
+    env:
+      LOG_KEY: ${{ secrets.LOG_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/source
+        with:
+          sha: ${{ needs.changes.outputs.sha }}
+          token: ${{ secrets.SOURCE_TOKEN }}
+      - name: Build signed release APK
+        working-directory: src
+        env:
+          RELEASE_KEYSTORE: ${{ secrets.RELEASE_KEYSTORE }}
+          RELEASE_KEYSTORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
+          RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+          RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+        # Опубликованный APK всегда подписан ключом релиза, поэтому каждый ставится поверх прошлого: нет ключа - нет релиза.
+        run: |
+          if [ -z "$RELEASE_KEYSTORE" ]; then echo "::error::RELEASE_KEYSTORE secret is missing"; exit 1; fi
+          echo "$RELEASE_KEYSTORE" | base64 -d > "$RUNNER_TEMP/release.jks"
+          export RELEASE_KEYSTORE_PATH="$RUNNER_TEMP/release.jks"
+          bash ../ci/quiet.sh release-apk bash gradlew :app:assembleRelease
+          apk=app/build/outputs/apk/release/app-release.apk
+          signer=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)/apksigner
+          "$signer" verify --print-certs "$apk" > "$RUNNER_TEMP/signer.txt"
+          expected=$(keytool -list -v -keystore "$RUNNER_TEMP/release.jks" -storepass "$RELEASE_KEYSTORE_PASSWORD" -alias "$RELEASE_KEY_ALIAS" | sed -n 's/.*SHA256: *//p' | tr -d ':' | tr 'A-F' 'a-f')
+          rm -f "$RUNNER_TEMP/release.jks"
+          grep -qi "SHA-256 digest: $expected" "$RUNNER_TEMP/signer.txt" || { echo "::error::APK is not signed with the release key"; exit 1; }
+          echo "APK signed with the release key"
+          bash ../ci/seal.sh ../sealed/release.enc app/build/outputs/apk/release/app-release.apk app/build/outputs/mapping/release/mapping.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: exile-forge-release
+          path: sealed/release.enc
+          if-no-files-found: error
+          retention-days: 7
+      - name: Encrypted log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-apk-log
+          path: logs
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # UI-тесты и смоук R8 - только перед релизом и по shots: собранные APK приходят артефактами, Gradle здесь не нужен.
+  emulator:
+    needs: [ changes, minified, minified-strict ]
+    if: ${{ needs.changes.outputs.release == 'true' || needs.changes.outputs.shots == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    concurrency:
+      group: client-emulator
+      cancel-in-progress: true
+    env:
+      API_LEVEL: 35
+      SHOTS: ${{ needs.changes.outputs.shots }}
+      LOG_KEY: ${{ secrets.LOG_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ui-apks
+          path: sealed
+      - uses: actions/download-artifact@v4
+        with:
+          name: ui-apks-minified
+          path: sealed
+      - name: Unpack APKs
+        run: |
+          bash ci/seal.sh -d sealed/ui-apks.enc .
+          bash ci/seal.sh -d sealed/ui-apks-minified.enc .
+      - name: Enable emulator acceleration
+        run: sudo chmod 666 /dev/kvm
+      # Эмулятор ставится заранее и с повторами: обрыв скачивания («Error on ZipFile unknown archive») ронял job, а уже
+      # поставленный пакет раннер эмулятора не качает заново
+      - name: Install the emulator
+        id: emulator
+        run: |
+          home="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          for attempt in 1 2 3; do
+            "$home/cmdline-tools/latest/bin/sdkmanager" --install emulator --channel=0 > /dev/null && [ -x "$home/emulator/emulator" ] && break
+            [ "$attempt" = 3 ] && exit 1
+            sleep $((attempt * 15))
+          done
+          echo "version=$(sed -n 's/^Pkg.Revision=//p' "$home/emulator/source.properties")" >> "$GITHUB_OUTPUT"
+      # Снимок загруженного эмулятора в кэше: прогон стартует из него, а не с холодной загрузки; новый эмулятор - новый снимок
+      - uses: actions/cache@v4
+        id: avd-cache
+        with:
+          path: |
+            ~/.android/avd/*
+            ~/.android/adb*
+          key: avd-${{ env.API_LEVEL }}-x86_64-pixel_2-emu${{ steps.emulator.outputs.version }}
+      - name: Create AVD snapshot
+        if: ${{ steps.avd-cache.outputs.cache-hit != 'true' }}
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ env.API_LEVEL }}
+          arch: x86_64
+          profile: pixel_2
+          force-avd-creation: false
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: false
+          script: echo "AVD snapshot generated"
+      - name: Run UI checks on Android
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ env.API_LEVEL }}
+          arch: x86_64
+          profile: pixel_2
+          force-avd-creation: false
+          emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: true
+          script: bash ci/quiet.sh ui bash ci/ui-tests.sh
+      # Отчёты UI-тестов, превью и снимки ключевых экранов (design-preview/shots при shots) - одним зашифрованным артефактом
+      - name: Seal UI reports and preview
+        if: always()
+        run: bash ci/seal.sh sealed/ui.enc ui-results.txt release-smoke.txt design-preview
+      - name: Upload UI reports and preview
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: exile-forge-ui
+          path: |
+            sealed/ui.enc
+            logs
+          if-no-files-found: ignore
+
+  client-server:
+    needs: changes
+    # Контракт зависит от core и закреплённого сервера; перед релизом - всегда
+    if: ${{ needs.changes.outputs.core == 'true' || needs.changes.outputs.release == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    concurrency:
+      group: client-client-server
+      cancel-in-progress: true
+    env:
+      LOG_KEY: ${{ secrets.LOG_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      # Сервер под проверкой - закреплённый сабмодуль backend/: его HEAD - сгенерированный SERVER_COMMIT
+      - uses: ./.github/actions/source
+        with:
+          sha: ${{ needs.changes.outputs.sha }}
+          token: ${{ secrets.SOURCE_TOKEN }}
+          java: '21'
+      - working-directory: src/backend
+        run: bash ../../ci/quiet.sh server-dist bash gradlew installDist
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Start isolated MongoDB
+        # Сервер закрепляет mongodb://localhost:27017 в коде, а его транзакциям нужен replica set.
+        run: |
+          # Docker Hub режет анонимные скачивания (toomanyrequests) - образ берётся с зеркала Google, с повтором.
+          # Свежий образ 8.0 зеркала может не подняться на раннере - тогда следующий образ из списка
+          for image in mirror.gcr.io/library/mongo:8.0 mirror.gcr.io/library/mongo:7.0; do
+            for attempt in 1 2 3; do docker pull -q "$image" >/dev/null && break; sleep $((attempt * 10)); done
+            docker rm -f client-mongo >/dev/null 2>&1 || true
+            docker run -d --name client-mongo -p 27017:27017 "$image" --replSet rs0 --bind_ip_all >/dev/null
+            sleep 5
+            [ "$(docker inspect -f '{{.State.Running}}' client-mongo)" = true ] && break
+            echo "::warning::$image exited at start"
+          done
+          for attempt in $(seq 1 30); do
+            if docker exec client-mongo mongosh --quiet --eval 'db.adminCommand({ping:1}).ok' >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          docker exec client-mongo mongosh --quiet --eval 'rs.initiate({_id:"rs0",members:[{_id:0,host:"localhost:27017"}]})' >/dev/null
+          for attempt in $(seq 1 30); do
+            if docker exec client-mongo mongosh --quiet --eval 'if (!db.hello().isWritablePrimary) quit(1)' >/dev/null 2>&1; then exit 0; fi
+            sleep 1
+          done
+          exit 1
+      - name: Verify actual client and server contract
+        working-directory: src
+        run: bash ../ci/quiet.sh client-server python3 scripts/client_server_test.py
+      - name: Seal reports
+        if: always()
+        working-directory: src
+        run: bash ../ci/seal.sh ../sealed/client-server.enc core/build/reports/tests core/build/test-results build/client-server.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: client-server-reports
+          path: |
+            sealed/client-server.enc
+            logs
+          if-no-files-found: ignore
+
+  # После зелёных проверок versionName без релиза публикуется: тег v<versionName> здесь с APK из `release-apk`, update.json и
+  # заметками RELEASE_NOTES.md; mapping.txt - в релиз того же тега приватного ExileForge, на коммите клиента.
+  # Пропущенные по фильтру проверки (core без изменений) релиз не держат; упавшие или отменённые - держат.
+  release:
+    needs: [ changes, core, app, minified, minified-strict, release-apk, emulator, client-server ]
+    if: ${{ !cancelled() && needs.changes.outputs.release == 'true' && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      # Запуск деплоя сервера (server.yml) после релиза
+      actions: write
+    concurrency:
+      group: release
+      cancel-in-progress: false
+    env:
+      LOG_KEY: ${{ secrets.LOG_KEY }}
+      SHA: ${{ needs.changes.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      # Публикации нужны заметки, версии и ревизии из исходников, а закрытию Issues - история с тегами
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.CLIENT_REPO }}
+          ref: ${{ needs.changes.outputs.sha }}
+          token: ${{ secrets.SOURCE_TOKEN }}
+          path: src
+          submodules: true
+          fetch-depth: 0
+          fetch-tags: true
+      - id: version
+        working-directory: src
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(sed -n 's/.*versionName = "\(.*\)".*/\1/p' app/build.gradle.kts | head -1)
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+          if gh release view "v$version" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then echo "exists=true" >> "$GITHUB_OUTPUT"; else echo "exists=false" >> "$GITHUB_OUTPUT"; fi
+      - if: steps.version.outputs.exists == 'false'
+        uses: actions/download-artifact@v4
+        with:
+          name: exile-forge-release
+          path: sealed
+      - if: steps.version.outputs.exists == 'false'
+        name: Release files
+        id: files
+        working-directory: src
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          bash ../ci/seal.sh -d ../sealed/release.enc .
+          apk="ExileForge-$TAG.apk"
+          cp app/build/outputs/apk/release/app-release.apk "../$apk"
+          cp app/build/outputs/mapping/release/mapping.txt ../mapping.txt
+          # Заметки: в RELEASE_NOTES.md - только эта версия, под первым заголовком «## <versionName>».
+          heading=$(grep -m1 '^## ' RELEASE_NOTES.md | sed 's/[[:space:]]*$//')
+          [ "$heading" = "## ${TAG#v}" ] || { echo "::error::RELEASE_NOTES.md first heading is '$heading', not '## ${TAG#v}'"; exit 1; }
+          cp RELEASE_NOTES.md ../RELEASE_NOTES.md
+          # update.json - то, что читает обновлятор игры: сборка, провод и правила, на которых она говорит, APK и его SHA-256.
+          code=$(sed -n 's/.*versionCode = \([0-9]*\).*/\1/p' app/build.gradle.kts | head -1)
+          api=$(sed -n 's/^const val API_REVISION = \([0-9]*\).*/\1/p' core/src/main/kotlin/com/sperance/exileforge/core/model/sync/Sync.kt)
+          rules=$(sed -n 's/^const val RULES_VERSION = \([0-9]*\).*/\1/p' backend/rules/src/main/kotlin/com/sperance/exileforge/rules/content/Content.kt)
+          [ -n "$code" ] && [ -n "$api" ] && [ -n "$rules" ] || { echo "::error::update.json: versionCode '$code', API '$api' or rules '$rules' not found"; exit 1; }
+          sha=$(sha256sum "../$apk" | cut -d' ' -f1)
+          size=$(stat -c %s "../$apk")
+          # Обязательность релиза: трейлер «Update-Mandatory: yes» в сообщении коммита релиза делает сборку обязательной и на том же
+          # проводе; без него релиз на том же проводе - мягкое обновление (тост, не диалог).
+          if git log -1 --format=%B | grep -i '^Update-Mandatory: yes' >/dev/null; then mandatory=true; else mandatory=false; fi
+          CODE="$code" NAME="${TAG#v}" API="$api" RULES="$rules" APK="$apk" SIZE="$size" SHA="$sha" MANDATORY="$mandatory" python3 -c '
+          import json, os
+          notes = open("RELEASE_NOTES.md", encoding="utf-8").read().split("\n", 1)[1].strip()
+          e = os.environ
+          print(json.dumps({"versionCode": int(e["CODE"]), "versionName": e["NAME"], "apiRevision": int(e["API"]), "rules": int(e["RULES"]),
+                            "apk": e["APK"], "size": int(e["SIZE"]), "sha256": e["SHA"], "notes": notes, "mandatory": e["MANDATORY"] == "true"}, ensure_ascii=False))
+          ' > ../update.json
+          cat ../update.json
+          echo "apk=$apk" >> "$GITHUB_OUTPUT"
+      # Карта R8 - сначала и только в приватный ExileForge: тег на коммите клиента нужен и для диапазона «Closes #N» ниже.
+      - if: steps.version.outputs.exists == 'false'
+        name: Private release with the R8 mapping
+        env:
+          GH_TOKEN: ${{ secrets.EXILEFORGE_TOKEN }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          if gh release view "$TAG" -R "$CLIENT_REPO" >/dev/null 2>&1; then
+            gh release upload "$TAG" mapping.txt -R "$CLIENT_REPO" --clobber
+          else
+            gh release create "$TAG" mapping.txt -R "$CLIENT_REPO" --target "$SHA" --title "ExileForge ${TAG#v}" --notes "R8 mapping of ${TAG#v}"
+          fi
+      - if: steps.version.outputs.exists == 'false'
+        name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          APK: ${{ steps.files.outputs.apk }}
+        run: gh release create "$TAG" "$APK" update.json -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "ExileForge ${TAG#v}" --notes-file RELEASE_NOTES.md --latest
+      # Issues, что чинит релиз: коммиты с прошлого релиза, что называют «Closes #N» (fixes, resolves), - Issue получает метку
+      # версии и закрывается выполненным, без комментария; игра увидит это синхронизацией сервера.
+      # Рабочая ветка - не основная, сам GitHub по таким словам Issues не закрывает.
+      - if: steps.version.outputs.exists == 'false'
+        name: Close the issues this release fixes
+        working-directory: src
+        env:
+          GH_TOKEN: ${{ secrets.EXILEFORGE_TOKEN }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          git fetch --quiet --tags
+          prev=$(git for-each-ref --sort=-creatordate --format='%(refname:short)' 'refs/tags/v*' | while read -r t; do
+            [ "$t" != "$TAG" ] && git merge-base --is-ancestor "$t" "$SHA" 2>/dev/null && { echo "$t"; break; }
+          done)
+          range=${prev:+$prev..}$SHA
+          issues=$(git log --format=%B "$range" | grep -oiE '\b(close[sd]?|fix(e[sd])?|resolve[sd]?) #[0-9]+' | grep -oE '[0-9]+' | sort -un || true)
+          [ -n "$issues" ] || { echo "no issues named since ${prev:-the start}"; exit 0; }
+          gh label create "$TAG" -R "$CLIENT_REPO" --color 7BE0A6 --description "Released in ${TAG#v}" 2>/dev/null || true
+          for n in $issues; do
+            state=$(gh issue view "$n" -R "$CLIENT_REPO" --json state --jq .state 2>/dev/null) || { echo "::warning::issue #$n not found"; continue; }
+            [ "$state" = OPEN ] || continue
+            gh issue edit "$n" -R "$CLIENT_REPO" --add-label "$TAG" >/dev/null
+            gh issue close "$n" -R "$CLIENT_REPO" --reason completed >/dev/null
+            echo "closed #$n in ${TAG#v}"
+          done
+      # Сервер с новым API ждёт этот релиз: опубликовали - запускаем его деплой, он выкатит проверенный образ головы
+      # рабочей ветки сервера.
+      - if: steps.version.outputs.exists == 'false'
+        name: Trigger the server deploy
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run server.yml -R "$GITHUB_REPOSITORY" --ref main -f mode=deploy
