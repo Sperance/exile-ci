@@ -298,6 +298,53 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
+  # Пакет для Google Play (тип `play`: без самообновления и REQUEST_INSTALL_PACKAGES): тем же ключом релиза, но не в публичный релиз, а
+  # зашифрованным артефактом - расшифровать (`ci/seal.sh -d`) и загрузить в Play Console вручную.
+  release-aab:
+    needs: changes
+    if: ${{ needs.changes.outputs.release == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: client-release-aab
+      cancel-in-progress: true
+    env:
+      LOG_KEY: ${{ secrets.LOG_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/source
+        with:
+          sha: ${{ needs.changes.outputs.sha }}
+          token: ${{ secrets.SOURCE_TOKEN }}
+      - name: Build signed Play bundle
+        working-directory: src
+        env:
+          RELEASE_KEYSTORE: ${{ secrets.RELEASE_KEYSTORE }}
+          RELEASE_KEYSTORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
+          RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+          RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+        run: |
+          if [ -z "$RELEASE_KEYSTORE" ]; then echo "::error::RELEASE_KEYSTORE secret is missing"; exit 1; fi
+          echo "$RELEASE_KEYSTORE" | base64 -d > "$RUNNER_TEMP/release.jks"
+          export RELEASE_KEYSTORE_PATH="$RUNNER_TEMP/release.jks"
+          bash ../ci/quiet.sh release-aab bash gradlew :app:bundlePlay
+          rm -f "$RUNNER_TEMP/release.jks"
+          bash ../ci/seal.sh ../sealed/play.enc app/build/outputs/bundle/play/app-play.aab app/build/outputs/mapping/play/mapping.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: exile-forge-play
+          path: sealed/play.enc
+          if-no-files-found: error
+          retention-days: 30
+      - name: Encrypted log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-aab-log
+          path: logs
+          retention-days: 7
+          if-no-files-found: ignore
+
   # UI-тесты и смоук R8 - только перед релизом и по shots: собранные APK приходят артефактами, Gradle здесь не нужен.
   emulator:
     needs: [ changes, minified, minified-strict ]
