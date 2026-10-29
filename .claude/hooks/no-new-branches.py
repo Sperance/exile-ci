@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Хук PreToolUse: запрещает создавать новые ветки (локальные и удалённые), пока владелец явно не попросит.
 
-Блокирует: git checkout -b/-B, git switch -c/-C, git branch <имя>, git push в ветку, которой нет в origin,
+Разрешён только черновик wip (пуш в него, в т.ч. создание). Блокирует: git checkout -b/-B, git switch -c/-C, git branch <имя>, git push в ветку, которой нет в origin,
 и инструмент GitHub MCP create_branch. Выход с кодом 2 - отказ, текст из stderr читает Claude.
 """
 import json
@@ -78,7 +78,7 @@ def check_bash(command: str) -> None:
             if any(a in ("--delete", "-d") for a in rest):
                 continue
             for target in push_targets(rest):
-                if target and target not in ("HEAD",) and not remote_has_branch(target):
+                if target and target not in ("HEAD", "wip") and not remote_has_branch(target):
                     deny(f"push в несуществующую ветку {target}")
 
 
