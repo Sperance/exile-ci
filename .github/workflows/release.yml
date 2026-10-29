@@ -1,0 +1,42 @@
+# Единая точка запуска: один выбор вместо двух workflow. Ничего не собирает сам, а запускает нужный режим server.yml / client.yml в этом
+# же репозитории (токену хватает actions: write). Что выбирать, ассистент пишет в конце каждой задачи рядом с Server-Update / Server-Wipe.
+#
+#   server          - выкатить сервер: деплой головы рабочей ветки, чей образ уже проверен пушем (server.yml mode=deploy). Вайп коллекций
+#                     делает сам сервер при старте по CollectionSchemas;
+#   server-rebuild  - сервер заново: проверки, образ и деплой (server.yml mode=push), если образ головы не собрался или не проверен;
+#   client          - новая версия клиента: все проверки и релиз (client.yml mode=push); после публикации релиза client.yml сам
+#                     запускает деплой сервера, так что сервер отдельно не нужен;
+#   client-shots    - UI-тесты и снимки ключевых экранов, без релиза (client.yml mode=shots).
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      what:
+        description: 'server - deploy checked head; server-rebuild - checks, image and deploy; client - checks and release (deploys the server after); client-shots - UI tests only'
+        type: choice
+        options: [ server, server-rebuild, client, client-shots ]
+        default: server
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Start the selected workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WHAT: ${{ inputs.what }}
+        run: |
+          case "$WHAT" in
+            server)         gh workflow run server.yml -R "$GITHUB_REPOSITORY" --ref main -f mode=deploy ;;
+            server-rebuild) gh workflow run server.yml -R "$GITHUB_REPOSITORY" --ref main -f mode=push ;;
+            client)         gh workflow run client.yml -R "$GITHUB_REPOSITORY" --ref main -f mode=push ;;
+            client-shots)   gh workflow run client.yml -R "$GITHUB_REPOSITORY" --ref main -f mode=shots ;;
+            *) echo "::error::unknown choice '$WHAT'"; exit 1 ;;
+          esac
+          echo "started: $WHAT"
