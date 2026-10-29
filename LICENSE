@@ -1,0 +1,41 @@
+Copyright (c) 2024-2026 Sperance. Все права защищены. All rights reserved.
+
+Этот репозиторий, его исходный код, скрипты, контент, графика, тексты и все производные от них
+являются собственностью правообладателя. Доступ к репозиторию - публичный или выданный
+правообладателем - даёт право только на его просмотр.
+
+Без предварительного письменного разрешения правообладателя запрещено:
+  - копировать, изменять, переводить и распространять код, скрипты и контент целиком или частично;
+  - собирать, публиковать и распространять собственные сборки клиента или сервера игры;
+  - запускать собственные серверы игры и подключать к ним клиентов;
+  - использовать код, скрипты и контент в любых коммерческих и некоммерческих продуктах.
+
+Просмотр репозитория на GitHub и форки, создаваемые самим GitHub в рамках его условий
+обслуживания, не дают никаких прав на использование сверх этого просмотра.
+
+Сторонние компоненты (библиотеки, шрифты и другие материалы третьих лиц) распространяются
+на условиях их собственных лицензий, указанных рядом с ними или в их источниках; на них
+этот текст не распространяется.
+
+ПРОГРАММА ПРЕДОСТАВЛЯЕТСЯ «КАК ЕСТЬ», БЕЗ КАКИХ-ЛИБО ГАРАНТИЙ.
+
+---
+
+This repository, its source code, scripts, content, artwork, texts and anything derived from
+them are the property of the copyright holder. Access to the repository, whether public or
+granted by the copyright holder, permits viewing only.
+
+Without the prior written permission of the copyright holder you may not:
+  - copy, modify, translate or distribute the code, scripts or content, in whole or in part;
+  - build, publish or distribute your own builds of the game client or server;
+  - run your own game servers or connect clients to them;
+  - use the code, scripts or content in any commercial or non-commercial product.
+
+Viewing the repository on GitHub, and forks GitHub itself creates under its Terms of
+Service, grant no right of use beyond that viewing.
+
+Third-party components (libraries, fonts and other third-party material) are distributed
+under their own licenses, stated next to them or at their source; this text does not
+apply to them.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND.
