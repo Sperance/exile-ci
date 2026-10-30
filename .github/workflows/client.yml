@@ -55,23 +55,17 @@ jobs:
       release: ${{ steps.release.outputs.pending }}
       shots: ${{ steps.target.outputs.mode == 'shots' }}
     steps:
+      - uses: actions/checkout@v4
       - name: Target commit
         id: target
         env:
           EVENT: ${{ github.event_name }}
+          ACTION: ${{ github.event.action }}
           PAYLOAD_SHA: ${{ github.event.client_payload.sha }}
           INPUT_MODE: ${{ inputs.mode }}
           INPUT_SHA: ${{ inputs.sha }}
           TOKEN: ${{ secrets.SOURCE_TOKEN }}
-        run: |
-          if [ "$EVENT" = repository_dispatch ]; then mode=push; sha=$PAYLOAD_SHA; else mode=$INPUT_MODE; sha=$INPUT_SHA; fi
-          if [ -z "$sha" ]; then
-            sha=$(git ls-remote "https://x-access-token:$TOKEN@github.com/$CLIENT_REPO.git" "refs/heads/$BRANCH" | cut -f1)
-          fi
-          [[ $sha =~ ^[0-9a-f]{40}$ ]] || { echo "::error::bad client commit: '$sha'"; exit 1; }
-          [[ $mode == push || $mode == shots ]] || { echo "::error::bad mode: '$mode'"; exit 1; }
-          echo "client $sha, mode $mode"
-          { echo "sha=$sha"; echo "mode=$mode"; } >> "$GITHUB_OUTPUT"
+        run: bash ci/resolve.sh "$CLIENT_REPO" "$BRANCH" client push shots
       - uses: actions/checkout@v4
         with:
           repository: ${{ env.CLIENT_REPO }}

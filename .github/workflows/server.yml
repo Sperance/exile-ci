@@ -48,6 +48,7 @@ jobs:
       sha: ${{ steps.target.outputs.sha }}
       mode: ${{ steps.target.outputs.mode }}
     steps:
+      - uses: actions/checkout@v4
       - name: Target commit
         id: target
         env:
@@ -57,15 +58,7 @@ jobs:
           INPUT_MODE: ${{ inputs.mode }}
           INPUT_SHA: ${{ inputs.sha }}
           TOKEN: ${{ secrets.SOURCE_TOKEN }}
-        run: |
-          if [ "$EVENT" = repository_dispatch ]; then mode=${ACTION#server-}; sha=$PAYLOAD_SHA; else mode=$INPUT_MODE; sha=$INPUT_SHA; fi
-          if [ -z "$sha" ]; then
-            sha=$(git ls-remote "https://x-access-token:$TOKEN@github.com/$SERVER_REPO.git" "refs/heads/$BRANCH" | cut -f1)
-          fi
-          [[ $sha =~ ^[0-9a-f]{40}$ ]] || { echo "::error::bad server commit: '$sha'"; exit 1; }
-          [[ $mode == push || $mode == deploy ]] || { echo "::error::bad mode: '$mode'"; exit 1; }
-          echo "server $sha, mode $mode"
-          { echo "sha=$sha"; echo "mode=$mode"; } >> "$GITHUB_OUTPUT"
+        run: bash ci/resolve.sh "$SERVER_REPO" "$BRANCH" server push deploy
 
   checks:
     needs: resolve
