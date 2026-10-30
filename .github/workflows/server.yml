@@ -78,28 +78,21 @@ jobs:
       cancel-in-progress: true
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
+      # Версию сервера Gradle считает по истории (patch - число коммитов после правки server-version)
+      - uses: ./.github/actions/source
         with:
-          repository: ${{ env.SERVER_REPO }}
-          ref: ${{ needs.resolve.outputs.sha }}
+          repo: ${{ env.SERVER_REPO }}
+          sha: ${{ needs.resolve.outputs.sha }}
           token: ${{ secrets.SOURCE_TOKEN }}
           path: server
-          persist-credentials: false
-          # Версию сервера Gradle считает по истории (patch - число коммитов после правки server-version)
+          submodules: 'false'
+          persist-credentials: 'false'
           fetch-depth: 0
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: 21
+          java: '21'
       # Тесты чистой логики редактора формул панели идут на Node (scripts/check.sh js)
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - uses: gradle/actions/setup-gradle@v4
-        with:
-          cache-cleanup: on-success
-          # Сводка job'а перечисляла бы задачи Gradle сервера в публичном журнале
-          add-job-summary: never
       - name: Content and contract checks
         working-directory: server
         run: bash ../ci/quiet.sh checks bash scripts/check.sh all
@@ -121,25 +114,19 @@ jobs:
       cancel-in-progress: true
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
+      - uses: ./.github/actions/source
         with:
-          repository: ${{ env.SERVER_REPO }}
-          ref: ${{ needs.resolve.outputs.sha }}
+          repo: ${{ env.SERVER_REPO }}
+          sha: ${{ needs.resolve.outputs.sha }}
           token: ${{ secrets.SOURCE_TOKEN }}
           path: server
-          persist-credentials: false
+          submodules: 'false'
+          persist-credentials: 'false'
           fetch-depth: 0
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: 21
+          java: '21'
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - uses: gradle/actions/setup-gradle@v4
-        with:
-          cache-cleanup: on-success
-          add-job-summary: never
       - name: Browser check of the panel charts
         working-directory: server
         run: bash ../ci/quiet.sh panel bash scripts/check.sh panel
@@ -162,23 +149,17 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
+      # Вся история: patch версии - число коммитов после правки server-version, плюс список изменений в метке образа
+      - uses: ./.github/actions/source
         with:
-          repository: ${{ env.SERVER_REPO }}
-          ref: ${{ needs.resolve.outputs.sha }}
+          repo: ${{ env.SERVER_REPO }}
+          sha: ${{ needs.resolve.outputs.sha }}
           token: ${{ secrets.SOURCE_TOKEN }}
           path: server
-          persist-credentials: false
-          # Вся история: patch версии - число коммитов после правки server-version, плюс список изменений в метке образа
+          submodules: 'false'
+          persist-credentials: 'false'
           fetch-depth: 0
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: 21
-      - uses: gradle/actions/setup-gradle@v4
-        with:
-          cache-cleanup: on-success
-          add-job-summary: never
+          java: '21'
       # buildkit - с зеркала Google: Docker Hub отвечал таймаутом и toomanyrequests
       - uses: docker/setup-buildx-action@v3
         with:

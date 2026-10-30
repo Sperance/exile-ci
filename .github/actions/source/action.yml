@@ -1,34 +1,51 @@
-# Исходники приватного клиента Sperance/ExileForge в src/ (с сабмодулем сервера backend/), JDK и Gradle - общая подготовка
-# job'ов client.yml. Токен - SOURCE_TOKEN (Contents: read на ExileForge и ktor-bestgame).
-name: Client source
-description: Checks out the private client with its server submodule and sets up JDK and Gradle
+# Исходники приватного репозитория (клиент Sperance/ExileForge с сабмодулем сервера backend/ или сервер Sperance/ktor-bestgame), JDK и
+# Gradle - общая подготовка job'ов client.yml и server.yml. Токен - SOURCE_TOKEN (Contents: read на ExileForge и ktor-bestgame).
+# Без параметров - клиент в src/ с сабмодулем, как его берут job'ы client.yml.
+name: Private source
+description: Checks out a private repository (optionally with submodules) and sets up JDK and Gradle
 inputs:
   sha:
-    description: Client commit
+    description: Commit to check out
     required: true
   token:
     description: Read token for ExileForge and ktor-bestgame
     required: true
+  repo:
+    description: Repository to check out
+    default: Sperance/ExileForge
+  path:
+    description: Directory of the checkout
+    default: src
+  submodules:
+    description: Check out submodules (the client pins the server in backend/) and deepen the pinned server history
+    default: 'true'
+  persist-credentials:
+    description: Keep the token in the checkout git config (the client needs it to deepen the backend/ submodule)
+    default: 'true'
   java:
     description: JDK version
     default: '17'
   fetch-depth:
-    description: Client history depth (0 - all, with tags)
+    description: History depth (0 - all, with tags)
     default: '1'
 runs:
   using: composite
   steps:
     - uses: actions/checkout@v4
       with:
-        repository: Sperance/ExileForge
+        repository: ${{ inputs.repo }}
         ref: ${{ inputs.sha }}
         token: ${{ inputs.token }}
-        path: src
-        submodules: true
+        path: ${{ inputs.path }}
+        submodules: ${{ inputs.submodules }}
+        persist-credentials: ${{ inputs.persist-credentials }}
         fetch-depth: ${{ inputs.fetch-depth }}
     # История клиента Gradle не нужна, история сабмодуля - нужна: версию закреплённого сервера он считает по коммитам backend/
-    - shell: bash
-      run: '[ "$(git -C src/backend rev-parse --is-shallow-repository)" = false ] || git -C src/backend fetch --quiet --unshallow'
+    - if: ${{ inputs.submodules == 'true' }}
+      shell: bash
+      env:
+        SRC: ${{ inputs.path }}
+      run: '[ "$(git -C "$SRC/backend" rev-parse --is-shallow-repository)" = false ] || git -C "$SRC/backend" fetch --quiet --unshallow'
     - uses: actions/setup-java@v4
       with:
         distribution: temurin
@@ -37,5 +54,5 @@ runs:
       with:
         # Неиспользуемые файлы кэша удаляются перед сохранением: кэш не копится до лимита GitHub
         cache-cleanup: on-success
-        # Сводка job'а перечисляла бы задачи Gradle клиента в публичном журнале
+        # Сводка job'а перечисляла бы задачи Gradle в публичном журнале
         add-job-summary: never
