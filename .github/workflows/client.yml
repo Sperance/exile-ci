@@ -153,16 +153,32 @@ jobs:
         with:
           name: app-log
 
-  # Сжатые R8 сборки с инструментальным APK (единственные тестовые, отладочной нет): `-PuiTests` - для всех UI-тестов
-  # (код приложения не ужат - артефакт только зашифрованным), без флага - строгий смоук R8.
+  # Сжатые R8 сборки с инструментальным APK (единственные тестовые, отладочной нет): `minified` - с флагом `-PuiTests` для всех
+  # UI-тестов (код приложения не ужат - артефакт только зашифрованным), `minified-strict` - без флага, строгий смоук R8: код
+  # приложения ужат. Имя job'а, артефакта, журнала и группы concurrency берутся из matrix.name.
   minified:
+    name: ${{ matrix.name }}
     needs: changes
     if: ${{ needs.changes.outputs.release == 'true' || needs.changes.outputs.shots == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     concurrency:
-      group: client-minified
+      group: client-${{ matrix.name }}
       cancel-in-progress: true
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: minified
+            artifact: ui-apks
+            flags: -PuiTests
+            stage: true
+            paths: ui-apks
+          - name: minified-strict
+            artifact: ui-apks-minified
+            flags: ''
+            stage: false
+            paths: app/build/outputs/apk/minifiedTest app/build/outputs/apk/androidTest/minifiedTest
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/source
@@ -171,54 +187,34 @@ jobs:
           token: ${{ secrets.SOURCE_TOKEN }}
       - name: Build UI test APKs
         working-directory: src
+        env:
+          NAME: ${{ matrix.name }}
+          FLAGS: ${{ matrix.flags }}
+        run: bash ../ci/quiet.sh "$NAME" bash gradlew :app:assembleMinifiedTest :app:assembleMinifiedTestAndroidTest $FLAGS
+      - name: Stage UI test APKs
+        if: ${{ matrix.stage }}
+        working-directory: src
         run: |
-          bash ../ci/quiet.sh minified bash gradlew :app:assembleMinifiedTest :app:assembleMinifiedTestAndroidTest -PuiTests
           mkdir -p ui-apks
           cp app/build/outputs/apk/minifiedTest/app-minifiedTest.apk ui-apks/app.apk
           cp app/build/outputs/apk/androidTest/minifiedTest/app-minifiedTest-androidTest.apk ui-apks/app-androidTest.apk
-          bash ../ci/seal.sh ../sealed/ui-apks.enc ui-apks
+      - name: Seal APKs
+        working-directory: src
+        env:
+          SEALED: ../sealed/${{ matrix.artifact }}.enc
+          PATHS: ${{ matrix.paths }}
+        run: bash ../ci/seal.sh "$SEALED" $PATHS
       - uses: actions/upload-artifact@v4
         with:
-          name: ui-apks
-          path: sealed/ui-apks.enc
+          name: ${{ matrix.artifact }}
+          path: sealed/${{ matrix.artifact }}.enc
           if-no-files-found: error
           retention-days: 1
       - name: Encrypted log
         if: failure()
         uses: ./.github/actions/upload-log
         with:
-          name: minified-log
-
-  minified-strict:
-    needs: changes
-    if: ${{ needs.changes.outputs.release == 'true' || needs.changes.outputs.shots == 'true' }}
-    runs-on: ubuntu-latest
-    # Строгий смоук R8: код приложения ужат, рядом с minified (UI-тесты на APK без ужатия кода)
-    timeout-minutes: 30
-    concurrency:
-      group: client-minified-strict
-      cancel-in-progress: true
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/source
-        with:
-          sha: ${{ needs.changes.outputs.sha }}
-          token: ${{ secrets.SOURCE_TOKEN }}
-      - working-directory: src
-        run: |
-          bash ../ci/quiet.sh minified-strict bash gradlew :app:assembleMinifiedTest :app:assembleMinifiedTestAndroidTest
-          bash ../ci/seal.sh ../sealed/ui-apks-minified.enc app/build/outputs/apk/minifiedTest app/build/outputs/apk/androidTest/minifiedTest
-      - uses: actions/upload-artifact@v4
-        with:
-          name: ui-apks-minified
-          path: sealed/ui-apks-minified.enc
-          if-no-files-found: error
-          retention-days: 1
-      - name: Encrypted log
-        if: failure()
-        uses: ./.github/actions/upload-log
-        with:
-          name: minified-strict-log
+          name: ${{ matrix.name }}-log
 
   # Подписанный релиз собирается один раз, здесь, и уходит в job `release` зашифрованным артефактом: там больше не пересобирают.
   release-apk:
@@ -310,7 +306,7 @@ jobs:
 
   # UI-тесты и смоук R8 - только перед релизом и по shots: собранные APK приходят артефактами, Gradle здесь не нужен.
   emulator:
-    needs: [ changes, minified, minified-strict ]
+    needs: [ changes, minified ]
     if: ${{ needs.changes.outputs.release == 'true' || needs.changes.outputs.shots == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -457,7 +453,7 @@ jobs:
   # заметками RELEASE_NOTES.md; mapping.txt - в релиз того же тега приватного ExileForge, на коммите клиента.
   # Пропущенные по фильтру проверки (core без изменений) релиз не держат; упавшие или отменённые - держат.
   release:
-    needs: [ changes, core, app, minified, minified-strict, release-apk, emulator, client-server ]
+    needs: [ changes, core, app, minified, release-apk, emulator, client-server ]
     if: ${{ !cancelled() && needs.changes.outputs.release == 'true' && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
