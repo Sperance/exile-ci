@@ -36,7 +36,6 @@ permissions:
 env:
   IMAGE: ghcr.io/sperance/ktor-bestgame
   SERVER_REPO: Sperance/ktor-bestgame
-  BRANCH: claude/tender-pasteur-a36kj2
   # Ключ шифрования журналов ci/quiet.sh: общий для всех job'ов
   LOG_KEY: ${{ secrets.LOG_KEY }}
 
@@ -58,7 +57,7 @@ jobs:
           INPUT_MODE: ${{ inputs.mode }}
           INPUT_SHA: ${{ inputs.sha }}
           TOKEN: ${{ secrets.SOURCE_TOKEN }}
-        run: bash ci/resolve.sh "$SERVER_REPO" "$BRANCH" server push deploy
+        run: . ci/branches.env && bash ci/resolve.sh "$SERVER_REPO" "$SERVER_BRANCH" server push deploy
 
   checks:
     needs: resolve
@@ -248,7 +247,9 @@ jobs:
       # Проверки прошли: тот же манифест получает проверенные теги, без пересборки и перекачки слоёв.
       - name: Mark the image as checked
         if: ${{ needs.resolve.outputs.mode == 'push' }}
-        run: docker buildx imagetools create -t "$IMAGE:$SHA" -t "$IMAGE:${BRANCH//\//-}" "$IMAGE:build-$SHA" >/dev/null
+        run: |
+          . ci/branches.env
+          docker buildx imagetools create -t "$IMAGE:$SHA" -t "$IMAGE:${SERVER_BRANCH//\//-}" "$IMAGE:build-$SHA" >/dev/null
 
       # Запуск от релиза клиента: голова ветки выкатывается, только если её образ уже проверен. Иначе её пуш ещё
       # в работе и выкатит сам - релиз клиента к этому моменту уже опубликован.

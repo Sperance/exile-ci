@@ -37,7 +37,6 @@ env:
   CLIENT_REPO: Sperance/ExileForge
   # Ключ шифрования журналов ci/quiet.sh: общий для всех job'ов
   LOG_KEY: ${{ secrets.LOG_KEY }}
-  BRANCH: claude/sharp-bardeen-6i3dkz
 
 # Каждый job проверок в своей группе: новый пуш отменяет устаревший прогон, а начатую публикацию (job `release`) - нет.
 jobs:
@@ -65,7 +64,7 @@ jobs:
           INPUT_MODE: ${{ inputs.mode }}
           INPUT_SHA: ${{ inputs.sha }}
           TOKEN: ${{ secrets.SOURCE_TOKEN }}
-        run: bash ci/resolve.sh "$CLIENT_REPO" "$BRANCH" client push shots
+        run: . ci/branches.env && bash ci/resolve.sh "$CLIENT_REPO" "$CLIENT_BRANCH" client push shots
       - uses: actions/checkout@v4
         with:
           repository: ${{ env.CLIENT_REPO }}

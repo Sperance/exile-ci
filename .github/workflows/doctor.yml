@@ -85,6 +85,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Server image access
         run: |
-          docker buildx imagetools inspect ghcr.io/sperance/ktor-bestgame:claude-tender-pasteur-a36kj2 >/dev/null 2>&1 \
+          . ci/branches.env
+          docker buildx imagetools inspect "ghcr.io/sperance/ktor-bestgame:${SERVER_BRANCH//\//-}" >/dev/null 2>&1 \
             && echo "OK    exile-ci reads the GHCR package ktor-bestgame" \
             || { echo "FAIL  exile-ci has no access to the GHCR package ktor-bestgame (Package settings - Manage Actions access)"; exit 1; }
