@@ -37,6 +37,8 @@ env:
   IMAGE: ghcr.io/sperance/ktor-bestgame
   SERVER_REPO: Sperance/ktor-bestgame
   BRANCH: claude/tender-pasteur-a36kj2
+  # Ключ шифрования журналов ci/quiet.sh: общий для всех job'ов
+  LOG_KEY: ${{ secrets.LOG_KEY }}
 
 jobs:
   resolve:
@@ -100,17 +102,12 @@ jobs:
           add-job-summary: never
       - name: Content and contract checks
         working-directory: server
-        env:
-          LOG_KEY: ${{ secrets.LOG_KEY }}
         run: bash ../ci/quiet.sh checks bash scripts/check.sh all
       - name: Encrypted log
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: ./.github/actions/upload-log
         with:
           name: checks-log
-          path: logs
-          retention-days: 7
-          if-no-files-found: ignore
 
   # Графики панели баланса на настоящем контенте: сервер без базы (scripts/check.sh panel), Chromium обходит разделы с графиками.
   # Отчёт проверки не выкладывается: в нём страницы панели.
@@ -145,17 +142,12 @@ jobs:
           add-job-summary: never
       - name: Browser check of the panel charts
         working-directory: server
-        env:
-          LOG_KEY: ${{ secrets.LOG_KEY }}
         run: bash ../ci/quiet.sh panel bash scripts/check.sh panel
       - name: Encrypted log
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: ./.github/actions/upload-log
         with:
           name: panel-log
-          path: logs
-          retention-days: 7
-          if-no-files-found: ignore
 
   image:
     needs: resolve
@@ -201,7 +193,6 @@ jobs:
       - name: Build and push the image
         working-directory: server
         env:
-          LOG_KEY: ${{ secrets.LOG_KEY }}
           SHA: ${{ needs.resolve.outputs.sha }}
           SOURCE_DATE_EPOCH: 0
         run: |
@@ -219,12 +210,9 @@ jobs:
             --build-arg REVISION --build-arg SERVER_VERSION --build-arg API_REVISION --build-arg CHANGELOG
       - name: Encrypted log
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: ./.github/actions/upload-log
         with:
           name: image-log
-          path: logs
-          retention-days: 7
-          if-no-files-found: ignore
 
   deploy:
     needs: [ resolve, checks, panel, image ]
@@ -329,7 +317,6 @@ jobs:
           HOST: ${{ secrets.DEPLOY_HOST }}
           KEY: ${{ secrets.DEPLOY_SSH_KEY }}
           GH_ISSUES_TOKEN: ${{ secrets.GH_ISSUES_TOKEN }}
-          LOG_KEY: ${{ secrets.LOG_KEY }}
         run: |
           install -m 600 /dev/null "$RUNNER_TEMP/key" && printf '%s\n' "$KEY" > "$RUNNER_TEMP/key"
           # Ключ на VPS привязан к одной команде (update.sh без вопросов): её код выхода - итог деплоя.
@@ -339,12 +326,9 @@ jobs:
             ssh -i "$RUNNER_TEMP/key" -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 "root@$HOST" "deploy $SHA"
       - name: Encrypted log
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: ./.github/actions/upload-log
         with:
           name: deploy-log
-          path: logs
-          retention-days: 7
-          if-no-files-found: ignore
 
       - name: Forget the key
         if: always()

@@ -35,6 +35,8 @@ permissions:
 
 env:
   CLIENT_REPO: Sperance/ExileForge
+  # Ключ шифрования журналов ci/quiet.sh: общий для всех job'ов
+  LOG_KEY: ${{ secrets.LOG_KEY }}
   BRANCH: claude/sharp-bardeen-6i3dkz
 
 # Каждый job проверок в своей группе: новый пуш отменяет устаревший прогон, а начатую публикацию (job `release`) - нет.
@@ -119,8 +121,6 @@ jobs:
     concurrency:
       group: client-core
       cancel-in-progress: true
-    env:
-      LOG_KEY: ${{ secrets.LOG_KEY }}
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/source
@@ -132,12 +132,9 @@ jobs:
         run: bash ../ci/quiet.sh core bash scripts/check.sh core
       - name: Encrypted log
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: ./.github/actions/upload-log
         with:
           name: core-log
-          path: logs
-          retention-days: 7
-          if-no-files-found: ignore
 
   app:
     needs: changes
@@ -148,8 +145,6 @@ jobs:
     concurrency:
       group: client-app
       cancel-in-progress: true
-    env:
-      LOG_KEY: ${{ secrets.LOG_KEY }}
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/source
@@ -161,12 +156,9 @@ jobs:
         run: bash ../ci/quiet.sh app bash scripts/check.sh app --no-compile
       - name: Encrypted log
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: ./.github/actions/upload-log
         with:
           name: app-log
-          path: logs
-          retention-days: 7
-          if-no-files-found: ignore
 
   # Сжатые R8 сборки с инструментальным APK (единственные тестовые, отладочной нет): `-PuiTests` - для всех UI-тестов
   # (код приложения не ужат - артефакт только зашифрованным), без флага - строгий смоук R8.
@@ -178,8 +170,6 @@ jobs:
     concurrency:
       group: client-minified
       cancel-in-progress: true
-    env:
-      LOG_KEY: ${{ secrets.LOG_KEY }}
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/source
@@ -202,12 +192,9 @@ jobs:
           retention-days: 1
       - name: Encrypted log
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: ./.github/actions/upload-log
         with:
           name: minified-log
-          path: logs
-          retention-days: 7
-          if-no-files-found: ignore
 
   minified-strict:
     needs: changes
@@ -218,8 +205,6 @@ jobs:
     concurrency:
       group: client-minified-strict
       cancel-in-progress: true
-    env:
-      LOG_KEY: ${{ secrets.LOG_KEY }}
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/source
@@ -238,12 +223,9 @@ jobs:
           retention-days: 1
       - name: Encrypted log
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: ./.github/actions/upload-log
         with:
           name: minified-strict-log
-          path: logs
-          retention-days: 7
-          if-no-files-found: ignore
 
   # Подписанный релиз собирается один раз, здесь, и уходит в job `release` зашифрованным артефактом: там больше не пересобирают.
   release-apk:
@@ -254,8 +236,6 @@ jobs:
     concurrency:
       group: client-release-apk
       cancel-in-progress: true
-    env:
-      LOG_KEY: ${{ secrets.LOG_KEY }}
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/source
@@ -291,12 +271,9 @@ jobs:
           retention-days: 7
       - name: Encrypted log
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: ./.github/actions/upload-log
         with:
           name: release-apk-log
-          path: logs
-          retention-days: 7
-          if-no-files-found: ignore
 
   # Пакет для Google Play (тип `play`: без самообновления и REQUEST_INSTALL_PACKAGES): тем же ключом релиза, но не в публичный релиз, а
   # зашифрованным артефактом - расшифровать (`ci/seal.sh -d`) и загрузить в Play Console вручную.
@@ -308,8 +285,6 @@ jobs:
     concurrency:
       group: client-release-aab
       cancel-in-progress: true
-    env:
-      LOG_KEY: ${{ secrets.LOG_KEY }}
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/source
@@ -338,12 +313,9 @@ jobs:
           retention-days: 30
       - name: Encrypted log
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: ./.github/actions/upload-log
         with:
           name: release-aab-log
-          path: logs
-          retention-days: 7
-          if-no-files-found: ignore
 
   # UI-тесты и смоук R8 - только перед релизом и по shots: собранные APK приходят артефактами, Gradle здесь не нужен.
   emulator:
@@ -357,7 +329,6 @@ jobs:
     env:
       API_LEVEL: 35
       SHOTS: ${{ needs.changes.outputs.shots }}
-      LOG_KEY: ${{ secrets.LOG_KEY }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -438,8 +409,6 @@ jobs:
     concurrency:
       group: client-client-server
       cancel-in-progress: true
-    env:
-      LOG_KEY: ${{ secrets.LOG_KEY }}
     steps:
       - uses: actions/checkout@v4
       # Сервер под проверкой - закреплённый сабмодуль backend/: его HEAD - сгенерированный SERVER_COMMIT
@@ -509,7 +478,6 @@ jobs:
       group: release
       cancel-in-progress: false
     env:
-      LOG_KEY: ${{ secrets.LOG_KEY }}
       SHA: ${{ needs.changes.outputs.sha }}
     steps:
       - uses: actions/checkout@v4

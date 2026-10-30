@@ -1,0 +1,20 @@
+# Зашифрованный журнал упавшего шага (его пишет ci/quiet.sh в logs/*.log.enc) - артефактом, читает только владелец LOG_KEY.
+# Вызывать с `if: failure()` у шага: внутри композитного действия статус job'а не виден.
+name: Upload encrypted log
+description: Uploads the logs/ directory (encrypted by ci/quiet.sh) as an artifact for 7 days
+inputs:
+  name:
+    description: Artifact name
+    required: true
+  path:
+    description: Directory or files to upload
+    default: logs
+runs:
+  using: composite
+  steps:
+    - uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.name }}
+        path: ${{ inputs.path }}
+        retention-days: 7
+        if-no-files-found: ignore
