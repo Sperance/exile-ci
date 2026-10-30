@@ -36,8 +36,6 @@ permissions:
 env:
   IMAGE: ghcr.io/sperance/ktor-bestgame
   SERVER_REPO: Sperance/ktor-bestgame
-  # Ключ шифрования журналов ci/quiet.sh: общий для всех job'ов
-  LOG_KEY: ${{ secrets.LOG_KEY }}
 
 jobs:
   resolve:
@@ -87,6 +85,8 @@ jobs:
           node-version: 22
       - name: Content and contract checks
         working-directory: server
+        env:
+          LOG_KEY: ${{ secrets.LOG_KEY }}
         run: bash ../ci/quiet.sh checks bash scripts/check.sh all
       - name: Encrypted log
         if: failure()
@@ -121,6 +121,8 @@ jobs:
           node-version: 22
       - name: Browser check of the panel charts
         working-directory: server
+        env:
+          LOG_KEY: ${{ secrets.LOG_KEY }}
         run: bash ../ci/quiet.sh panel bash scripts/check.sh panel
       - name: Encrypted log
         if: failure()
@@ -168,6 +170,7 @@ jobs:
         env:
           SHA: ${{ needs.resolve.outputs.sha }}
           SOURCE_DATE_EPOCH: 0
+          LOG_KEY: ${{ secrets.LOG_KEY }}
         run: |
           bash ../ci/quiet.sh layout bash gradlew dockerLayers
           # Версию посчитал Gradle из git (server-version.properties) - та же, что сервер отдаёт в манифесте.
@@ -292,6 +295,7 @@ jobs:
           HOST: ${{ secrets.DEPLOY_HOST }}
           KEY: ${{ secrets.DEPLOY_SSH_KEY }}
           GH_ISSUES_TOKEN: ${{ secrets.GH_ISSUES_TOKEN }}
+          LOG_KEY: ${{ secrets.LOG_KEY }}
         run: |
           install -m 600 /dev/null "$RUNNER_TEMP/key" && printf '%s\n' "$KEY" > "$RUNNER_TEMP/key"
           # Ключ на VPS привязан к одной команде (update.sh без вопросов): её код выхода - итог деплоя.

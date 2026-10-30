@@ -76,7 +76,7 @@ jobs:
             keytool -list -keystore "$RUNNER_TEMP/r.jks" -storepass "$RELEASE_KEYSTORE_PASSWORD" -alias "$RELEASE_KEY_ALIAS" >/dev/null 2>&1 \
               && ok "signing keystore opens, alias found" || bad "signing keystore or its password or alias is wrong"
             rm -f "$RUNNER_TEMP/r.jks"
-          else echo "WAIT  signing secrets not copied yet (Claude copies them from ExileForge)"; fi
+          else echo "WAIT  signing secrets not copied yet (copy them from ExileForge)"; fi
           exit $fail
       - uses: docker/login-action@v3
         with:
