@@ -251,8 +251,7 @@ jobs:
           RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
         # Опубликованный APK всегда подписан ключом релиза, поэтому каждый ставится поверх прошлого: нет ключа - нет релиза.
         run: |
-          if [ -z "$RELEASE_KEYSTORE" ]; then echo "::error::RELEASE_KEYSTORE secret is missing"; exit 1; fi
-          echo "$RELEASE_KEYSTORE" | base64 -d > "$RUNNER_TEMP/release.jks"
+          bash ../ci/keystore.sh
           export RELEASE_KEYSTORE_PATH="$RUNNER_TEMP/release.jks"
           bash ../ci/quiet.sh release-apk bash gradlew :app:assembleRelease
           apk=app/build/outputs/apk/release/app-release.apk
@@ -299,8 +298,7 @@ jobs:
           RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
           RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
         run: |
-          if [ -z "$RELEASE_KEYSTORE" ]; then echo "::error::RELEASE_KEYSTORE secret is missing"; exit 1; fi
-          echo "$RELEASE_KEYSTORE" | base64 -d > "$RUNNER_TEMP/release.jks"
+          bash ../ci/keystore.sh
           export RELEASE_KEYSTORE_PATH="$RUNNER_TEMP/release.jks"
           bash ../ci/quiet.sh release-aab bash gradlew :app:bundlePlay
           rm -f "$RUNNER_TEMP/release.jks"

@@ -29,6 +29,8 @@ jobs:
       RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
       DEPLOY_ENABLED: ${{ vars.DEPLOY_ENABLED }}
     steps:
+      # Скрипты ci/ (ключ подписи, ветки)
+      - uses: actions/checkout@v4
       - name: Secrets and tokens
         run: |
           fail=0
@@ -70,7 +72,7 @@ jobs:
           rm -f "$RUNNER_TEMP/k" "$RUNNER_TEMP/k.pub"
 
           if [ -n "$RELEASE_KEYSTORE" ]; then
-            echo "$RELEASE_KEYSTORE" | base64 -d > "$RUNNER_TEMP/r.jks" 2>/dev/null
+            bash ci/keystore.sh "$RUNNER_TEMP/r.jks" 2>/dev/null
             keytool -list -keystore "$RUNNER_TEMP/r.jks" -storepass "$RELEASE_KEYSTORE_PASSWORD" -alias "$RELEASE_KEY_ALIAS" >/dev/null 2>&1 \
               && ok "signing keystore opens, alias found" || bad "signing keystore or its password or alias is wrong"
             rm -f "$RUNNER_TEMP/r.jks"
