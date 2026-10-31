@@ -55,6 +55,8 @@ jobs:
       shots: ${{ steps.target.outputs.mode == 'shots' }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Target commit
         id: target
         env:

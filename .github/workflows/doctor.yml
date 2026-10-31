@@ -29,8 +29,10 @@ jobs:
       RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
       DEPLOY_ENABLED: ${{ vars.DEPLOY_ENABLED }}
     steps:
-      # Скрипты ci/ (ключ подписи, ветки)
+      # Скрипты ci/ (ключ подписи, ветки); без сохранённых прав - иначе git ls-remote к закрытым репо идёт токеном этого репо
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Secrets and tokens
         run: |
           fail=0

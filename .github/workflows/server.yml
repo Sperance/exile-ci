@@ -46,6 +46,8 @@ jobs:
       mode: ${{ steps.target.outputs.mode }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Target commit
         id: target
         env:
@@ -176,7 +178,7 @@ jobs:
           # Версию посчитал Gradle из git (server-version.properties) - та же, что сервер отдаёт в манифесте.
           SERVER_VERSION=$(sed -n 's/^version=//p' build/generated/serverVersion/server-version.properties)
           [[ -n $SERVER_VERSION && $SERVER_VERSION != *-dev ]] || { echo "::error::server version not resolved from git history"; exit 1; }
-          API_REVISION=$(sed -nE 's/^const val API_REVISION = ([0-9]+)/\1/p' src/main/kotlin/ru/descend/exileforge/Constants.kt)
+          API_REVISION=$(sed -nE 's/^const val API_REVISION = ([0-9]+)/\1/p' rules/src/main/kotlin/com/sperance/exileforge/rules/wire/Protocol.kt)
           CHANGELOG=$(git log --format='%h %s' -30 | base64 -w0)
           REVISION=$SHA
           export SERVER_VERSION API_REVISION CHANGELOG REVISION
@@ -206,7 +208,7 @@ jobs:
       SHA: ${{ needs.resolve.outputs.sha }}
     steps:
       - uses: actions/checkout@v4
-      # Нужен только Constants.kt (API_REVISION) - остальной код сервера деплою не нужен
+      # Нужен только Protocol.kt правил (API_REVISION) - остальной код сервера деплою не нужен
       - uses: actions/checkout@v4
         with:
           repository: ${{ env.SERVER_REPO }}
@@ -214,7 +216,7 @@ jobs:
           token: ${{ secrets.SOURCE_TOKEN }}
           path: server
           persist-credentials: false
-          sparse-checkout: src/main/kotlin/ru/descend/exileforge/Constants.kt
+          sparse-checkout: rules/src/main/kotlin/com/sperance/exileforge/rules/wire/Protocol.kt
           sparse-checkout-cone-mode: false
       - uses: docker/login-action@v3
         with:
@@ -275,7 +277,7 @@ jobs:
         env:
           LATEST: https://github.com/Sperance/exile-ci/releases/latest/download/update.json
         run: |
-          api=$(sed -nE 's/^const val API_REVISION = ([0-9]+)/\1/p' server/src/main/kotlin/ru/descend/exileforge/Constants.kt)
+          api=$(sed -nE 's/^const val API_REVISION = ([0-9]+)/\1/p' server/rules/src/main/kotlin/com/sperance/exileforge/rules/wire/Protocol.kt)
           [[ -n $api ]] || { echo "::error::API_REVISION not found"; exit 1; }
           for attempt in 1 2 3 4 5; do
             client=$(curl -fsSL "$LATEST" | python3 -c 'import json, sys; print(json.load(sys.stdin)["apiRevision"])' || echo 0)

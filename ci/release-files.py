@@ -47,7 +47,7 @@ def main():
     shutil.copyfile("RELEASE_NOTES.md", os.path.join(out, "RELEASE_NOTES.md"))
 
     code = first_group("app/build.gradle.kts", r"versionCode = ([0-9]*)")
-    api = first_group("core/src/main/kotlin/com/sperance/exileforge/core/model/sync/Sync.kt", r"^const val API_REVISION = ([0-9]*)")
+    api = first_group("backend/rules/src/main/kotlin/com/sperance/exileforge/rules/wire/Protocol.kt", r"^const val API_REVISION = ([0-9]*)")
     rules = first_group("backend/rules/src/main/kotlin/com/sperance/exileforge/rules/content/Content.kt", r"^const val RULES_VERSION = ([0-9]*)")
     if not (code and api and rules):
         fail(f"update.json: versionCode '{code}', API '{api}' or rules '{rules}' not found")
