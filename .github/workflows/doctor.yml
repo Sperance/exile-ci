@@ -28,6 +28,11 @@ jobs:
       RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
       RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
       DEPLOY_ENABLED: ${{ vars.DEPLOY_ENABLED }}
+      PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+      RUSTORE_KEY_ID: ${{ secrets.RUSTORE_KEY_ID }}
+      RUSTORE_PRIVATE_KEY: ${{ secrets.RUSTORE_PRIVATE_KEY }}
+      RELEASE_STATUS_TOKEN: ${{ secrets.RELEASE_STATUS_TOKEN }}
+      SERVER_URL: ${{ vars.SERVER_URL }}
     steps:
       # Скрипты ci/ (ключ подписи, ветки); без сохранённых прав - иначе git ls-remote к закрытым репо идёт токеном этого репо
       - uses: actions/checkout@v4
@@ -79,6 +84,11 @@ jobs:
               && ok "signing keystore opens, alias found" || bad "signing keystore or its password or alias is wrong"
             rm -f "$RUNNER_TEMP/r.jks"
           else echo "WAIT  signing secrets not copied yet (copy them from ExileForge)"; fi
+          # Магазины и отчёты о каналах: аккаунтов может ещё не быть - отсутствие не ошибка, канал просто выключен
+          for name in PLAY_SERVICE_ACCOUNT_JSON RUSTORE_KEY_ID RUSTORE_PRIVATE_KEY RELEASE_STATUS_TOKEN; do
+            [ -n "${!name}" ] && ok "secret $name is set" || echo "WAIT  secret $name is not set (its store channel stays off)"
+          done
+          [ -n "$SERVER_URL" ] && ok "variable SERVER_URL is set" || echo "WAIT  variable SERVER_URL is not set (channel reports stay off)"
           exit $fail
       - uses: docker/login-action@v3
         with:
