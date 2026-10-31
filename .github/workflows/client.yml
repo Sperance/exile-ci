@@ -11,8 +11,13 @@
 # RELEASE_NOTES.md (их читает игра, Updates.kt); карта R8 mapping.txt - только в релиз того же тега приватного ExileForge
 # (её качает сервер, ReleaseMappings). Затем Issues, что называют коммиты релиза «Closes #N», закрываются, и запускается
 # деплой сервера (server.yml, режим deploy).
+# Каналы: прямой APK (релиз здесь), Google Play (AAB, production долей 20%, job `publish-play`) и RuStore (APK с автопубликацией, job
+# `publish-rustore`); задачи сборки и пути результатов - ci/build-tasks.env. Загрузка в магазин идёт после релиза и только если в
+# репозитории есть ключи магазина, иначе job зелёный без дела. Состояние каналов опрашивает store-status.yml; прямой канал
+# отчётом серверу объявляет сам `release` (переменная SERVER_URL, секрет RELEASE_STATUS_TOKEN).
 # Секреты: SOURCE_TOKEN, EXILEFORGE_TOKEN (Contents и Issues: write на ExileForge), LOG_KEY, RELEASE_KEYSTORE,
-# RELEASE_KEYSTORE_PASSWORD, RELEASE_KEY_ALIAS, RELEASE_KEY_PASSWORD.
+# RELEASE_KEYSTORE_PASSWORD, RELEASE_KEY_ALIAS, RELEASE_KEY_PASSWORD; магазины: PLAY_SERVICE_ACCOUNT_JSON, RUSTORE_KEY_ID,
+# RUSTORE_PRIVATE_KEY; RELEASE_STATUS_TOKEN.
 name: Client
 
 on:
@@ -270,8 +275,8 @@ jobs:
         with:
           name: release-apk-log
 
-  # Пакет для Google Play (тип `play`: без самообновления и REQUEST_INSTALL_PACKAGES): тем же ключом релиза, но не в публичный релиз, а
-  # зашифрованным артефактом - расшифровать (`ci/seal.sh -d`) и загрузить в Play Console вручную.
+  # Пакет для Google Play (канал `play`: без самообновления и REQUEST_INSTALL_PACKAGES): тем же ключом релиза, но не в публичный релиз, а
+  # зашифрованным артефактом; в Play его кладёт job `publish-play` (или вручную: `ci/seal.sh -d`, Play Console).
   release-aab:
     needs: changes
     if: ${{ needs.changes.outputs.release == 'true' }}
@@ -311,6 +316,53 @@ jobs:
         uses: ./.github/actions/upload-log
         with:
           name: release-aab-log
+
+  # APK для RuStore (канал `rustore`: свой магазин обновлений вместо самообновления) тем же ключом релиза: зашифрованным артефактом, в
+  # магазин его кладёт job `publish-rustore`.
+  release-rustore:
+    needs: changes
+    if: ${{ needs.changes.outputs.release == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: client-release-rustore
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/source
+        with:
+          sha: ${{ needs.changes.outputs.sha }}
+          token: ${{ secrets.SOURCE_TOKEN }}
+      - name: Build signed RuStore APK
+        working-directory: src
+        env:
+          RELEASE_KEYSTORE: ${{ secrets.RELEASE_KEYSTORE }}
+          RELEASE_KEYSTORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
+          RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+          RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+        run: |
+          . ../ci/build-tasks.env
+          bash ../ci/keystore.sh
+          export RELEASE_KEYSTORE_PATH="$RUNNER_TEMP/release.jks"
+          bash ../ci/quiet.sh release-rustore bash gradlew "$RUSTORE_APK_TASK"
+          signer=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)/apksigner
+          "$signer" verify --print-certs "$RUSTORE_APK" > "$RUNNER_TEMP/signer.txt"
+          expected=$(keytool -list -v -keystore "$RUNNER_TEMP/release.jks" -storepass "$RELEASE_KEYSTORE_PASSWORD" -alias "$RELEASE_KEY_ALIAS" | sed -n 's/.*SHA256: *//p' | tr -d ':' | tr 'A-F' 'a-f')
+          rm -f "$RUNNER_TEMP/release.jks"
+          grep -qi "SHA-256 digest: $expected" "$RUNNER_TEMP/signer.txt" || { echo "::error::APK is not signed with the release key"; exit 1; }
+          echo "RuStore APK signed with the release key"
+          bash ../ci/seal.sh ../sealed/rustore.enc "$RUSTORE_APK"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: exile-forge-rustore
+          path: sealed/rustore.enc
+          if-no-files-found: error
+          retention-days: 30
+      - name: Encrypted log
+        if: failure()
+        uses: ./.github/actions/upload-log
+        with:
+          name: release-rustore-log
 
   # UI-тесты и смоук R8 - только перед релизом и по shots: собранные APK приходят артефактами, Gradle здесь не нужен.
   emulator:
@@ -461,10 +513,13 @@ jobs:
   # заметками RELEASE_NOTES.md; mapping.txt - в релиз того же тега приватного ExileForge, на коммите клиента.
   # Пропущенные по фильтру проверки (core без изменений) релиз не держат; упавшие или отменённые - держат.
   release:
-    needs: [ changes, core, app, minified, release-apk, emulator, client-server ]
+    # Пакеты магазинов собираются до публикации: сломанный вариант сборки не даёт выпустить версию в одном канале и не выпустить в другом
+    needs: [ changes, core, app, minified, release-apk, release-aab, release-rustore, emulator, client-server ]
     if: ${{ !cancelled() && needs.changes.outputs.release == 'true' && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
     permissions:
       contents: write
       # Запуск деплоя сервера (server.yml) после релиза
@@ -548,3 +603,118 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh workflow run server.yml -R "$GITHUB_REPOSITORY" --ref main -f mode=deploy
+      # Прямой канал сервер узнаёт отчётом: релиз GitHub вышел, доля 1.0. Новый деплой сервера (шаг выше) ещё идёт, поэтому отчёт
+      # может не дойти (маршрута нет у прежнего сервера) - это предупреждение, отчёт повторит почасовой store-status.yml.
+      - if: steps.version.outputs.exists == 'false'
+        name: Report the direct channel to the server
+        continue-on-error: true
+        env:
+          SERVER_URL: ${{ vars.SERVER_URL }}
+          RELEASE_STATUS_TOKEN: ${{ secrets.RELEASE_STATUS_TOKEN }}
+          PUBLIC_NOTES: ${{ runner.temp }}/notes.txt
+        run: |
+          code=0
+          bash ci/quiet.sh report-direct python3 ci/store-status.py direct update.json || code=$?
+          cat "$PUBLIC_NOTES" 2>/dev/null || true
+          exit $code
+      - name: Encrypted log
+        if: failure()
+        uses: ./.github/actions/upload-log
+        with:
+          name: release-log
+
+  # Загрузка в магазины - после публикации релиза и только с ключами магазина; без них job зелёный и ничего не делает. Повторить
+  # неудачную загрузку можно перезапуском упавшего job'а: пакеты лежат в артефактах прогона, повторная загрузка той же версии
+  # безопасна. Заметки магазинов - из update.json релиза (RELEASE_NOTES.md без заголовка).
+  publish-play:
+    needs: [ release, release-aab ]
+    if: ${{ !cancelled() && needs.release.result == 'success' && needs.release-aab.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    concurrency:
+      group: publish-play
+      cancel-in-progress: false
+    env:
+      PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+      TAG: ${{ needs.release.outputs.tag }}
+    steps:
+      - id: gate
+        run: |
+          if [ -n "$PLAY_SERVICE_ACCOUNT_JSON" ]; then echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else echo "::notice::PLAY_SERVICE_ACCOUNT_JSON is not set: Google Play upload skipped"; fi
+      - if: steps.gate.outputs.enabled == 'true'
+        uses: actions/checkout@v4
+      - if: steps.gate.outputs.enabled == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: exile-forge-play
+          path: sealed
+      - if: steps.gate.outputs.enabled == 'true'
+        uses: ./.github/actions/store-tools
+      - if: steps.gate.outputs.enabled == 'true'
+        name: Upload to Google Play
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PUBLIC_NOTES: ${{ runner.temp }}/notes.txt
+        run: |
+          set -a; . ci/build-tasks.env; set +a
+          gh release download "$TAG" -R "$GITHUB_REPOSITORY" -p update.json
+          bash ci/seal.sh -d sealed/play.enc .
+          code=0
+          bash ci/quiet.sh publish-play python3 ci/play.py upload "$PLAY_AAB" update.json || code=$?
+          cat "$PUBLIC_NOTES" 2>/dev/null || true
+          exit $code
+      - name: Encrypted log
+        if: failure()
+        uses: ./.github/actions/upload-log
+        with:
+          name: publish-play-log
+
+  publish-rustore:
+    needs: [ release, release-rustore ]
+    if: ${{ !cancelled() && needs.release.result == 'success' && needs.release-rustore.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    concurrency:
+      group: publish-rustore
+      cancel-in-progress: false
+    env:
+      RUSTORE_KEY_ID: ${{ secrets.RUSTORE_KEY_ID }}
+      RUSTORE_PRIVATE_KEY: ${{ secrets.RUSTORE_PRIVATE_KEY }}
+      TAG: ${{ needs.release.outputs.tag }}
+    steps:
+      - id: gate
+        run: |
+          if [ -n "$RUSTORE_KEY_ID" ] && [ -n "$RUSTORE_PRIVATE_KEY" ]; then echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else echo "::notice::RUSTORE_KEY_ID or RUSTORE_PRIVATE_KEY is not set: RuStore upload skipped"; fi
+      - if: steps.gate.outputs.enabled == 'true'
+        uses: actions/checkout@v4
+      - if: steps.gate.outputs.enabled == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: exile-forge-rustore
+          path: sealed
+      - if: steps.gate.outputs.enabled == 'true'
+        uses: ./.github/actions/store-tools
+      - if: steps.gate.outputs.enabled == 'true'
+        name: Upload to RuStore
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PUBLIC_NOTES: ${{ runner.temp }}/notes.txt
+        run: |
+          set -a; . ci/build-tasks.env; set +a
+          gh release download "$TAG" -R "$GITHUB_REPOSITORY" -p update.json
+          bash ci/seal.sh -d sealed/rustore.enc .
+          code=0
+          bash ci/quiet.sh publish-rustore python3 ci/rustore.py upload "$RUSTORE_APK" update.json || code=$?
+          cat "$PUBLIC_NOTES" 2>/dev/null || true
+          exit $code
+      - name: Encrypted log
+        if: failure()
+        uses: ./.github/actions/upload-log
+        with:
+          name: publish-rustore-log
