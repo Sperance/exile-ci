@@ -175,12 +175,10 @@ jobs:
             artifact: ui-apks
             flags: -PuiTests
             stage: true
-            paths: ui-apks
           - name: minified-strict
             artifact: ui-apks-minified
             flags: ''
             stage: false
-            paths: app/build/outputs/apk/minifiedTest app/build/outputs/apk/androidTest/minifiedTest
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/source
@@ -192,20 +190,26 @@ jobs:
         env:
           NAME: ${{ matrix.name }}
           FLAGS: ${{ matrix.flags }}
-        run: bash ../ci/quiet.sh "$NAME" bash gradlew :app:assembleMinifiedTest :app:assembleMinifiedTestAndroidTest $FLAGS
+        run: |
+          . ../ci/build-tasks.env
+          bash ../ci/quiet.sh "$NAME" bash gradlew "$MINIFIED_APP_TASK" "$MINIFIED_TEST_TASK" $FLAGS
       - name: Stage UI test APKs
         if: ${{ matrix.stage }}
         working-directory: src
         run: |
+          . ../ci/build-tasks.env
           mkdir -p ui-apks
-          cp app/build/outputs/apk/minifiedTest/app-minifiedTest.apk ui-apks/app.apk
-          cp app/build/outputs/apk/androidTest/minifiedTest/app-minifiedTest-androidTest.apk ui-apks/app-androidTest.apk
+          cp "$MINIFIED_APK" ui-apks/app.apk
+          cp "$MINIFIED_TEST_APK" ui-apks/app-androidTest.apk
       - name: Seal APKs
         working-directory: src
         env:
           SEALED: ../sealed/${{ matrix.artifact }}.enc
-          PATHS: ${{ matrix.paths }}
-        run: bash ../ci/seal.sh "$SEALED" $PATHS
+          STAGE: ${{ matrix.stage }}
+        run: |
+          . ../ci/build-tasks.env
+          if [ "$STAGE" = true ]; then paths=ui-apks; else paths="$MINIFIED_APK_DIR $MINIFIED_TEST_APK_DIR"; fi
+          bash ../ci/seal.sh "$SEALED" $paths
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
@@ -242,17 +246,18 @@ jobs:
           RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
         # Опубликованный APK всегда подписан ключом релиза, поэтому каждый ставится поверх прошлого: нет ключа - нет релиза.
         run: |
+          . ../ci/build-tasks.env
           bash ../ci/keystore.sh
           export RELEASE_KEYSTORE_PATH="$RUNNER_TEMP/release.jks"
-          bash ../ci/quiet.sh release-apk bash gradlew :app:assembleRelease
-          apk=app/build/outputs/apk/release/app-release.apk
+          bash ../ci/quiet.sh release-apk bash gradlew "$DIRECT_APK_TASK"
+          apk=$DIRECT_APK
           signer=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)/apksigner
           "$signer" verify --print-certs "$apk" > "$RUNNER_TEMP/signer.txt"
           expected=$(keytool -list -v -keystore "$RUNNER_TEMP/release.jks" -storepass "$RELEASE_KEYSTORE_PASSWORD" -alias "$RELEASE_KEY_ALIAS" | sed -n 's/.*SHA256: *//p' | tr -d ':' | tr 'A-F' 'a-f')
           rm -f "$RUNNER_TEMP/release.jks"
           grep -qi "SHA-256 digest: $expected" "$RUNNER_TEMP/signer.txt" || { echo "::error::APK is not signed with the release key"; exit 1; }
           echo "APK signed with the release key"
-          bash ../ci/seal.sh ../sealed/release.enc app/build/outputs/apk/release/app-release.apk app/build/outputs/mapping/release/mapping.txt
+          bash ../ci/seal.sh ../sealed/release.enc "$DIRECT_APK" "$DIRECT_MAPPING"
       - uses: actions/upload-artifact@v4
         with:
           name: exile-forge-release
@@ -289,11 +294,12 @@ jobs:
           RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
           RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
         run: |
+          . ../ci/build-tasks.env
           bash ../ci/keystore.sh
           export RELEASE_KEYSTORE_PATH="$RUNNER_TEMP/release.jks"
-          bash ../ci/quiet.sh release-aab bash gradlew :app:bundlePlay
+          bash ../ci/quiet.sh release-aab bash gradlew "$PLAY_AAB_TASK"
           rm -f "$RUNNER_TEMP/release.jks"
-          bash ../ci/seal.sh ../sealed/play.enc app/build/outputs/bundle/play/app-play.aab app/build/outputs/mapping/play/mapping.txt
+          bash ../ci/seal.sh ../sealed/play.enc "$PLAY_AAB" "$PLAY_MAPPING"
       - uses: actions/upload-artifact@v4
         with:
           name: exile-forge-play
@@ -500,6 +506,8 @@ jobs:
         env:
           TAG: ${{ steps.version.outputs.tag }}
         run: |
+          . ../ci/build-tasks.env
+          export DIRECT_APK DIRECT_MAPPING
           bash ../ci/seal.sh -d ../sealed/release.enc .
           python3 ../ci/release-files.py "$TAG" ..
           cat ../update.json

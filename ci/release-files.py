@@ -2,7 +2,8 @@
 """Файлы релиза клиента (job `release` client.yml): APK, карта R8, заметки и update.json - то, что читает обновлятор игры
 (Updates.kt): сборка, провод и правила, на которых она говорит, APK и его SHA-256.
 
-Запуск из каталога исходников клиента (src/) после распаковки сборки release-apk:
+Запуск из каталога исходников клиента (src/) после распаковки сборки release-apk; в окружении DIRECT_APK и DIRECT_MAPPING
+(`. ci/build-tasks.env`):
     python3 ../ci/release-files.py <тег v<versionName>> <каталог результата>
 В каталог результата кладутся ExileForge-<тег>.apk, mapping.txt, RELEASE_NOTES.md и update.json. Ошибки - строкой ::error:: и код 1.
 """
@@ -14,8 +15,9 @@ import shutil
 import subprocess
 import sys
 
-APK_SOURCE = "app/build/outputs/apk/release/app-release.apk"
-MAPPING_SOURCE = "app/build/outputs/mapping/release/mapping.txt"
+# Пути результата сборки прямого канала - из ci/build-tasks.env (workflow кладёт их в окружение как DIRECT_APK и DIRECT_MAPPING)
+APK_SOURCE = os.environ["DIRECT_APK"]
+MAPPING_SOURCE = os.environ["DIRECT_MAPPING"]
 
 
 def fail(message):
