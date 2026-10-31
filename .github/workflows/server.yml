@@ -97,11 +97,12 @@ jobs:
           name: checks-log
 
   # Графики панели баланса на настоящем контенте: сервер без базы (scripts/check.sh panel), Chromium обходит разделы с графиками.
+  # Ubuntu 24.04 закреплён: Playwright 1.55 не ставит Chromium на образе ubuntu-latest (26.04).
   # Отчёт проверки не выкладывается: в нём страницы панели.
   panel:
     needs: resolve
     if: ${{ needs.resolve.outputs.mode == 'push' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
     concurrency:
       group: server-panel
