@@ -1,0 +1,69 @@
+# Состояние каналов выкладки клиента: раз в час опрашивает Google Play и RuStore и шлёт серверу по отчёту на каждый активный канал
+# (POST admin/release/channels, ChannelStatusReport; сервер сам поднимает минимальную ревизию, когда сборка у всех каналов раздана
+# целиком сутки). Прямой канал отчитывается по последнему релизу этого репозитория. Канал без ключей магазина пропускается, как будто
+# его нет; без SERVER_URL и RELEASE_STATUS_TOKEN прогон зелёный и ничего не делает.
+# Выкладку Play доводит до 100%: сборка на 20% не меньше суток и не больше 3 открытых Issues crash+auto ExileForge с её выхода -
+# ci/store-status.py; при всплеске падений доводка останавливается с предупреждением, пока их не разберут.
+# Журнал публичен: скрипты идут через ci/quiet.sh, в журнал - короткие строки (канал, версия, доля), подробности падения - в
+# зашифрованном артефакте (ключ LOG_KEY).
+# Секреты: RELEASE_STATUS_TOKEN, PLAY_SERVICE_ACCOUNT_JSON, RUSTORE_KEY_ID, RUSTORE_PRIVATE_KEY, EXILEFORGE_TOKEN (проверка падений),
+# LOG_KEY. Переменная: SERVER_URL (адрес сервера с https://, без слеша в конце).
+name: Store status
+
+on:
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  LOG_KEY: ${{ secrets.LOG_KEY }}
+
+jobs:
+  status:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: store-status
+      cancel-in-progress: false
+    env:
+      SERVER_URL: ${{ vars.SERVER_URL }}
+      RELEASE_STATUS_TOKEN: ${{ secrets.RELEASE_STATUS_TOKEN }}
+      PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+      RUSTORE_KEY_ID: ${{ secrets.RUSTORE_KEY_ID }}
+      RUSTORE_PRIVATE_KEY: ${{ secrets.RUSTORE_PRIVATE_KEY }}
+      EXILEFORGE_TOKEN: ${{ secrets.EXILEFORGE_TOKEN }}
+    steps:
+      - id: gate
+        run: |
+          if [ -z "$SERVER_URL" ] || [ -z "$RELEASE_STATUS_TOKEN" ]; then
+            echo "::notice::SERVER_URL or RELEASE_STATUS_TOKEN is not set: channel reports are off"
+            exit 0
+          fi
+          echo "enabled=true" >> "$GITHUB_OUTPUT"
+          if [ -n "$PLAY_SERVICE_ACCOUNT_JSON" ] || { [ -n "$RUSTORE_KEY_ID" ] && [ -n "$RUSTORE_PRIVATE_KEY" ]; }; then echo "stores=true" >> "$GITHUB_OUTPUT"; fi
+      - if: steps.gate.outputs.enabled == 'true'
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - if: steps.gate.outputs.stores == 'true'
+        uses: ./.github/actions/store-tools
+      - if: steps.gate.outputs.enabled == 'true'
+        name: Report the channels
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PUBLIC_NOTES: ${{ runner.temp }}/notes.txt
+        run: |
+          . ci/build-tasks.env
+          export APP_ID
+          code=0
+          bash ci/quiet.sh store-status python3 ci/store-status.py all || code=$?
+          cat "$PUBLIC_NOTES" 2>/dev/null || true
+          exit $code
+      - name: Encrypted log
+        if: failure()
+        uses: ./.github/actions/upload-log
+        with:
+          name: store-status-log
