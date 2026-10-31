@@ -5,7 +5,8 @@
 #
 # Запуск:
 #   repository_dispatch server-push   - пуш в рабочую ветку сервера (job `forward` в deploy.yml сервера): проверки, браузерная
-#                                       проверка графиков панели и сборка образа параллельно, затем деплой проверенного образа;
+#                                       проверка графиков панели, совместимость со старейшим клиентом окна ревизий (job `compat`)
+#                                       и сборка образа параллельно, затем деплой проверенного образа;
 #   repository_dispatch server-deploy - workflow_dispatch сервера (job `release` client.yml после релиза клиента): деплой головы
 #                                       ветки, если её образ уже проверен;
 #   workflow_dispatch                 - вручную, те же два режима.
@@ -133,6 +134,85 @@ jobs:
         with:
           name: panel-log
 
+  # Совместимость: контрактные тесты самого старого клиента, которого окно ревизий ещё обязано поддерживать (релиз exile-ci с наименьшей
+  # версией в окне MIN_API_REVISION..API_REVISION, ci/oldest-client.py), против свежесобранного сервера. Клиент берётся своим коммитом и
+  # своим закреплённым сервером (правила в нём прежние), а запускается на сервере этого коммита; его client_server_test.py без правок.
+  # Нет релиза в окне - прогон зелёный без дела (старее нового клиента поддерживать нечего).
+  compat:
+    needs: resolve
+    if: ${{ needs.resolve.outputs.mode == 'push' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    concurrency:
+      group: server-compat
+      cancel-in-progress: true
+    env:
+      LOG_KEY: ${{ secrets.LOG_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      # Вся история: версию сервера Gradle считает по коммитам
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.SERVER_REPO }}
+          ref: ${{ needs.resolve.outputs.sha }}
+          token: ${{ secrets.SOURCE_TOKEN }}
+          path: server
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Oldest supported client
+        id: oldest
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          SOURCE_TOKEN: ${{ secrets.SOURCE_TOKEN }}
+          PUBLIC_NOTES: ${{ runner.temp }}/notes.txt
+        run: |
+          code=0
+          bash ci/quiet.sh oldest-client python3 ci/oldest-client.py server/rules/src/main/kotlin/com/sperance/exileforge/rules/wire/Protocol.kt || code=$?
+          cat "$PUBLIC_NOTES" 2>/dev/null || true
+          exit $code
+      - if: ${{ steps.oldest.outputs.tag != '' }}
+        uses: ./.github/actions/source
+        with:
+          sha: ${{ steps.oldest.outputs.tag }}
+          token: ${{ secrets.SOURCE_TOKEN }}
+          java: '21'
+      - name: Build the new server
+        if: ${{ steps.oldest.outputs.tag != '' }}
+        working-directory: server
+        run: bash ../ci/quiet.sh server-dist bash gradlew installDist
+      - if: ${{ steps.oldest.outputs.tag != '' }}
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      # Тест клиента запускает сервер из src/backend/build/install: кладём туда свежесобранный, а закреплённые исходники клиента не трогаем
+      - name: Put the new server where the client test starts it
+        if: ${{ steps.oldest.outputs.tag != '' }}
+        run: |
+          mkdir -p src/backend/build/install
+          rm -rf src/backend/build/install/ktor-bestgame
+          cp -r server/build/install/ktor-bestgame src/backend/build/install/ktor-bestgame
+      - if: ${{ steps.oldest.outputs.tag != '' }}
+        uses: ./.github/actions/mongo
+      - name: Contract tests of the oldest supported client
+        if: ${{ steps.oldest.outputs.tag != '' }}
+        working-directory: src
+        run: |
+          [ -f scripts/client_server_test.py ] || { echo "::notice::the oldest client has no scripts/client_server_test.py: compat check skipped"; exit 0; }
+          bash ../ci/quiet.sh compat python3 scripts/client_server_test.py
+      - name: Seal reports
+        if: ${{ always() && steps.oldest.outputs.tag != '' }}
+        working-directory: src
+        run: bash ../ci/seal.sh ../sealed/compat.enc core/build/reports/tests core/build/test-results build/client-server.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: compat-reports
+          path: |
+            sealed/compat.enc
+            logs
+          if-no-files-found: ignore
+
   image:
     needs: resolve
     if: ${{ needs.resolve.outputs.mode == 'push' && vars.DEPLOY_ENABLED == 'true' }}
@@ -194,9 +274,9 @@ jobs:
           name: image-log
 
   deploy:
-    needs: [ resolve, checks, panel, image ]
-    # Пуш - после зелёных проверок, проверки панели и образа; режим deploy (релиз клиента или вручную) - сразу, по голове ветки.
-    if: ${{ !cancelled() && needs.resolve.result == 'success' && vars.DEPLOY_ENABLED == 'true' && (needs.resolve.outputs.mode == 'deploy' || (needs.checks.result == 'success' && needs.panel.result == 'success' && needs.image.result == 'success')) }}
+    needs: [ resolve, checks, panel, compat, image ]
+    # Пуш - после зелёных проверок, проверки панели, совместимости со старейшим клиентом окна и образа; режим deploy (релиз клиента или вручную) - сразу, по голове ветки.
+    if: ${{ !cancelled() && needs.resolve.result == 'success' && vars.DEPLOY_ENABLED == 'true' && (needs.resolve.outputs.mode == 'deploy' || (needs.checks.result == 'success' && needs.panel.result == 'success' && needs.compat.result == 'success' && needs.image.result == 'success')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     concurrency:
