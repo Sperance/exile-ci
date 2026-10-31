@@ -1,0 +1,30 @@
+# Изолированный MongoDB с replica set на localhost:27017 для проверок контракта клиента и сервера (job client-server в client.yml и
+# compat в server.yml).
+name: Isolated MongoDB
+description: Starts a throwaway single-node replica set MongoDB on localhost:27017
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      # Сервер закрепляет mongodb://localhost:27017 в коде, а его транзакциям нужен replica set.
+      run: |
+        # Docker Hub режет анонимные скачивания (toomanyrequests) - образ берётся с зеркала Google, с повтором.
+        # Свежий образ 8.0 зеркала может не подняться на раннере - тогда следующий образ из списка
+        for image in mirror.gcr.io/library/mongo:8.0 mirror.gcr.io/library/mongo:7.0; do
+          for attempt in 1 2 3; do docker pull -q "$image" >/dev/null && break; sleep $((attempt * 10)); done
+          docker rm -f client-mongo >/dev/null 2>&1 || true
+          docker run -d --name client-mongo -p 27017:27017 "$image" --replSet rs0 --bind_ip_all >/dev/null
+          sleep 5
+          [ "$(docker inspect -f '{{.State.Running}}' client-mongo)" = true ] && break
+          echo "::warning::$image exited at start"
+        done
+        for attempt in $(seq 1 30); do
+          if docker exec client-mongo mongosh --quiet --eval 'db.adminCommand({ping:1}).ok' >/dev/null 2>&1; then break; fi
+          sleep 1
+        done
+        docker exec client-mongo mongosh --quiet --eval 'rs.initiate({_id:"rs0",members:[{_id:0,host:"localhost:27017"}]})' >/dev/null
+        for attempt in $(seq 1 30); do
+          if docker exec client-mongo mongosh --quiet --eval 'if (!db.hello().isWritablePrimary) quit(1)' >/dev/null 2>&1; then exit 0; fi
+          sleep 1
+        done
+        exit 1
