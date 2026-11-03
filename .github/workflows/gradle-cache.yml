@@ -1,0 +1,88 @@
+# Архив кэша Gradle для облачных сессий агента: зависимости (caches/modules-2) и дистрибутивы (wrapper/dists) клиента и
+# закреплённого в нём сервера - prerelease `gradle-cache` приватного ExileForge (не latest: игра, update.json и релизы версий
+# его не видят). Сессия распаковывает его хуком .claude/hooks/gradle-cache.sh вместо сотен запросов к Maven Central.
+# Архив пересобирается, только когда меняется ключ - хэш файлов сборки клиента и сервера (имя файла архива); иначе job
+# заканчивается за секунды. Проверки здесь лишь наполняют кэш: их падение архив не останавливает (ворота - client.yml и server.yml).
+# Запуск: после каждого Client (workflow_run) и вручную. Секреты: SOURCE_TOKEN (чтение кода), EXILEFORGE_TOKEN (релиз ExileForge).
+name: Gradle cache
+
+on:
+  workflow_run:
+    workflows: [ Client ]
+    types: [ completed ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gradle-cache
+  cancel-in-progress: false
+
+env:
+  CLIENT_REPO: Sperance/ExileForge
+  TAG: gradle-cache
+  LOG_KEY: ${{ secrets.LOG_KEY }}
+
+jobs:
+  pack:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Target commit
+        id: target
+        env:
+          EVENT: ${{ github.event_name }}
+          INPUT_MODE: pack
+          INPUT_SHA: ''
+          TOKEN: ${{ secrets.SOURCE_TOKEN }}
+        run: . ci/branches.env && bash ci/resolve.sh "$CLIENT_REPO" "$CLIENT_BRANCH" client pack
+      - uses: ./.github/actions/source
+        with:
+          sha: ${{ steps.target.outputs.sha }}
+          token: ${{ secrets.SOURCE_TOKEN }}
+      - name: Cache key
+        id: key
+        env:
+          GH_TOKEN: ${{ secrets.EXILEFORGE_TOKEN }}
+        run: |
+          key=$(for d in src src/backend; do git -C "$d" ls-files -z -- '*.gradle.kts' 'gradle.properties' 'gradle/*' | (cd "$d" && xargs -0 sha256sum); done | sha256sum | cut -c1-16)
+          asset="gradle-cache-$key.tar.gz"
+          have=$(gh release view "$TAG" -R "$CLIENT_REPO" --json assets -q '.assets[].name' 2>/dev/null || true)
+          if grep -qx "$asset" <<<"$have"; then fresh=true; else fresh=false; fi
+          echo "asset=$asset" >> "$GITHUB_OUTPUT"
+          echo "fresh=$fresh" >> "$GITHUB_OUTPUT"
+          echo "fresh=$fresh"
+      - name: Fill the client cache
+        if: steps.key.outputs.fresh == 'false'
+        working-directory: src
+        run: bash ../ci/quiet.sh gradle-cache-client bash scripts/check.sh all || true
+      - name: Fill the server cache
+        if: steps.key.outputs.fresh == 'false'
+        working-directory: src/backend
+        run: bash ../../ci/quiet.sh gradle-cache-server bash scripts/check.sh all || true
+      - name: Publish the archive
+        if: steps.key.outputs.fresh == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.EXILEFORGE_TOKEN }}
+          ASSET: ${{ steps.key.outputs.asset }}
+          SHA: ${{ steps.target.outputs.sha }}
+        run: |
+          (cd src && ./gradlew --stop >/dev/null 2>&1 || true)
+          tar -C "$HOME/.gradle" --exclude='*.lock' --exclude='gc.properties' -czf "$ASSET" caches/modules-2 wrapper/dists
+          echo "archive: $(du -h "$ASSET" | cut -f1)"
+          if ! gh release view "$TAG" -R "$CLIENT_REPO" >/dev/null 2>&1; then
+            gh release create "$TAG" -R "$CLIENT_REPO" --target "$SHA" --prerelease --latest=false --title "Gradle cache" \
+              --notes "Gradle dependencies for cloud agent sessions (exile-ci gradle-cache.yml). Not a game release."
+          fi
+          gh release upload "$TAG" "$ASSET" -R "$CLIENT_REPO" --clobber
+          gh release view "$TAG" -R "$CLIENT_REPO" --json assets -q '.assets[].name' | grep -vx "$ASSET" | while read -r old; do
+            gh release delete-asset "$TAG" "$old" -R "$CLIENT_REPO" -y
+          done
+      - if: failure()
+        uses: ./.github/actions/upload-log
+        with:
+          name: gradle-cache-log
