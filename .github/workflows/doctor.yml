@@ -33,6 +33,7 @@ jobs:
       RUSTORE_PRIVATE_KEY: ${{ secrets.RUSTORE_PRIVATE_KEY }}
       RELEASE_STATUS_TOKEN: ${{ secrets.RELEASE_STATUS_TOKEN }}
       SERVER_URL: ${{ vars.SERVER_URL }}
+      CLEANUP_TOKEN: ${{ secrets.CLEANUP_TOKEN }}
     steps:
       # Скрипты ci/ (ключ подписи, ветки); без сохранённых прав - иначе git ls-remote к закрытым репо идёт токеном этого репо
       - uses: actions/checkout@v4
@@ -84,6 +85,8 @@ jobs:
               && ok "signing keystore opens, alias found" || bad "signing keystore or its password or alias is wrong"
             rm -f "$RUNNER_TEMP/r.jks"
           else echo "WAIT  signing secrets not copied yet (copy them from ExileForge)"; fi
+          # Чистка хранилища (cleanup.yml): без токена пропускает артефакты приватных репозиториев
+          [ -n "$CLEANUP_TOKEN" ] && ok "secret CLEANUP_TOKEN is set" || echo "WAIT  secret CLEANUP_TOKEN is not set (cleanup.yml skips old artifacts of private repositories)"
           # Магазины и отчёты о каналах: аккаунтов может ещё не быть - отсутствие не ошибка, канал просто выключен
           for name in PLAY_SERVICE_ACCOUNT_JSON RUSTORE_KEY_ID RUSTORE_PRIVATE_KEY RELEASE_STATUS_TOKEN; do
             [ -n "${!name}" ] && ok "secret $name is set" || echo "WAIT  secret $name is not set (its store channel stays off)"
