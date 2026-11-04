@@ -1,7 +1,7 @@
 # Состояние каналов выкладки клиента: раз в час опрашивает Google Play и RuStore и шлёт серверу по отчёту на каждый активный канал
 # (POST admin/release/channels, ChannelStatusReport; сервер сам поднимает минимальную ревизию, когда сборка у всех каналов раздана
 # целиком сутки). Прямой канал отчитывается по последнему релизу этого репозитория. Канал без ключей магазина пропускается, как будто
-# его нет; без SERVER_URL и RELEASE_STATUS_TOKEN прогон зелёный и ничего не делает.
+# его нет; без SERVER_URL и RELEASE_STATUS_TOKEN прогон красный: экран «Версии» в игре остаётся без данных.
 # Выкладку Play доводит до 100%: сборка на 20% не меньше суток и не больше 3 открытых Issues crash+auto ExileForge с её выхода -
 # ci/store-status.py; при всплеске падений доводка останавливается с предупреждением, пока их не разберут.
 # Журнал публичен: скрипты идут через ci/quiet.sh, в журнал - короткие строки (канал, версия, доля), подробности падения - в
@@ -62,8 +62,9 @@ jobs:
           bash ci/quiet.sh store-status python3 ci/store-status.py all || code=$?
           cat "$PUBLIC_NOTES" 2>/dev/null || true
           exit $code
+      # Журнал - только когда репозиторий уже выгружен: упавшая проверка ключей своего журнала не пишет
       - name: Encrypted log
-        if: failure()
+        if: failure() && steps.gate.outputs.enabled == 'true'
         uses: ./.github/actions/upload-log
         with:
           name: store-status-log
