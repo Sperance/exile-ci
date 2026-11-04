@@ -1,0 +1,70 @@
+# Архив картинок игры - prerelease `art` этого репозитория: его берёт `update.sh art` сервера (без ссылки - самый новый архив).
+# Картинки приходят папкой `art/<категория>/<КОД>.png|jpg|jpeg|webp` с ветки [ref] этого же репозитория (обычно черновик `wip`
+# поверх `main`); архив - те же пути без `./`, имя `art-<дата UTC>.tar.gz`. Хранятся пять последних архивов.
+# Запуск только вручную; картинки и так видит каждый игрок, тайного в журнале нет.
+name: Art
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Branch of this repository whose art/ folder becomes the archive'
+        type: string
+        default: wip
+
+permissions:
+  contents: write
+
+concurrency:
+  group: art
+  cancel-in-progress: false
+
+env:
+  TAG: art
+  KEEP: 5
+
+jobs:
+  pack:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      - name: Check the layout
+        run: |
+          [[ -d art ]] || { echo '::error::no art/ folder on this ref'; exit 1; }
+          bad=0
+          while IFS= read -r -d '' entry; do
+            path=${entry#art/}
+            if [[ -L $entry || ! -f $entry || ! $path =~ ^[a-z]+/[A-Z0-9_]+\.([pP][nN][gG]|[jJ][pP][eE]?[gG]|[wW][eE][bB][pP])$ ]]; then
+              echo "::error::unexpected entry: $path"
+              bad=1
+            fi
+          done < <(find art -mindepth 1 ! -type d -print0)
+          ((bad == 0)) || exit 1
+          find art -type f | sort
+
+      - name: Pack
+        id: pack
+        run: |
+          asset="art-$(date -u +%Y%m%d-%H%M%S).tar.gz"
+          (cd art && find . -type f | sed 's|^\./||' | sort | tar -czf "$RUNNER_TEMP/$asset" -T -)
+          tar -tzf "$RUNNER_TEMP/$asset"
+          echo "asset=$asset" >> "$GITHUB_OUTPUT"
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ASSET: ${{ steps.pack.outputs.asset }}
+        run: |
+          if ! gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$TAG" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease --latest=false --title "Art" \
+              --notes 'Game pictures for update.sh art on the server. Newest archive wins.'
+          fi
+          gh release upload "$TAG" "$RUNNER_TEMP/$ASSET" -R "$GITHUB_REPOSITORY"
+          gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json assets -q '.assets[].name' | grep '^art-.*\.tar\.gz$' | sort -r \
+            | tail -n +$((KEEP + 1)) | while read -r old; do gh release delete-asset "$TAG" "$old" -R "$GITHUB_REPOSITORY" -y; done
+          echo "published $ASSET"
