@@ -50,6 +50,8 @@ runs:
       with:
         distribution: temurin
         java-version: ${{ inputs.java }}
+    # Кэш сборки Gradle (caches/build-cache-1) входит в кэш setup-gradle; пишут его только запуски на main (по умолчанию
+    # cache-read-only для остальных веток), ручной запуск с другой ветки лишь читает
     - uses: gradle/actions/setup-gradle@v4
       with:
         # Неиспользуемые файлы кэша удаляются перед сохранением: кэш не копится до лимита GitHub
