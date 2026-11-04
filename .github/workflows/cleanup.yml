@@ -27,8 +27,6 @@ jobs:
     concurrency:
       group: cleanup
       cancel-in-progress: false
-    env:
-      PUBLIC_NOTES: ${{ runner.temp }}/notes.txt
     steps:
       - uses: actions/checkout@v4
         with:
@@ -39,16 +37,18 @@ jobs:
         continue-on-error: true
         env:
           CLEANUP_TOKEN: ${{ secrets.CLEANUP_TOKEN }}
+          PUBLIC_NOTES: ${{ runner.temp }}/artifacts.txt
         run: |
           code=0
           bash ci/quiet.sh cleanup-artifacts python3 ci/cleanup.py artifacts || code=$?
-          cat "$PUBLIC_NOTES" 2>/dev/null || true; rm -f "$PUBLIC_NOTES"
+          cat "$PUBLIC_NOTES" 2>/dev/null || true
           exit $code
       - name: Old server images
         id: images
         continue-on-error: true
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          PUBLIC_NOTES: ${{ runner.temp }}/images.txt
         run: |
           code=0
           bash ci/quiet.sh cleanup-images python3 ci/cleanup.py images || code=$?
