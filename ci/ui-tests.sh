@@ -8,8 +8,8 @@ set -euo pipefail
 
 adb install -r ui-apks/app.apk
 adb install -r ui-apks/app-androidTest.apk
-# Снимки ключевых экранов - только по запуску с shots: релиз их не делает
-if [[ ${SHOTS:-false} == true ]]; then only=(); else only=(-e notClass com.sperance.exileforge.ui.KeyScreensShotTest); fi
+# Снимки ключевых экранов и картинки магазина - только по запуску с shots: релиз их не делает
+if [[ ${SHOTS:-false} == true ]]; then only=(); else only=(-e notClass com.sperance.exileforge.ui.KeyScreensShotTest,com.sperance.exileforge.ui.StoreShotsTest); fi
 adb shell am instrument -w "${only[@]}" com.sperance.exileforge.test/androidx.test.runner.AndroidJUnitRunner | tee ui-results.txt
 python3 -c "import pathlib,re; text=pathlib.Path('ui-results.txt').read_text(); assert re.search(r'OK \(\d+ tests?\)', text), text"
 adb pull /sdcard/Android/data/com.sperance.exileforge/files/design design-preview
