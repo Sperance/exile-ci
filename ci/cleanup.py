@@ -14,6 +14,7 @@ import re
 import sys
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
 from store_common import fail, say
@@ -24,6 +25,8 @@ PACKAGE = "/users/Sperance/packages/container/ktor-bestgame"
 SERVER_KEEP = 5
 DRAFT_AGE = timedelta(days=1)
 SHA_TAG = re.compile(r"^(build-)?[0-9a-f]{40}$")
+# Удаления параллельно: по одному тысячи старых артефактов не укладывались в срок шага
+WORKERS = 8
 
 
 class GitHub:
@@ -58,6 +61,11 @@ class GitHub:
     def delete(self, path):
         return self.request("DELETE", path)[0]
 
+    def delete_all(self, paths):
+        """Коды ответов на удаление каждого пути; 204 - удалено, 404 - уже нет (прерванный прежний прогон)."""
+        with ThreadPoolExecutor(WORKERS) as pool:
+            return list(pool.map(self.delete, paths))
+
 
 def clean_artifacts():
     token = os.environ.get("CLEANUP_TOKEN", "").strip()
@@ -69,7 +77,7 @@ def clean_artifacts():
         name = repo.split("/")[1]
         artifacts = [a for a in github.pages(f"/repos/{repo}/actions/artifacts", "artifacts") if not a["expired"]]
         size = sum(a["size_in_bytes"] for a in artifacts)
-        failed = [code for code in (github.delete(f"/repos/{repo}/actions/artifacts/{a['id']}") for a in artifacts) if code != 204]
+        failed = [code for code in github.delete_all(f"/repos/{repo}/actions/artifacts/{a['id']}" for a in artifacts) if code not in (204, 404)]
         say(f"{name}: {len(artifacts) - len(failed)} of {len(artifacts)} artifacts deleted, {size / 2**20:.0f} MB")
         if failed:
             fail(f"{name}: {len(failed)} deletions refused (codes {sorted(set(failed))}) - CLEANUP_TOKEN needs Actions: Read and write")
@@ -97,7 +105,7 @@ def clean_images():
     github = GitHub(os.environ["GITHUB_TOKEN"])
     versions = list(github.pages(f"{PACKAGE}/versions"))
     doomed = doomed_versions(versions, datetime.now(timezone.utc))
-    failed = [code for code in (github.delete(f"{PACKAGE}/versions/{v['id']}") for v in doomed) if code != 204]
+    failed = [code for code in github.delete_all(f"{PACKAGE}/versions/{v['id']}" for v in doomed) if code not in (204, 404)]
     say(f"server images: {len(doomed) - len(failed)} of {len(doomed)} old versions deleted, {len(versions) - len(doomed) + len(failed)} kept")
     if failed:
         fail(f"server images: {len(failed)} deletions refused (codes {sorted(set(failed))}) - "

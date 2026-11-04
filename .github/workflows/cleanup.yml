@@ -23,7 +23,7 @@ env:
 jobs:
   cleanup:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 75
     concurrency:
       group: cleanup
       cancel-in-progress: false
@@ -31,10 +31,11 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      # Шаги независимы: отказ одного не мешает другому, прогон красный, если упал любой
+      # Шаги независимы: отказ или срок одного не мешает другому, прогон красный, если упал любой
       - name: Artifacts of the private repositories
         id: artifacts
         continue-on-error: true
+        timeout-minutes: 60
         env:
           CLEANUP_TOKEN: ${{ secrets.CLEANUP_TOKEN }}
           PUBLIC_NOTES: ${{ runner.temp }}/artifacts.txt
@@ -46,6 +47,7 @@ jobs:
       - name: Old server images
         id: images
         continue-on-error: true
+        timeout-minutes: 10
         env:
           GITHUB_TOKEN: ${{ github.token }}
           PUBLIC_NOTES: ${{ runner.temp }}/images.txt
