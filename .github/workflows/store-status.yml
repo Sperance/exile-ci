@@ -7,7 +7,7 @@
 # Журнал публичен: скрипты идут через ci/quiet.sh, в журнал - короткие строки (канал, версия, доля), подробности падения - в
 # зашифрованном артефакте (ключ LOG_KEY).
 # Секреты: RELEASE_STATUS_TOKEN, PLAY_SERVICE_ACCOUNT_JSON, RUSTORE_KEY_ID, RUSTORE_PRIVATE_KEY, EXILEFORGE_TOKEN (проверка падений),
-# LOG_KEY. Переменная: SERVER_URL (адрес сервера с https://, без слеша в конце).
+# LOG_KEY. Переменные: SERVER_URL (адрес сервера с https://, без слеша в конце), PLAY_TRACK (дорожка Play, ci/play.py).
 name: Store status
 
 on:
@@ -32,6 +32,7 @@ jobs:
       SERVER_URL: ${{ vars.SERVER_URL }}
       RELEASE_STATUS_TOKEN: ${{ secrets.RELEASE_STATUS_TOKEN }}
       PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+      PLAY_TRACK: ${{ vars.PLAY_TRACK }}
       RUSTORE_KEY_ID: ${{ secrets.RUSTORE_KEY_ID }}
       RUSTORE_PRIVATE_KEY: ${{ secrets.RUSTORE_PRIVATE_KEY }}
       EXILEFORGE_TOKEN: ${{ secrets.EXILEFORGE_TOKEN }}

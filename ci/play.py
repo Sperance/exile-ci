@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Google Play Developer API: выкладка AAB в production долей 20% и чтение состояния дорожки (ci/store-status.py).
+"""Google Play Developer API: выкладка AAB на дорожку PLAY_TRACK и чтение её состояния (ci/store-status.py).
+
+Дорожка - переменная репозитория PLAY_TRACK: alpha - закрытый тест (по умолчанию: новому личному аккаунту Play сначала нужен он),
+beta - открытый тест («Ранний доступ» в Play), production - выпуск долей 20% с доводкой до 100% (ci/store-status.py), internal -
+внутренний тест. На тестовых дорожках выпуск сразу целиком: доли там нет.
 
 Учётная запись - сервисный аккаунт из секрета PLAY_SERVICE_ACCOUNT_JSON (его значение нигде не печатается). Нужен пакет google-auth
 (.github/actions/store-tools). Пакет приложения - APP_ID из ci/build-tasks.env. Весь вывод скрипта перехватывает ci/quiet.sh.
@@ -18,7 +22,9 @@ from store_common import fail, load_update, say, short_notes
 API = "https://androidpublisher.googleapis.com/androidpublisher/v3/applications"
 UPLOAD = "https://androidpublisher.googleapis.com/upload/androidpublisher/v3/applications"
 SCOPE = "https://www.googleapis.com/auth/androidpublisher"
-TRACK = "production"
+TRACKS = ("internal", "alpha", "beta", "production")
+TRACK = os.environ.get("PLAY_TRACK", "").strip() or "alpha"
+STAGED = TRACK == "production"
 NOTES_LIMIT = 500
 START_FRACTION = 0.2
 
@@ -57,8 +63,8 @@ class Play:
         # Коммит закрывает правку: последующее удаление в edit() вернёт 404 и ничего не испортит
         self._check(self.http.post(f"{API}/{self.package}/edits/{edit_id}:commit"), "edit commit")
 
-    def production(self):
-        """Самый новый выпуск дорожки production (по наибольшему versionCode) или None."""
+    def newest(self):
+        """Самый новый выпуск дорожки TRACK (по наибольшему versionCode) или None."""
         with self.edit() as edit_id:
             response = self.http.get(f"{API}/{self.package}/edits/{edit_id}/tracks/{TRACK}")
             if response.status_code == 404:
@@ -89,16 +95,16 @@ class Play:
         self._check(response, "track update")
 
     def release(self, aab, version_code, version_name, notes):
-        """Загрузить пакет и открыть выпуск в production долей START_FRACTION."""
-        release = {"name": version_name, "versionCodes": [str(version_code)], "status": "inProgress", "userFraction": START_FRACTION,
-                   "releaseNotes": [{"language": "ru-RU", "text": short_notes(notes, NOTES_LIMIT)}]}
+        """Загрузить пакет и открыть выпуск на дорожке TRACK: в production - долей START_FRACTION, на тестовой - сразу целиком."""
+        release = {"name": version_name, "versionCodes": [str(version_code)], "releaseNotes": [{"language": "ru-RU", "text": short_notes(notes, NOTES_LIMIT)}]}
+        release.update({"status": "inProgress", "userFraction": START_FRACTION} if STAGED else {"status": "completed"})
         with self.edit() as edit_id:
             self._upload_bundle(edit_id, aab, version_code)
             self._set_track(edit_id, release)
             self._commit(edit_id)
 
     def promote(self, release):
-        """Довести выпуск (как его вернул [production]) до 100%: статус completed, доли нет, заметки прежние."""
+        """Довести выпуск (как его вернул [newest]) до 100%: статус completed, доли нет, заметки прежние."""
         done = {key: value for key, value in release.items() if key != "userFraction"}
         done["status"] = "completed"
         with self.edit() as edit_id:
@@ -111,9 +117,12 @@ def main():
     if len(sys.argv) != 4 or sys.argv[1] != "upload":
         fail("usage: play.py upload <bundle.aab> <update.json>")
     aab, update = sys.argv[2], load_update(sys.argv[3])
+    if TRACK not in TRACKS:
+        fail(f"PLAY_TRACK must be one of {', '.join(TRACKS)}")
     play = Play(os.environ["PLAY_SERVICE_ACCOUNT_JSON"], os.environ["APP_ID"])
     play.release(aab, update["versionCode"], update["versionName"], update.get("notes", ""))
-    say(f"Play: {update['versionName']} ({update['versionCode']}) sent to {TRACK} at {int(START_FRACTION * 100)}%")
+    share = f"at {int(START_FRACTION * 100)}%" if STAGED else "in full"
+    say(f"Play: {update['versionName']} ({update['versionCode']}) sent to {TRACK} {share}")
 
 
 if __name__ == "__main__":

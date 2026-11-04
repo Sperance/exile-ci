@@ -99,13 +99,13 @@ def crash_count(since_ms):
 
 
 def report_play(catalog):
-    from play import Play
+    from play import TRACK, Play
 
     play = Play(os.environ["PLAY_SERVICE_ACCOUNT_JSON"], os.environ["APP_ID"])
-    release = play.production()
+    release = play.newest()
     if release is None:
         post_report("PLAY", True)
-        say("PLAY: no release in production yet")
+        say(f"PLAY: no release on the {TRACK} track yet")
         return
     code = max(int(c) for c in release["versionCodes"])
     status = release.get("status", "")

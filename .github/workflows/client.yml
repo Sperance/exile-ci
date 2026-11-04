@@ -11,7 +11,8 @@
 # RELEASE_NOTES.md (их читает игра, Updates.kt); карта R8 mapping.txt - только в релиз того же тега приватного ExileForge
 # (её качает сервер, ReleaseMappings). Затем Issues, что называют коммиты релиза «Closes #N», закрываются, и запускается
 # деплой сервера (server.yml, режим deploy).
-# Каналы: прямой APK (релиз здесь), Google Play (AAB, production долей 20%, job `publish-play`) и RuStore (APK с автопубликацией, job
+# Каналы: прямой APK (релиз здесь), Google Play (AAB на дорожку переменной PLAY_TRACK: alpha - закрытый тест, beta - ранний доступ,
+# production - долей 20%; job `publish-play`) и RuStore (APK с автопубликацией, job
 # `publish-rustore`); задачи сборки и пути результатов - ci/build-tasks.env. Загрузка в магазин идёт после релиза и только если в
 # репозитории есть ключи магазина, иначе job зелёный без дела. Состояние каналов опрашивает store-status.yml; прямой канал
 # отчётом серверу объявляет сам `release` (переменная SERVER_URL, секрет RELEASE_STATUS_TOKEN).
@@ -616,6 +617,7 @@ jobs:
       cancel-in-progress: false
     env:
       PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+      PLAY_TRACK: ${{ vars.PLAY_TRACK }}
       TAG: ${{ needs.release.outputs.tag }}
     steps:
       - id: gate
