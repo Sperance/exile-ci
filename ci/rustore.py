@@ -67,6 +67,10 @@ class RuStore:
             data = {}
         if response.status_code >= 300 or data.get("code") != "OK":
             print(response.text)
+            # Причина отказа магазина - его же короткий текст (без данных игры): видна в публичном журнале без расшифровки
+            reason = str(data.get("message") or "")[:200] if isinstance(data, dict) else ""
+            if reason:
+                say(f"::error::RuStore {what}: {reason}")
             raise RuStoreError(f"{what}: HTTP {response.status_code}")
         return data.get("body")
 
@@ -95,14 +99,25 @@ class RuStore:
         # Черновик не правится, только удаляется: брошенный прошлым прогоном уходит перед новым
         for draft in (v for v in existing if str(v.get("versionStatus", "")).upper() == "DRAFT"):
             self._body(self.http.delete(self._app(f"/{draft['versionId']}"), timeout=60), "draft delete")
-        version_id = self._body(self.http.post(self._app(), json={"whatsNew": short_notes(notes, NOTES_LIMIT), "publishType": "INSTANTLY"},
-                                               timeout=60), "draft create")
+        draft = {"whatsNew": short_notes(notes, NOTES_LIMIT), "publishType": "INSTANTLY"}
+        contacts = developer_contacts()
+        if contacts:
+            draft["developerContacts"] = contacts
+        version_id = self._body(self.http.post(self._app(), json=draft, timeout=60), "draft create")
         with open(apk, "rb") as file:
             self._body(self.http.post(self._app(f"/{version_id}/apk"), params={"isMainApk": "true", "servicesType": "Unknown"},
                                       files={"file": (os.path.basename(apk), file, "application/vnd.android.package-archive")},
                                       timeout=1800), "apk upload")
         priority = MANDATORY_PRIORITY if mandatory else 0
         self._body(self.http.post(self._app(f"/{version_id}/commit"), params={"priorityUpdate": priority}, timeout=60), "commit")
+
+
+def developer_contacts():
+    """Контакты разработчика для карточки RuStore из переменных репозитория (RUSTORE_CONTACT_EMAIL обязателен для магазина,
+    сайт и сообщество ВКонтакте - по желанию); пусто - поле не шлётся, магазин берёт заполненные в консоли."""
+    fields = {"email": "RUSTORE_CONTACT_EMAIL", "website": "RUSTORE_CONTACT_WEBSITE", "vkCommunity": "RUSTORE_CONTACT_VK"}
+    contacts = {key: os.environ.get(name, "").strip() for key, name in fields.items()}
+    return {key: value for key, value in contacts.items() if value}
 
 
 def main():

@@ -18,7 +18,9 @@
 # отчётом серверу объявляет сам `release` (переменная SERVER_URL, секрет RELEASE_STATUS_TOKEN).
 # Секреты: SOURCE_TOKEN, EXILEFORGE_TOKEN (Contents и Issues: write на ExileForge), LOG_KEY, RELEASE_KEYSTORE,
 # RELEASE_KEYSTORE_PASSWORD, RELEASE_KEY_ALIAS, RELEASE_KEY_PASSWORD; магазины: PLAY_SERVICE_ACCOUNT_JSON, RUSTORE_KEY_ID,
-# RUSTORE_PRIVATE_KEY; RELEASE_STATUS_TOKEN.
+# RUSTORE_PRIVATE_KEY; RELEASE_STATUS_TOKEN. Переменные: RUSTORE_CONTACT_EMAIL, RUSTORE_CONTACT_WEBSITE, RUSTORE_CONTACT_VK -
+# контакты разработчика карточки RuStore (без email магазин может отказать в черновике).
+# Ручной режим stores - заново собрать и выложить в Google Play и RuStore уже выпущенную версию (без проверок и релиза здесь).
 name: Client
 
 on:
@@ -27,9 +29,9 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'push - checks and release of a new version; shots - emulator UI tests and key screen shots, no release'
+        description: 'push - checks and release of a new version; shots - emulator UI tests and key screen shots, no release; stores - publish the already released version to Google Play and RuStore again'
         type: choice
-        options: [ push, shots ]
+        options: [ push, shots, stores ]
         default: push
       sha:
         description: 'Client commit (empty - head of the working branch)'
@@ -59,6 +61,8 @@ jobs:
       app: ${{ steps.diff.outputs.app }}
       release: ${{ steps.release.outputs.pending }}
       shots: ${{ steps.target.outputs.mode == 'shots' }}
+      stores: ${{ steps.release.outputs.stores }}
+      tag: ${{ steps.release.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -72,7 +76,7 @@ jobs:
           INPUT_MODE: ${{ inputs.mode }}
           INPUT_SHA: ${{ inputs.sha }}
           TOKEN: ${{ secrets.SOURCE_TOKEN }}
-        run: . ci/branches.env && bash ci/resolve.sh "$CLIENT_REPO" "$CLIENT_BRANCH" client push shots
+        run: . ci/branches.env && bash ci/resolve.sh "$CLIENT_REPO" "$CLIENT_BRANCH" client push shots stores
       - uses: actions/checkout@v4
         with:
           repository: ${{ env.CLIENT_REPO }}
@@ -110,13 +114,19 @@ jobs:
         run: |
           version=$(sed -n 's/.*versionName = "\(.*\)".*/\1/p' app/build.gradle.kts | head -1)
           if [ "$MODE" = push ] && ! gh release view "v$version" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then pending=true; else pending=false; fi
-          echo "pending=$pending" >> "$GITHUB_OUTPUT"
-          echo "v$version: release pending=$pending"
+          # Режим stores: версия уже выпущена здесь - заново собираются и выкладываются только сборки магазинов
+          stores=false
+          if [ "$MODE" = stores ]; then
+            gh release view "v$version" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 || { echo "::error::v$version is not released yet: stores mode publishes only a released version"; exit 1; }
+            stores=true
+          fi
+          { echo "pending=$pending"; echo "stores=$stores"; echo "tag=v$version"; } >> "$GITHUB_OUTPUT"
+          echo "v$version: release pending=$pending, stores=$stores"
 
   core:
     needs: changes
     # Перед релизом - всегда (TEST-01): релиз не выходит без словарей и тестов core
-    if: ${{ needs.changes.outputs.core == 'true' || needs.changes.outputs.app == 'true' || needs.changes.outputs.release == 'true' }}
+    if: ${{ needs.changes.outputs.stores != 'true' && (needs.changes.outputs.core == 'true' || needs.changes.outputs.app == 'true' || needs.changes.outputs.release == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     concurrency:
@@ -140,7 +150,7 @@ jobs:
   app:
     needs: changes
     # При правке app, перед релизом и по ручному запуску; правка только core или сервера сторожей app не трогает
-    if: ${{ needs.changes.outputs.app == 'true' || needs.changes.outputs.release == 'true' }}
+    if: ${{ needs.changes.outputs.stores != 'true' && (needs.changes.outputs.app == 'true' || needs.changes.outputs.release == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     concurrency:
@@ -280,7 +290,7 @@ jobs:
   # зашифрованным артефактом; в Play его кладёт job `publish-play` (или вручную: `ci/seal.sh -d`, Play Console).
   release-aab:
     needs: changes
-    if: ${{ needs.changes.outputs.release == 'true' }}
+    if: ${{ needs.changes.outputs.release == 'true' || needs.changes.outputs.stores == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     concurrency:
@@ -322,7 +332,7 @@ jobs:
   # магазин его кладёт job `publish-rustore`.
   release-rustore:
     needs: changes
-    if: ${{ needs.changes.outputs.release == 'true' }}
+    if: ${{ needs.changes.outputs.release == 'true' || needs.changes.outputs.stores == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     concurrency:
@@ -451,7 +461,7 @@ jobs:
   client-server:
     needs: changes
     # Контракт зависит от core и закреплённого сервера; перед релизом - всегда
-    if: ${{ needs.changes.outputs.core == 'true' || needs.changes.outputs.release == 'true' }}
+    if: ${{ needs.changes.outputs.stores != 'true' && (needs.changes.outputs.core == 'true' || needs.changes.outputs.release == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
     concurrency:
@@ -608,8 +618,8 @@ jobs:
   # перезапуском упавшего job'а: пакеты лежат в артефактах прогона, повторная загрузка той же версии безопасна. Заметки магазинов и
   # обязательность (приоритет обновления 5) - из update.json релиза (RELEASE_NOTES.md без заголовка).
   publish-play:
-    needs: [ release, release-aab ]
-    if: ${{ !cancelled() && needs.release.result == 'success' && needs.release-aab.result == 'success' }}
+    needs: [ changes, release, release-aab ]
+    if: ${{ !cancelled() && (needs.release.result == 'success' || needs.changes.outputs.stores == 'true') && needs.release-aab.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 75
     permissions:
@@ -620,7 +630,7 @@ jobs:
     env:
       PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
       PLAY_TRACK: ${{ vars.PLAY_TRACK }}
-      TAG: ${{ needs.release.outputs.tag }}
+      TAG: ${{ needs.release.outputs.tag || needs.changes.outputs.tag }}
       SERVER_URL: ${{ vars.SERVER_URL }}
     steps:
       - id: gate
@@ -662,8 +672,8 @@ jobs:
           name: publish-play-log
 
   publish-rustore:
-    needs: [ release, release-rustore ]
-    if: ${{ !cancelled() && needs.release.result == 'success' && needs.release-rustore.result == 'success' }}
+    needs: [ changes, release, release-rustore ]
+    if: ${{ !cancelled() && (needs.release.result == 'success' || needs.changes.outputs.stores == 'true') && needs.release-rustore.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 75
     permissions:
@@ -674,7 +684,10 @@ jobs:
     env:
       RUSTORE_KEY_ID: ${{ secrets.RUSTORE_KEY_ID }}
       RUSTORE_PRIVATE_KEY: ${{ secrets.RUSTORE_PRIVATE_KEY }}
-      TAG: ${{ needs.release.outputs.tag }}
+      TAG: ${{ needs.release.outputs.tag || needs.changes.outputs.tag }}
+      RUSTORE_CONTACT_EMAIL: ${{ vars.RUSTORE_CONTACT_EMAIL }}
+      RUSTORE_CONTACT_WEBSITE: ${{ vars.RUSTORE_CONTACT_WEBSITE }}
+      RUSTORE_CONTACT_VK: ${{ vars.RUSTORE_CONTACT_VK }}
       SERVER_URL: ${{ vars.SERVER_URL }}
     steps:
       - id: gate
