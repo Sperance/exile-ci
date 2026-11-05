@@ -6,7 +6,8 @@
 # Запуск:
 #   repository_dispatch client-push - пуш в рабочую ветку клиента (job `forward` в android.yml ExileForge): sha и before;
 #   workflow_dispatch               - вручную: push - как пуш (все проверки, релиз новой версии); shots - UI-тесты на эмуляторе
-#                                     и снимки ключевых экранов (KeyScreensShotTest), без релиза.
+#                                     и снимки ключевых экранов (KeyScreensShotTest), без релиза; stores - заново выложить выпущенную версию
+#                                     в магазины; cache - только архивы для облачных сессий агента (job `gradle-cache`).
 # Релиз: versionName без релиза в exile-ci после зелёных проверок - тег v<versionName> здесь с APK, update.json и заметками
 # RELEASE_NOTES.md (их читает игра, Updates.kt); карта R8 mapping.txt - только в релиз того же тега приватного ExileForge
 # (её качает сервер, ReleaseMappings). Затем Issues, что называют коммиты релиза «Closes #N», закрываются, и запускается
@@ -14,13 +15,15 @@
 # Каналы: прямой APK (релиз здесь), Google Play (AAB на дорожку переменной PLAY_TRACK: alpha - закрытый тест, beta - ранний доступ,
 # production - долей 20%; job `publish-play`) и RuStore (APK с автопубликацией, job
 # `publish-rustore`); задачи сборки и пути результатов - ci/build-tasks.env. Загрузка в магазин идёт после релиза, дождавшись сервера на
-# ревизии релиза, и только если в репозитории есть ключи магазина, иначе job зелёный без дела. Состояние каналов опрашивает store-status.yml; прямой канал
+# ревизии релиза, и только если в репозитории есть ключи магазина, иначе job зелёный без дела. Состояние каналов опрашивает maintenance.yml (задача store-status); прямой канал
 # отчётом серверу объявляет сам `release` (переменная SERVER_URL, секрет RELEASE_STATUS_TOKEN).
 # Секреты: SOURCE_TOKEN, EXILEFORGE_TOKEN (Contents и Issues: write на ExileForge), LOG_KEY, RELEASE_KEYSTORE,
 # RELEASE_KEYSTORE_PASSWORD, RELEASE_KEY_ALIAS, RELEASE_KEY_PASSWORD; магазины: PLAY_SERVICE_ACCOUNT_JSON, RUSTORE_KEY_ID,
 # RUSTORE_PRIVATE_KEY; RELEASE_STATUS_TOKEN. Переменные: RUSTORE_CONTACT_EMAIL, RUSTORE_CONTACT_WEBSITE, RUSTORE_CONTACT_VK -
 # контакты разработчика карточки RuStore (без email магазин может отказать в черновике).
 # Ручной режим stores - заново собрать и выложить в Google Play и RuStore уже выпущенную версию (без проверок и релиза здесь).
+# Архивы для облачных сессий агента (job'ы `gradle-cache` и `gradle-toolchain`, в конце файла) пересобираются после каждого
+# релиза версии в этом прогоне и вручную (режим cache).
 name: Client
 
 on:
@@ -29,9 +32,9 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'push - checks and release of a new version; shots - emulator UI tests and key screen shots, no release; stores - publish the already released version to Google Play and RuStore again'
+        description: 'push - checks and release of a new version; shots - emulator UI tests and key screen shots, no release; stores - publish the already released version to Google Play and RuStore again; cache - only rebuild the agent session archives (gradle-cache release of ExileForge)'
         type: choice
-        options: [ push, shots, stores ]
+        options: [ push, shots, stores, cache ]
         default: push
       sha:
         description: 'Client commit (empty - head of the working branch)'
@@ -62,6 +65,7 @@ jobs:
       release: ${{ steps.release.outputs.pending }}
       shots: ${{ steps.target.outputs.mode == 'shots' }}
       stores: ${{ steps.release.outputs.stores }}
+      cache: ${{ steps.target.outputs.mode == 'cache' }}
       tag: ${{ steps.release.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
@@ -76,7 +80,7 @@ jobs:
           INPUT_MODE: ${{ inputs.mode }}
           INPUT_SHA: ${{ inputs.sha }}
           TOKEN: ${{ secrets.SOURCE_TOKEN }}
-        run: . ci/branches.env && bash ci/resolve.sh "$CLIENT_REPO" "$CLIENT_BRANCH" client push shots stores
+        run: . ci/branches.env && bash ci/resolve.sh "$CLIENT_REPO" "$CLIENT_BRANCH" client push shots stores cache
       - uses: actions/checkout@v4
         with:
           repository: ${{ env.CLIENT_REPO }}
@@ -126,7 +130,7 @@ jobs:
   core:
     needs: changes
     # Перед релизом - всегда (TEST-01): релиз не выходит без словарей и тестов core
-    if: ${{ needs.changes.outputs.stores != 'true' && (needs.changes.outputs.core == 'true' || needs.changes.outputs.app == 'true' || needs.changes.outputs.release == 'true') }}
+    if: ${{ needs.changes.outputs.stores != 'true' && needs.changes.outputs.cache != 'true' && (needs.changes.outputs.core == 'true' || needs.changes.outputs.app == 'true' || needs.changes.outputs.release == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     concurrency:
@@ -150,7 +154,7 @@ jobs:
   app:
     needs: changes
     # При правке app, перед релизом и по ручному запуску; правка только core или сервера сторожей app не трогает
-    if: ${{ needs.changes.outputs.stores != 'true' && (needs.changes.outputs.app == 'true' || needs.changes.outputs.release == 'true') }}
+    if: ${{ needs.changes.outputs.stores != 'true' && needs.changes.outputs.cache != 'true' && (needs.changes.outputs.app == 'true' || needs.changes.outputs.release == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     concurrency:
@@ -461,7 +465,7 @@ jobs:
   client-server:
     needs: changes
     # Контракт зависит от core и закреплённого сервера; перед релизом - всегда
-    if: ${{ needs.changes.outputs.stores != 'true' && (needs.changes.outputs.core == 'true' || needs.changes.outputs.release == 'true') }}
+    if: ${{ needs.changes.outputs.stores != 'true' && needs.changes.outputs.cache != 'true' && (needs.changes.outputs.core == 'true' || needs.changes.outputs.release == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
     concurrency:
@@ -593,7 +597,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: gh workflow run server.yml -R "$GITHUB_REPOSITORY" --ref main -f mode=deploy
       # Прямой канал сервер узнаёт отчётом: релиз GitHub вышел, доля 1.0. Новый деплой сервера (шаг выше) ещё идёт, поэтому отчёт
-      # может не дойти (маршрута нет у прежнего сервера) - это предупреждение, отчёт повторит почасовой store-status.yml.
+      # может не дойти (маршрута нет у прежнего сервера) - это предупреждение, отчёт повторит почасовая задача store-status в maintenance.yml.
       - if: steps.version.outputs.exists == 'false'
         name: Report the direct channel to the server
         continue-on-error: true
@@ -727,3 +731,167 @@ jobs:
         uses: ./.github/actions/upload-log
         with:
           name: publish-rustore-log
+
+  # Архивы для облачных сессий агента - prerelease `gradle-cache` приватного ExileForge (не latest: игра, update.json и релизы
+  # версий его не видят); сессия распаковывает их хуками .claude/hooks/gradle-cache.sh и toolchain.sh клиента:
+  #   gradle-cache-<ключ>  зависимости (caches/modules-2) и дистрибутивы (wrapper/dists) клиента и закреплённого в нём сервера;
+  #                        пересобирается, только когда меняется ключ - хэш файлов сборки клиента и сервера (имя файла архива);
+  #   build-cache-<ключ>   кэш сборки Gradle (caches/build-cache-1): результаты задач, чтобы неизменные модули не компилировались
+  #                        заново; обновляется после каждого релиза версии и в ручном режиме cache, только из запусков на main;
+  #   toolchain-<ключ>     JDK, Android SDK и kotlin-language-server (job gradle-toolchain); ключ - хэш toolchain.env клиента,
+  #                        пересобирается, только когда меняется файл; версии и раскладку задаёт .claude/hooks/toolchain.sh.
+  # Старые архивы своего вида удаляются после загрузки нового. Проверки здесь лишь наполняют кэш: их падение архив не
+  # останавливает (ворота - core, app и client-server). Секреты: SOURCE_TOKEN (чтение кода), EXILEFORGE_TOKEN (релиз ExileForge).
+  gradle-cache:
+    needs: [ changes, release ]
+    # Только после релиза версии в этом прогоне и по ручному режиму cache (тогда release пропущен)
+    if: ${{ !cancelled() && (needs.release.result == 'success' || needs.changes.outputs.cache == 'true') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    concurrency:
+      group: gradle-cache
+      cancel-in-progress: false
+    env:
+      TAG: gradle-cache
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/source
+        with:
+          sha: ${{ needs.changes.outputs.sha }}
+          token: ${{ secrets.SOURCE_TOKEN }}
+      - name: Cache key
+        id: key
+        env:
+          GH_TOKEN: ${{ secrets.EXILEFORGE_TOKEN }}
+        run: |
+          key=$(for d in src src/backend; do git -C "$d" ls-files -z -- '*.gradle.kts' 'gradle.properties' 'gradle/*' | (cd "$d" && xargs -0 sha256sum); done | sha256sum | cut -c1-16)
+          asset="gradle-cache-$key.tar.gz"
+          have=$(gh release view "$TAG" -R "$CLIENT_REPO" --json assets -q '.assets[].name' 2>/dev/null || true)
+          if grep -qx "$asset" <<<"$have"; then fresh=true; else fresh=false; fi
+          if [ "$GITHUB_REF" = refs/heads/main ]; then
+            build=true
+          else
+            build=false
+          fi
+          echo "asset=$asset" >> "$GITHUB_OUTPUT"
+          echo "build_asset=build-cache-$key.tar.gz" >> "$GITHUB_OUTPUT"
+          echo "fresh=$fresh" >> "$GITHUB_OUTPUT"
+          echo "build=$build" >> "$GITHUB_OUTPUT"
+          echo "fill=$([ "$fresh" = false ] || [ "$build" = true ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "fresh=$fresh build=$build"
+      - name: Fill the client cache
+        if: steps.key.outputs.fill == 'true'
+        working-directory: src
+        run: bash ../ci/quiet.sh gradle-cache-client bash scripts/check.sh all --all-variants || true
+      - name: Fill the server cache
+        if: steps.key.outputs.fill == 'true'
+        working-directory: src/backend
+        run: bash ../../ci/quiet.sh gradle-cache-server bash scripts/check.sh all || true
+      - name: Stop Gradle
+        if: steps.key.outputs.fill == 'true'
+        run: (cd src && ./gradlew --stop >/dev/null 2>&1 || true)
+      - name: Publish the dependency archive
+        if: steps.key.outputs.fresh == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.EXILEFORGE_TOKEN }}
+          ASSET: ${{ steps.key.outputs.asset }}
+          SHA: ${{ needs.changes.outputs.sha }}
+        run: |
+          tar -C "$HOME/.gradle" --exclude='*.lock' --exclude='gc.properties' -czf "$ASSET" caches/modules-2 wrapper/dists
+          echo "archive: $(du -h "$ASSET" | cut -f1)"
+          if ! gh release view "$TAG" -R "$CLIENT_REPO" >/dev/null 2>&1; then
+            gh release create "$TAG" -R "$CLIENT_REPO" --target "$SHA" --prerelease --latest=false --title "Gradle cache" \
+              --notes "Gradle dependencies for cloud agent sessions (exile-ci client.yml, job gradle-cache). Not a game release."
+          fi
+          gh release upload "$TAG" "$ASSET" -R "$CLIENT_REPO" --clobber
+          gh release view "$TAG" -R "$CLIENT_REPO" --json assets -q '.assets[].name' | grep '^gradle-cache-' | grep -vx "$ASSET" | while read -r old; do
+            gh release delete-asset "$TAG" "$old" -R "$CLIENT_REPO" -y
+          done
+      - name: Publish the build cache archive
+        if: steps.key.outputs.build == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.EXILEFORGE_TOKEN }}
+          ASSET: ${{ steps.key.outputs.build_asset }}
+          SHA: ${{ needs.changes.outputs.sha }}
+        run: |
+          if [ ! -d "$HOME/.gradle/caches/build-cache-1" ]; then
+            echo "no build cache produced, archive skipped"
+            exit 0
+          fi
+          tar -C "$HOME/.gradle" --exclude='*.lock' --exclude='gc.properties' -czf "$ASSET" caches/build-cache-1
+          echo "archive: $(du -h "$ASSET" | cut -f1)"
+          if ! gh release view "$TAG" -R "$CLIENT_REPO" >/dev/null 2>&1; then
+            gh release create "$TAG" -R "$CLIENT_REPO" --target "$SHA" --prerelease --latest=false --title "Gradle cache" \
+              --notes "Gradle dependencies for cloud agent sessions (exile-ci client.yml, job gradle-cache). Not a game release."
+          fi
+          gh release upload "$TAG" "$ASSET" -R "$CLIENT_REPO" --clobber
+          gh release view "$TAG" -R "$CLIENT_REPO" --json assets -q '.assets[].name' | grep '^build-cache-' | grep -vx "$ASSET" | while read -r old; do
+            gh release delete-asset "$TAG" "$old" -R "$CLIENT_REPO" -y
+          done
+      - if: failure()
+        uses: ./.github/actions/upload-log
+        with:
+          name: gradle-cache-log
+
+  # JDK, Android SDK и kotlin-language-server по toolchain.env клиента; ставит их тот же .claude/hooks/toolchain.sh, что и сессия
+  # при отсутствии архива, поэтому раскладка и версии совпадают. После job'а gradle-cache: релиз к этому времени уже создан.
+  gradle-toolchain:
+    needs: [ changes, gradle-cache ]
+    if: ${{ !cancelled() && needs.gradle-cache.result != 'skipped' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    concurrency:
+      group: gradle-cache
+      cancel-in-progress: false
+    env:
+      TAG: gradle-cache
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/source
+        with:
+          sha: ${{ needs.changes.outputs.sha }}
+          token: ${{ secrets.SOURCE_TOKEN }}
+          submodules: 'false'
+          persist-credentials: 'false'
+      - name: Toolchain key
+        id: key
+        working-directory: src
+        env:
+          GH_TOKEN: ${{ secrets.EXILEFORGE_TOKEN }}
+        run: |
+          asset="toolchain-$(bash .claude/hooks/toolchain.sh key).tar.gz"
+          have=$(gh release view "$TAG" -R "$CLIENT_REPO" --json assets -q '.assets[].name' 2>/dev/null || true)
+          if grep -qx "$asset" <<<"$have"; then fresh=true; else fresh=false; fi
+          echo "asset=$asset" >> "$GITHUB_OUTPUT"
+          echo "fresh=$fresh" >> "$GITHUB_OUTPUT"
+          echo "fresh=$fresh"
+      - name: Install the toolchain
+        if: steps.key.outputs.fresh == 'false'
+        working-directory: src
+        run: bash ../ci/quiet.sh toolchain bash .claude/hooks/toolchain.sh install
+      - name: Publish the toolchain archive
+        if: steps.key.outputs.fresh == 'false'
+        working-directory: src
+        env:
+          GH_TOKEN: ${{ secrets.EXILEFORGE_TOKEN }}
+          ASSET: ${{ steps.key.outputs.asset }}
+          SHA: ${{ needs.changes.outputs.sha }}
+        run: |
+          bash .claude/hooks/toolchain.sh pack "$PWD/$ASSET"
+          echo "archive: $(du -h "$ASSET" | cut -f1)"
+          if ! gh release view "$TAG" -R "$CLIENT_REPO" >/dev/null 2>&1; then
+            gh release create "$TAG" -R "$CLIENT_REPO" --target "$SHA" --prerelease --latest=false --title "Gradle cache" \
+              --notes "Gradle dependencies for cloud agent sessions (exile-ci client.yml, job gradle-cache). Not a game release."
+          fi
+          gh release upload "$TAG" "$ASSET" -R "$CLIENT_REPO" --clobber
+          gh release view "$TAG" -R "$CLIENT_REPO" --json assets -q '.assets[].name' | grep '^toolchain-' | grep -vx "$ASSET" | while read -r old; do
+            gh release delete-asset "$TAG" "$old" -R "$CLIENT_REPO" -y
+          done
+      - if: failure()
+        uses: ./.github/actions/upload-log
+        with:
+          name: toolchain-log
