@@ -2,7 +2,10 @@
 # выложенный релиз файл уже не добавить, поэтому архив кладётся при создании релиза. `update.sh art` сервера без ссылки берёт
 # самый новый такой релиз. Картинки приходят папкой `art/<категория>/<КОД>.png|jpg|jpeg|webp` с ветки [ref] этого же
 # репозитория (обычно черновик `wip` поверх `main`); архив - те же пути без `./`, имя `art-<дата UTC>.tar.gz`. Хранятся пять
-# последних релизов архивов.
+# последних релизов архивов. Затем (вход deploy, по умолчанию да) архив сразу ставится на сервер: по SSH-ключу деплоя с
+# принудительной командой уходит строка `art`, и update.sh сервера берёт самый новый релиз art-<дата> (ссылку из сети он
+# не принимает). Ручного шага нет; новое сервер подхватывает за минуту.
+# Секреты (только для deploy): DEPLOY_HOST, DEPLOY_SSH_KEY, LOG_KEY.
 # Запуск только вручную; картинки и так видит каждый игрок, тайного в журнале нет.
 name: Art
 
@@ -13,6 +16,10 @@ on:
         description: 'Branch of this repository whose art/ folder becomes the archive'
         type: string
         default: wip
+      deploy:
+        description: 'Install the archive on the server right after publishing'
+        type: boolean
+        default: true
 
 permissions:
   contents: write
@@ -71,3 +78,25 @@ jobs:
           gh release list -R "$GITHUB_REPOSITORY" --limit 200 --json tagName -q '.[].tagName' | grep -E '^art-[0-9]{8}-[0-9]{6}$' | sort -r \
             | tail -n +$((KEEP + 1)) | while read -r old; do gh release delete "$old" -R "$GITHUB_REPOSITORY" -y || true; done
           echo "published $TAG"
+
+      - name: Install on the server
+        if: ${{ inputs.deploy }}
+        env:
+          HOST: ${{ secrets.DEPLOY_HOST }}
+          KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          LOG_KEY: ${{ secrets.LOG_KEY }}
+        run: |
+          [[ -n $HOST && -n $KEY ]] || { echo '::error::DEPLOY_HOST or DEPLOY_SSH_KEY is not set: install the archive with update.sh art by hand'; exit 1; }
+          install -m 600 /dev/null "$RUNNER_TEMP/key" && printf '%s\n' "$KEY" > "$RUNNER_TEMP/key"
+          # Хост и вывод сервера - не в публичный журнал: ci/quiet.sh печатает только итог, подробности - в зашифрованном журнале
+          code=0
+          bash ci/quiet.sh art-install \
+            ssh -i "$RUNNER_TEMP/key" -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 "root@$HOST" art </dev/null || code=$?
+          rm -f "$RUNNER_TEMP/key"
+          exit $code
+
+      - name: Encrypted log
+        if: failure()
+        uses: ./.github/actions/upload-log
+        with:
+          name: art-log
