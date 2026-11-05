@@ -1,0 +1,67 @@
+# Обслуживание сервера на VPS: только вручную. По SSH-ключу деплоя с принудительной командой уходит одно слово, update.sh
+# сервера принимает только точные команды (rules-md/server/ci-shell.md): status - версия и коммит образа, контейнеры, место,
+# отчёт картинок; logs - последние N строк журнала игры; restart - перезапуск контейнера игры без смены версии.
+# Журнал публичен: хост и весь вывод сервера - только в зашифрованном артефакте `vps-<команда>` (ключ LOG_KEY, 7 дней),
+# в журнал - итог шага. Секреты: DEPLOY_HOST, DEPLOY_SSH_KEY, LOG_KEY.
+name: VPS
+
+on:
+  workflow_dispatch:
+    inputs:
+      command:
+        description: 'Command for update.sh on the server'
+        type: choice
+        options: [ status, logs, restart ]
+        default: status
+      lines:
+        description: 'logs: how many last lines (1-5000)'
+        type: number
+        default: 300
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vps
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Run on the server
+        env:
+          HOST: ${{ secrets.DEPLOY_HOST }}
+          KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          LOG_KEY: ${{ secrets.LOG_KEY }}
+          COMMAND: ${{ inputs.command }}
+          LINES: ${{ inputs.lines }}
+        run: |
+          [[ -n $HOST && -n $KEY && -n $LOG_KEY ]] || { echo '::error::DEPLOY_HOST, DEPLOY_SSH_KEY or LOG_KEY is not set'; exit 1; }
+          case $COMMAND in
+            status|restart) line=$COMMAND ;;
+            logs) [[ $LINES =~ ^[0-9]{1,4}$ ]] && ((LINES >= 1)) || { echo '::error::lines must be 1-5000'; exit 1; }; line="logs $LINES" ;;
+            *) echo '::error::unknown command'; exit 1 ;;
+          esac
+          install -m 600 /dev/null "$RUNNER_TEMP/key" && printf '%s\n' "$KEY" > "$RUNNER_TEMP/key"
+          mkdir -p logs
+          code=0
+          ssh -i "$RUNNER_TEMP/key" -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -o LogLevel=ERROR \
+            "root@$HOST" "$line" </dev/null >"$RUNNER_TEMP/out.txt" 2>&1 || code=$?
+          rm -f "$RUNNER_TEMP/key"
+          # Вывод сервера - всегда в зашифрованный журнал, при любом исходе
+          openssl enc -aes-256-cbc -pbkdf2 -salt -pass env:LOG_KEY -in "$RUNNER_TEMP/out.txt" -out "logs/vps-$COMMAND.log.enc"
+          rm -f "$RUNNER_TEMP/out.txt"
+          echo "vps $COMMAND: exit $code"
+          exit $code
+
+      - name: Encrypted output
+        if: always()
+        uses: ./.github/actions/upload-log
+        with:
+          name: vps-${{ inputs.command }}
