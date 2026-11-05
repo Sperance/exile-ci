@@ -13,8 +13,8 @@
 # деплой сервера (server.yml, режим deploy).
 # Каналы: прямой APK (релиз здесь), Google Play (AAB на дорожку переменной PLAY_TRACK: alpha - закрытый тест, beta - ранний доступ,
 # production - долей 20%; job `publish-play`) и RuStore (APK с автопубликацией, job
-# `publish-rustore`); задачи сборки и пути результатов - ci/build-tasks.env. Загрузка в магазин идёт после релиза и только если в
-# репозитории есть ключи магазина, иначе job зелёный без дела. Состояние каналов опрашивает store-status.yml; прямой канал
+# `publish-rustore`); задачи сборки и пути результатов - ci/build-tasks.env. Загрузка в магазин идёт после релиза, дождавшись сервера на
+# ревизии релиза, и только если в репозитории есть ключи магазина, иначе job зелёный без дела. Состояние каналов опрашивает store-status.yml; прямой канал
 # отчётом серверу объявляет сам `release` (переменная SERVER_URL, секрет RELEASE_STATUS_TOKEN).
 # Секреты: SOURCE_TOKEN, EXILEFORGE_TOKEN (Contents и Issues: write на ExileForge), LOG_KEY, RELEASE_KEYSTORE,
 # RELEASE_KEYSTORE_PASSWORD, RELEASE_KEY_ALIAS, RELEASE_KEY_PASSWORD; магазины: PLAY_SERVICE_ACCOUNT_JSON, RUSTORE_KEY_ID,
@@ -602,14 +602,16 @@ jobs:
         with:
           name: release-log
 
-  # Загрузка в магазины - после публикации релиза и только с ключами магазина; без них job зелёный и ничего не делает. Повторить
-  # неудачную загрузку можно перезапуском упавшего job'а: пакеты лежат в артефактах прогона, повторная загрузка той же версии
-  # безопасна. Заметки магазинов - из update.json релиза (RELEASE_NOTES.md без заголовка).
+  # Загрузка в магазины - после публикации релиза и только с ключами магазина; без них job зелёный и ничего не делает. Перед загрузкой
+  # job ждёт сервер: манифест SERVER_URL/static/index.json должен объявить ревизию не ниже apiRevision релиза (ci/wait-server.py, до 30
+  # минут, иначе красный): сборка из магазина не должна опередить сервер, на котором она говорит. Повторить неудачную загрузку можно
+  # перезапуском упавшего job'а: пакеты лежат в артефактах прогона, повторная загрузка той же версии безопасна. Заметки магазинов и
+  # обязательность (приоритет обновления 5) - из update.json релиза (RELEASE_NOTES.md без заголовка).
   publish-play:
     needs: [ release, release-aab ]
     if: ${{ !cancelled() && needs.release.result == 'success' && needs.release-aab.result == 'success' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 75
     permissions:
       contents: read
     concurrency:
@@ -619,6 +621,7 @@ jobs:
       PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
       PLAY_TRACK: ${{ vars.PLAY_TRACK }}
       TAG: ${{ needs.release.outputs.tag }}
+      SERVER_URL: ${{ vars.SERVER_URL }}
     steps:
       - id: gate
         run: |
@@ -626,6 +629,13 @@ jobs:
           else echo "::notice::PLAY_SERVICE_ACCOUNT_JSON is not set: Google Play upload skipped"; fi
       - if: steps.gate.outputs.enabled == 'true'
         uses: actions/checkout@v4
+      - if: steps.gate.outputs.enabled == 'true'
+        name: Wait for the server
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "$TAG" -R "$GITHUB_REPOSITORY" -p update.json
+          python3 ci/wait-server.py update.json
       - if: steps.gate.outputs.enabled == 'true'
         uses: actions/download-artifact@v4
         with:
@@ -640,7 +650,6 @@ jobs:
           PUBLIC_NOTES: ${{ runner.temp }}/notes.txt
         run: |
           set -a; . ci/build-tasks.env; set +a
-          gh release download "$TAG" -R "$GITHUB_REPOSITORY" -p update.json
           bash ci/seal.sh -d sealed/play.enc .
           code=0
           bash ci/quiet.sh publish-play python3 ci/play.py upload "$PLAY_AAB" update.json || code=$?
@@ -656,7 +665,7 @@ jobs:
     needs: [ release, release-rustore ]
     if: ${{ !cancelled() && needs.release.result == 'success' && needs.release-rustore.result == 'success' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 75
     permissions:
       contents: read
     concurrency:
@@ -666,6 +675,7 @@ jobs:
       RUSTORE_KEY_ID: ${{ secrets.RUSTORE_KEY_ID }}
       RUSTORE_PRIVATE_KEY: ${{ secrets.RUSTORE_PRIVATE_KEY }}
       TAG: ${{ needs.release.outputs.tag }}
+      SERVER_URL: ${{ vars.SERVER_URL }}
     steps:
       - id: gate
         run: |
@@ -673,6 +683,13 @@ jobs:
           else echo "::notice::RUSTORE_KEY_ID or RUSTORE_PRIVATE_KEY is not set: RuStore upload skipped"; fi
       - if: steps.gate.outputs.enabled == 'true'
         uses: actions/checkout@v4
+      - if: steps.gate.outputs.enabled == 'true'
+        name: Wait for the server
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "$TAG" -R "$GITHUB_REPOSITORY" -p update.json
+          python3 ci/wait-server.py update.json
       - if: steps.gate.outputs.enabled == 'true'
         uses: actions/download-artifact@v4
         with:
@@ -687,7 +704,6 @@ jobs:
           PUBLIC_NOTES: ${{ runner.temp }}/notes.txt
         run: |
           set -a; . ci/build-tasks.env; set +a
-          gh release download "$TAG" -R "$GITHUB_REPOSITORY" -p update.json
           bash ci/seal.sh -d sealed/rustore.enc .
           code=0
           bash ci/quiet.sh publish-rustore python3 ci/rustore.py upload "$RUSTORE_APK" update.json || code=$?
