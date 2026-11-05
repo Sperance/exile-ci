@@ -1,34 +1,70 @@
-# Обслуживание сервера на VPS: только вручную. По SSH-ключу деплоя с принудительной командой уходит одно слово, update.sh
-# сервера принимает только точные команды (rules-md/server/ci-shell.md): status - версия и коммит образа, контейнеры, место,
-# отчёт картинок; logs - последние N строк журнала игры; restart - перезапуск контейнера игры без смены версии.
+# Обслуживание сервера на VPS и картинок игры: вручную, плюс суточная резервная копия картинок по расписанию.
+# status, logs, restart (job `run`): по SSH-ключу деплоя с принудительной командой уходит одно слово, update.sh сервера принимает
+# только точные команды (rules-md/server/ci-shell.md): status - версия и коммит образа, контейнеры, место, отчёт картинок; logs -
+# последние N строк журнала игры; restart - перезапуск контейнера игры без смены версии.
 # Журнал публичен: хост и весь вывод сервера - только в зашифрованном артефакте `vps-<команда>` (ключ LOG_KEY, 7 дней),
 # в журнал - итог шага. Секреты: DEPLOY_HOST, DEPLOY_SSH_KEY, LOG_KEY.
+#
+# art (job `art`) - архив картинок игры:
+# Архив картинок игры - свой prerelease `art-<дата UTC>` на каждый архив: релизы репозитория неизменяемы (immutable), в
+# выложенный релиз файл уже не добавить, поэтому архив кладётся при создании релиза. `update.sh art` сервера без ссылки берёт
+# самый новый такой релиз. Картинки приходят папкой `art/<категория>/<КОД>.png|jpg|jpeg|webp` с ветки [ref] этого же
+# репозитория (обычно черновик `wip` поверх `main`); архив - те же пути без `./`, имя `art-<дата UTC>.tar.gz`. Хранятся пять
+# последних релизов архивов. Затем (вход deploy, по умолчанию да) архив сразу ставится на сервер: по SSH-ключу деплоя с
+# принудительной командой уходит строка `art`, и update.sh сервера берёт самый новый релиз art-<дата> (ссылку из сети он
+# не принимает). Ручного шага нет; новое сервер подхватывает за минуту.
+# Картинки с тем же кодом, загруженные из панели, архив перезапишет: прежний файл остаётся на сервере в .trash/<дата>/<категория>/,
+# но откат панели его не вернёт (журнал панели о .trash не знает) - вернуть можно только вручную.
+# Секреты (только для deploy): DEPLOY_HOST, DEPLOY_SSH_KEY, LOG_KEY.
+#
+# art-backup (job `art-backup`) - резервная копия картинок сервера (запускается и по расписанию, и командой art-backup):
+# Раз в сутки (cron ниже) и вручную. Картинки грузятся из панели прямо в папку сервера, поэтому
+# копия снимается с сервера: по SSH-ключу деплоя с принудительной командой уходит строка `art-export`, update.sh сервера
+# отдаёт архив исходных файлов `<категория>/<КОД>.<ext>` (без .out и .trash) в stdout. Архив выходит своим prerelease
+# `art-<дата UTC>` (релизы неизменяемы, файл кладётся при создании) - тот же вид, что у команды art, поэтому `update.sh art`
+# восстанавливает из самой новой копии. Хранятся пять последних релизов art-<дата> (общий счёт с командой art).
+# Журнал публичен: хост и вывод сервера идут через ci/quiet.sh; картинки и так видит каждый игрок.
+# Секреты: DEPLOY_HOST, DEPLOY_SSH_KEY, LOG_KEY. Переменная DEPLOY_ENABLED=true включает копию.
 name: VPS
 
 on:
+  schedule:
+    - cron: '27 3 * * *'
   workflow_dispatch:
     inputs:
       command:
-        description: 'Command for update.sh on the server'
+        description: 'status, logs, restart - command for update.sh on the server; art - pack the art/ folder of ref and publish it; art-backup - copy the server pictures into a release'
         type: choice
-        options: [ status, logs, restart ]
+        options: [ status, logs, restart, art, art-backup ]
         default: status
       lines:
         description: 'logs: how many last lines (1-5000)'
         type: number
         default: 300
+      ref:
+        description: 'art: branch of this repository whose art/ folder becomes the archive'
+        type: string
+        default: wip
+      deploy:
+        description: 'art: install the archive on the server right after publishing'
+        type: boolean
+        default: true
 
 permissions:
   contents: read
 
-concurrency:
-  group: vps
-  cancel-in-progress: false
+env:
+  KEEP: 5
 
+# Расписание запускает только art-backup; inputs при нём пусты, поэтому выбор job'а - по github.event_name и inputs.command.
 jobs:
   run:
+    if: ${{ github.event_name == 'workflow_dispatch' && contains(fromJSON('["status","logs","restart"]'), inputs.command) }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    concurrency:
+      group: vps
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
         with:
@@ -65,3 +101,135 @@ jobs:
         uses: ./.github/actions/upload-log
         with:
           name: vps-${{ inputs.command }}
+
+  art:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.command == 'art' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    concurrency:
+      group: art
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      - name: Check the layout
+        run: |
+          [[ -d art ]] || { echo '::error::no art/ folder on this ref'; exit 1; }
+          bad=0
+          while IFS= read -r -d '' entry; do
+            path=${entry#art/}
+            if [[ -L $entry || ! -f $entry || ! $path =~ ^[a-z]+/[A-Z0-9_]+\.([pP][nN][gG]|[jJ][pP][eE]?[gG]|[wW][eE][bB][pP])$ ]]; then
+              echo "::error::unexpected entry: $path"
+              bad=1
+            fi
+          done < <(find art -mindepth 1 ! -type d -print0)
+          ((bad == 0)) || exit 1
+          find art -type f | sort
+
+      - name: Pack
+        id: pack
+        run: |
+          stamp=$(date -u +%Y%m%d-%H%M%S)
+          asset="art-$stamp.tar.gz"
+          (cd art && find . -type f | sed 's|^\./||' | sort | tar -czf "$RUNNER_TEMP/$asset" -T -)
+          tar -tzf "$RUNNER_TEMP/$asset"
+          echo "asset=$asset" >> "$GITHUB_OUTPUT"
+          echo "tag=art-$stamp" >> "$GITHUB_OUTPUT"
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ASSET: ${{ steps.pack.outputs.asset }}
+          TAG: ${{ steps.pack.outputs.tag }}
+        run: |
+          # Файл отдаётся вместе с созданием: gh создаёт черновик, грузит архив и только потом публикует
+          gh release create "$TAG" "$RUNNER_TEMP/$ASSET" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease --latest=false \
+            --title "Art $TAG" --notes 'Game pictures for update.sh art on the server. Newest release wins.'
+          # Старые архивы - целыми релизами: тег неизменяемого релиза может остаться, это не мешает
+          gh release list -R "$GITHUB_REPOSITORY" --limit 200 --json tagName -q '.[].tagName' | grep -E '^art-[0-9]{8}-[0-9]{6}$' | sort -r \
+            | tail -n +$((KEEP + 1)) | while read -r old; do gh release delete "$old" -R "$GITHUB_REPOSITORY" -y || true; done
+          echo "published $TAG"
+
+      - name: Install on the server
+        if: ${{ inputs.deploy }}
+        env:
+          HOST: ${{ secrets.DEPLOY_HOST }}
+          KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          LOG_KEY: ${{ secrets.LOG_KEY }}
+        run: |
+          [[ -n $HOST && -n $KEY ]] || { echo '::error::DEPLOY_HOST or DEPLOY_SSH_KEY is not set: install the archive with update.sh art by hand'; exit 1; }
+          install -m 600 /dev/null "$RUNNER_TEMP/key" && printf '%s\n' "$KEY" > "$RUNNER_TEMP/key"
+          # Хост и вывод сервера - не в публичный журнал: ci/quiet.sh печатает только итог, подробности - в зашифрованном журнале
+          code=0
+          bash ci/quiet.sh art-install \
+            ssh -i "$RUNNER_TEMP/key" -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 "root@$HOST" art </dev/null || code=$?
+          rm -f "$RUNNER_TEMP/key"
+          exit $code
+
+      - name: Encrypted log
+        if: failure()
+        uses: ./.github/actions/upload-log
+        with:
+          name: art-log
+
+  art-backup:
+    if: ${{ (github.event_name == 'schedule' || inputs.command == 'art-backup') && vars.DEPLOY_ENABLED == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    concurrency:
+      group: art
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Export from the server
+        id: export
+        env:
+          HOST: ${{ secrets.DEPLOY_HOST }}
+          KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          LOG_KEY: ${{ secrets.LOG_KEY }}
+        run: |
+          [[ -n $HOST && -n $KEY ]] || { echo '::error::DEPLOY_HOST or DEPLOY_SSH_KEY is not set'; exit 1; }
+          install -m 600 /dev/null "$RUNNER_TEMP/key" && printf '%s\n' "$KEY" > "$RUNNER_TEMP/key"
+          stamp=$(date -u +%Y%m%d-%H%M%S)
+          archive="$RUNNER_TEMP/art-$stamp.tar.gz"
+          code=0
+          bash ci/quiet.sh art-export bash -c 'ssh -i "$1" -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 "root@$2" art-export </dev/null >"$3"' \
+            _ "$RUNNER_TEMP/key" "$HOST" "$archive" || code=$?
+          rm -f "$RUNNER_TEMP/key"
+          ((code == 0)) || exit $code
+          # Только обычные файлы <категория>/<КОД>.<ext>: иначе копия не годится для update.sh art
+          tar -tzf "$archive" | grep -vqE '^[a-z]+/([A-Z0-9_]+\.(png|jpg|jpeg|webp|PNG|JPG|JPEG|WEBP))?$' && { echo '::error::unexpected entry in the server archive'; exit 1; }
+          count=$(tar -tzf "$archive" | grep -c '\.' || true)
+          echo "server archive: $count pictures"
+          ((count > 0)) || { echo '::notice::the server has no uploaded pictures yet, nothing to keep'; echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0; }
+          echo "archive=$archive" >> "$GITHUB_OUTPUT"
+          echo "tag=art-$stamp" >> "$GITHUB_OUTPUT"
+
+      - name: Publish
+        if: ${{ steps.export.outputs.skip != 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARCHIVE: ${{ steps.export.outputs.archive }}
+          TAG: ${{ steps.export.outputs.tag }}
+        run: |
+          gh release create "$TAG" "$ARCHIVE" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease --latest=false \
+            --title "Art $TAG (server backup)" --notes 'Daily copy of the server pictures. update.sh art restores the newest art release.'
+          gh release list -R "$GITHUB_REPOSITORY" --limit 200 --json tagName -q '.[].tagName' | grep -E '^art-[0-9]{8}-[0-9]{6}$' | sort -r \
+            | tail -n +$((KEEP + 1)) | while read -r old; do gh release delete "$old" -R "$GITHUB_REPOSITORY" -y || true; done
+          echo "published $TAG"
+
+      - name: Encrypted log
+        if: failure()
+        uses: ./.github/actions/upload-log
+        with:
+          name: art-backup-log
