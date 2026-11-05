@@ -12,6 +12,9 @@
 #   workflow_dispatch                 - вручную, те же два режима.
 # Образ уходит в приватный пакет ghcr.io/sperance/ktor-bestgame черновым тегом :build-<sha>, после зелёных проверок получает
 # :<sha> и :<ветка>; на VPS по SSH запускается deploy/update.sh сервера с этим sha.
+# Перед деплоем (job `deploy`) - защита ci/deploy-guard.py: сервер не выкатывается, если отрежет самую старую сборку, ещё лежащую в
+# канале магазина (минимум ревизии, форма контента CONTENT_SCHEMA и правила RULES_VERSION против update.json этих сборок; каналы - из
+# публичного манифеста SERVER_URL/static/index.json). Разрыв, одобренный владельцем, - ручной запуск с force_breaking.
 # Секреты: SOURCE_TOKEN, LOG_KEY, DEPLOY_HOST, DEPLOY_SSH_KEY, GH_ISSUES_TOKEN. Переменная DEPLOY_ENABLED=true включает образ и деплой.
 # Пакету в GHCR выдан доступ этого репозитория (Package settings - Manage Actions access - Write).
 name: Server
@@ -29,6 +32,10 @@ on:
       sha:
         description: 'Server commit (empty - head of the working branch)'
         required: false
+      force_breaking:
+        description: 'Owner-approved break: deploy even if the server cuts a build still held by a store channel'
+        type: boolean
+        default: false
 
 # Чужой код здесь не исполняется: триггеров pull_request нет, токен job'ов по умолчанию только читает.
 permissions:
@@ -289,7 +296,7 @@ jobs:
       SHA: ${{ needs.resolve.outputs.sha }}
     steps:
       - uses: actions/checkout@v4
-      # Нужен только Protocol.kt правил (API_REVISION) - остальной код сервера деплою не нужен
+      # Деплою нужны только Protocol.kt (API_REVISION, MIN_API_REVISION) и Content.kt (RULES_VERSION, CONTENT_SCHEMA) правил
       - uses: actions/checkout@v4
         with:
           repository: ${{ env.SERVER_REPO }}
@@ -297,7 +304,9 @@ jobs:
           token: ${{ secrets.SOURCE_TOKEN }}
           path: server
           persist-credentials: false
-          sparse-checkout: rules/src/main/kotlin/com/sperance/exileforge/rules/wire/Protocol.kt
+          sparse-checkout: |
+            rules/src/main/kotlin/com/sperance/exileforge/rules/wire/Protocol.kt
+            rules/src/main/kotlin/com/sperance/exileforge/rules/content/Content.kt
           sparse-checkout-cone-mode: false
       - uses: docker/login-action@v3
         with:
@@ -371,6 +380,22 @@ jobs:
           done
           echo "::notice::client release speaks API $client, server needs $api: the client release job triggers the deploy"
           echo "ready=false" >> "$GITHUB_OUTPUT"
+
+      # Сервер не отрезает сборку, что ещё лежит в канале магазина (ci/deploy-guard.py): иначе игрок магазина не сможет играть, пока
+      # обновление идёт модерацию. Красный шаг - деплоя нет; одобренный разрыв - запуск вручную с force_breaking.
+      - name: Store channels can play this server
+        if: ${{ steps.client.outputs.ready == 'true' }}
+        env:
+          SERVER_URL: ${{ vars.SERVER_URL }}
+          FORCE_BREAKING: ${{ inputs.force_breaking }}
+          GITHUB_TOKEN: ${{ github.token }}
+          LOG_KEY: ${{ secrets.LOG_KEY }}
+          PUBLIC_NOTES: ${{ runner.temp }}/guard.txt
+        run: |
+          code=0
+          bash ci/quiet.sh deploy-guard python3 ci/deploy-guard.py server || code=$?
+          cat "$PUBLIC_NOTES" 2>/dev/null || true
+          exit $code
 
       - name: Update the server on the VPS
         if: ${{ steps.client.outputs.ready == 'true' }}
