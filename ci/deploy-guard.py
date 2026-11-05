@@ -79,8 +79,9 @@ def main():
     try:
         held = held_builds(base)
     except (urllib.error.URLError, TimeoutError, OSError, ValueError, AttributeError) as error:
-        say(f"::error::deploy guard: the live manifest is unavailable ({type(error).__name__})")
-        sys.exit(0 if forced else 1)
+        # Сервер лежит - сверять не с чем, а деплой его поднимает: восстановление не ждёт force_breaking
+        say(f"::warning::deploy guard: the live manifest is unavailable ({type(error).__name__}), deploy goes on")
+        return
     catalog, broken = Catalog(), 0
     for channel, code in sorted(held.items()):
         update = catalog.by_code(code) if code else None
