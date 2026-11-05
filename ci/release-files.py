@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Файлы релиза клиента (job `release` client.yml): APK, карта R8, заметки и update.json - то, что читает обновлятор игры
-(Updates.kt): сборка, провод и правила, на которых она говорит, APK и его SHA-256.
+(Updates.kt): сборка, провод, правила и форма контента, на которых она говорит, APK и его SHA-256.
 
 Запуск из каталога исходников клиента (src/) после распаковки сборки release-apk; в окружении DIRECT_APK и DIRECT_MAPPING
 (`. ci/build-tasks.env`):
@@ -51,8 +51,9 @@ def main():
     code = first_group("app/build.gradle.kts", r"versionCode = ([0-9]*)")
     api = first_group("backend/rules/src/main/kotlin/com/sperance/exileforge/rules/wire/Protocol.kt", r"^const val API_REVISION = ([0-9]*)")
     rules = first_group("backend/rules/src/main/kotlin/com/sperance/exileforge/rules/content/Content.kt", r"^const val RULES_VERSION = ([0-9]*)")
-    if not (code and api and rules):
-        fail(f"update.json: versionCode '{code}', API '{api}' or rules '{rules}' not found")
+    schema = first_group("backend/rules/src/main/kotlin/com/sperance/exileforge/rules/content/Content.kt", r"^const val CONTENT_SCHEMA = ([0-9]*)")
+    if not (code and api and rules and schema):
+        fail(f"update.json: versionCode '{code}', API '{api}', rules '{rules}' or content schema '{schema}' not found")
 
     with open(os.path.join(out, apk), "rb") as file:
         sha256 = hashlib.sha256(file.read()).hexdigest()
@@ -63,7 +64,7 @@ def main():
     mandatory = re.search(r"^Update-Mandatory: yes", message, re.IGNORECASE | re.MULTILINE) is not None
 
     notes = open("RELEASE_NOTES.md", encoding="utf-8").read().split("\n", 1)[1].strip()
-    info = {"versionCode": int(code), "versionName": name, "apiRevision": int(api), "rules": int(rules),
+    info = {"versionCode": int(code), "versionName": name, "apiRevision": int(api), "rules": int(rules), "contentSchema": int(schema),
             "apk": apk, "size": size, "sha256": sha256, "notes": notes, "mandatory": mandatory}
     with open(os.path.join(out, "update.json"), "w", encoding="utf-8", newline="\n") as file:
         file.write(json.dumps(info, ensure_ascii=False) + "\n")
