@@ -10,7 +10,8 @@ beta - открытый тест («Ранний доступ» в Play), produc
 
 Запуск (из каталога с распакованным пакетом):
     python3 ci/play.py upload <bundle.aab> <update.json>
-В update.json - versionCode, versionName и notes релиза; заметки уходят в ru-RU и режутся до 500 знаков (предел Play).
+В update.json - versionCode, versionName, notes и mandatory релиза; заметки уходят в ru-RU и режутся до 500 знаков (предел Play),
+обязательный релиз получает inAppUpdatePriority 5.
 """
 import contextlib
 import json
@@ -25,6 +26,9 @@ SCOPE = "https://www.googleapis.com/auth/androidpublisher"
 TRACKS = ("internal", "alpha", "beta", "production")
 TRACK = os.environ.get("PLAY_TRACK", "").strip() or "alpha"
 STAGED = TRACK == "production"
+# Дорожки, на которых сидят игроки: production всегда (к нему дойдут все), плюс выбранная PLAY_TRACK; отчёт PLAY берёт худшую из них
+AUDIENCE = tuple(dict.fromkeys(("production", TRACK)))
+MANDATORY_PRIORITY = 5
 NOTES_LIMIT = 500
 START_FRACTION = 0.2
 
@@ -63,10 +67,10 @@ class Play:
         # Коммит закрывает правку: последующее удаление в edit() вернёт 404 и ничего не испортит
         self._check(self.http.post(f"{API}/{self.package}/edits/{edit_id}:commit"), "edit commit")
 
-    def newest(self):
-        """Самый новый выпуск дорожки TRACK (по наибольшему versionCode) или None."""
+    def newest(self, track=TRACK):
+        """Самый новый выпуск дорожки track (по наибольшему versionCode) или None."""
         with self.edit() as edit_id:
-            response = self.http.get(f"{API}/{self.package}/edits/{edit_id}/tracks/{TRACK}")
+            response = self.http.get(f"{API}/{self.package}/edits/{edit_id}/tracks/{track}")
             if response.status_code == 404:
                 return None
             releases = self._check(response, "track get").get("releases", [])
@@ -94,21 +98,24 @@ class Play:
             response = self.http.put(url, json={"track": TRACK, "releases": [release]})
         self._check(response, "track update")
 
-    def release(self, aab, version_code, version_name, notes):
-        """Загрузить пакет и открыть выпуск на дорожке TRACK: в production - долей START_FRACTION, на тестовой - сразу целиком."""
+    def release(self, aab, version_code, version_name, notes, mandatory=False):
+        """Загрузить пакет и открыть выпуск на дорожке TRACK: в production - долей START_FRACTION, на тестовой - сразу целиком.
+        Обязательное обновление - высший приоритет внутриприложенческого обновления: приложение с Play-обновлением предложит его настойчиво."""
         release = {"name": version_name, "versionCodes": [str(version_code)], "releaseNotes": [{"language": "ru-RU", "text": short_notes(notes, NOTES_LIMIT)}]}
         release.update({"status": "inProgress", "userFraction": START_FRACTION} if STAGED else {"status": "completed"})
+        if mandatory:
+            release["inAppUpdatePriority"] = MANDATORY_PRIORITY
         with self.edit() as edit_id:
             self._upload_bundle(edit_id, aab, version_code)
             self._set_track(edit_id, release)
             self._commit(edit_id)
 
-    def promote(self, release):
-        """Довести выпуск (как его вернул [newest]) до 100%: статус completed, доли нет, заметки прежние."""
+    def promote(self, release, track=TRACK):
+        """Довести выпуск дорожки track (как его вернул [newest]) до 100%: статус completed, доли нет, заметки и приоритет прежние."""
         done = {key: value for key, value in release.items() if key != "userFraction"}
         done["status"] = "completed"
         with self.edit() as edit_id:
-            self._check(self.http.put(f"{API}/{self.package}/edits/{edit_id}/tracks/{TRACK}", json={"track": TRACK, "releases": [done]}),
+            self._check(self.http.put(f"{API}/{self.package}/edits/{edit_id}/tracks/{track}", json={"track": track, "releases": [done]}),
                         "track promote")
             self._commit(edit_id)
 
@@ -120,7 +127,7 @@ def main():
     if TRACK not in TRACKS:
         fail(f"PLAY_TRACK must be one of {', '.join(TRACKS)}")
     play = Play(os.environ["PLAY_SERVICE_ACCOUNT_JSON"], os.environ["APP_ID"])
-    play.release(aab, update["versionCode"], update["versionName"], update.get("notes", ""))
+    play.release(aab, update["versionCode"], update["versionName"], update.get("notes", ""), bool(update.get("mandatory")))
     share = f"at {int(START_FRACTION * 100)}%" if STAGED else "in full"
     say(f"Play: {update['versionName']} ({update['versionCode']}) sent to {TRACK} {share}")
 

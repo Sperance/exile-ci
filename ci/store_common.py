@@ -10,9 +10,11 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from datetime import datetime
 
 REPORT_PATH = "/api/v1/admin/release/channels"
 CHANNELS = ("DIRECT", "PLAY", "RUSTORE")
+RELEASES_SCAN = 30
 
 
 def say(message):
@@ -47,10 +49,64 @@ def short_notes(text, limit):
     return cut.rstrip() + "…"
 
 
-def build_entry(version_code, version_name, revision, availability, published_at=0, rules=0):
-    """ReportedBuild сервера (rules/.../wire/release/ReleaseWire.kt)."""
-    return {"versionCode": int(version_code), "versionName": version_name, "revision": int(revision),
-            "availability": float(availability), "publishedAt": int(published_at), "rules": int(rules)}
+def build_entry(version_code, version_name, revision, availability, published_at=0, rules=0, content_schema=None, mandatory=None):
+    """ReportedBuild сервера (rules/.../wire/release/ReleaseWire.kt). Форма контента и обязательность необязательны: релиз без них
+    (старый update.json) их не присылает, а сервер, что их не знает, лишние поля отбрасывает (ignoreUnknownKeys)."""
+    entry = {"versionCode": int(version_code), "versionName": version_name, "revision": int(revision),
+             "availability": float(availability), "publishedAt": int(published_at), "rules": int(rules)}
+    if content_schema is not None:
+        entry["contentSchema"] = int(content_schema)
+    if mandatory is not None:
+        entry["mandatory"] = bool(mandatory)
+    return entry
+
+
+def get_json(url, token=None):
+    headers = {"Accept": "application/vnd.github+json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=60) as response:
+        return json.load(response)
+
+
+def parse_time(text):
+    return int(datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp() * 1000)
+
+
+class Catalog:
+    """Релизы exile-ci: для каждого - update.json (versionCode, versionName, apiRevision, rules, contentSchema) и время выхода. Нужны,
+    чтобы отчёту о сборке магазина дать ревизию и правила: магазин их не знает."""
+
+    def __init__(self):
+        repo = os.environ.get("GITHUB_REPOSITORY", "Sperance/exile-ci")
+        listing = get_json(f"https://api.github.com/repos/{repo}/releases?per_page={RELEASES_SCAN}", os.environ.get("GITHUB_TOKEN"))
+        self.pending = [r for r in listing if not r.get("draft") and not r.get("prerelease")]
+        self.entries = []
+
+    def _load_next(self):
+        release = self.pending.pop(0)
+        asset = next((a for a in release.get("assets", []) if a["name"] == "update.json"), None)
+        if asset:
+            update = get_json(asset["browser_download_url"])
+            update["publishedAt"] = parse_time(release["published_at"])
+            self.entries.append(update)
+
+    def latest(self):
+        while not self.entries and self.pending:
+            self._load_next()
+        return self.entries[0] if self.entries else None
+
+    def by_code(self, version_code):
+        """Релиз с таким versionCode среди последних RELEASES_SCAN или None."""
+        index = 0
+        while True:
+            while index < len(self.entries):
+                if int(self.entries[index]["versionCode"]) == int(version_code):
+                    return self.entries[index]
+                index += 1
+            if not self.pending:
+                return None
+            self._load_next()
 
 
 def server_ready():

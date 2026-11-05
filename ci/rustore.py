@@ -21,6 +21,8 @@ BASE = "https://public-api.rustore.ru"
 NOTES_LIMIT = 4000
 # Версия в магазине у игроков: ACTIVE - опубликована; остальные статусы (DRAFT, MODERATION, APPROVED до публикации, REJECTED) - ещё нет
 LIVE = {"ACTIVE", "PUBLISHED"}
+# priorityUpdate коммита версии: 0..5, обязательный релиз - наибольший
+MANDATORY_PRIORITY = 5
 
 
 class RuStoreError(RuntimeError):
@@ -84,7 +86,7 @@ class RuStore:
     def availability(version):
         return 1.0 if str(version.get("versionStatus", "")).upper() in LIVE else 0.0
 
-    def submit(self, apk, version_code, notes):
+    def submit(self, apk, version_code, notes, mandatory=False):
         """Черновик версии, APK и отправка на модерацию; публикация сразу после неё (publishType INSTANTLY)."""
         existing = self.versions()
         if any(str(v.get("versionCode")) == str(version_code) and str(v.get("versionStatus", "")).upper() != "DRAFT" for v in existing):
@@ -99,7 +101,8 @@ class RuStore:
             self._body(self.http.post(self._app(f"/{version_id}/apk"), params={"isMainApk": "true", "servicesType": "Unknown"},
                                       files={"file": (os.path.basename(apk), file, "application/vnd.android.package-archive")},
                                       timeout=1800), "apk upload")
-        self._body(self.http.post(self._app(f"/{version_id}/commit"), params={"priorityUpdate": 0}, timeout=60), "commit")
+        priority = MANDATORY_PRIORITY if mandatory else 0
+        self._body(self.http.post(self._app(f"/{version_id}/commit"), params={"priorityUpdate": priority}, timeout=60), "commit")
 
 
 def main():
@@ -107,7 +110,7 @@ def main():
         fail("usage: rustore.py upload <app.apk> <update.json>")
     apk, update = sys.argv[2], load_update(sys.argv[3])
     store = RuStore(os.environ["RUSTORE_KEY_ID"].strip(), os.environ["RUSTORE_PRIVATE_KEY"], os.environ["APP_ID"])
-    store.submit(apk, update["versionCode"], update.get("notes", ""))
+    store.submit(apk, update["versionCode"], update.get("notes", ""), bool(update.get("mandatory")))
     say(f"RuStore: {update['versionName']} ({update['versionCode']}) sent to review with auto-publish")
 
 

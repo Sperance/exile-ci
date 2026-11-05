@@ -10,73 +10,24 @@
 Окружение: SERVER_URL и RELEASE_STATUS_TOKEN (нет любого - отчётов нет, прогон зелёный), PLAY_SERVICE_ACCOUNT_JSON, RUSTORE_KEY_ID,
 RUSTORE_PRIVATE_KEY, EXILEFORGE_TOKEN (проверка падений), GITHUB_TOKEN, GITHUB_REPOSITORY, APP_ID. Вывод перехватывает ci/quiet.sh.
 Выкладка Play: сборка на 20% не меньше суток, падений `crash`+`auto` с её выхода не больше CRASH_LIMIT - выкладка идёт на 100%.
+Отчёт PLAY - по худшей из дорожек production и PLAY_TRACK (меньшая доля, при равной - старшая сборка); в отчёте у сборки форма контента
+(`contentSchema`) и обязательность (`mandatory`) из update.json релиза.
 """
-import json
 import os
 import sys
 import time
-import urllib.request
-from datetime import datetime
 
-from store_common import build_entry, load_update, post_report, say, server_ready
+from store_common import Catalog, build_entry, get_json, load_update, parse_time, post_report, say, server_ready
 
 PROMOTE_AFTER_MS = 24 * 3600 * 1000
 CRASH_LIMIT = 3
 CLIENT_REPO = "Sperance/ExileForge"
-RELEASES_SCAN = 30
-
-
-def get_json(url, token=None):
-    headers = {"Accept": "application/vnd.github+json"}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=60) as response:
-        return json.load(response)
-
-
-def parse_time(text):
-    return int(datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp() * 1000)
-
-
-class Catalog:
-    """Релизы exile-ci: для каждого - update.json (versionCode, versionName, apiRevision, rules) и время выхода. Нужны, чтобы
-    отчёту о сборке магазина дать ревизию и правила: магазин их не знает."""
-
-    def __init__(self):
-        repo = os.environ.get("GITHUB_REPOSITORY", "Sperance/exile-ci")
-        listing = get_json(f"https://api.github.com/repos/{repo}/releases?per_page={RELEASES_SCAN}", os.environ.get("GITHUB_TOKEN"))
-        self.pending = [r for r in listing if not r.get("draft") and not r.get("prerelease")]
-        self.entries = []
-
-    def _load_next(self):
-        release = self.pending.pop(0)
-        asset = next((a for a in release.get("assets", []) if a["name"] == "update.json"), None)
-        if asset:
-            update = get_json(asset["browser_download_url"])
-            update["publishedAt"] = parse_time(release["published_at"])
-            self.entries.append(update)
-
-    def latest(self):
-        while not self.entries and self.pending:
-            self._load_next()
-        return self.entries[0] if self.entries else None
-
-    def by_code(self, version_code):
-        """Релиз с таким versionCode среди последних RELEASES_SCAN или None."""
-        index = 0
-        while True:
-            while index < len(self.entries):
-                if int(self.entries[index]["versionCode"]) == int(version_code):
-                    return self.entries[index]
-                index += 1
-            if not self.pending:
-                return None
-            self._load_next()
 
 
 def entry_build(update, availability, published_at=None):
     return build_entry(update["versionCode"], update["versionName"], update["apiRevision"], availability,
-                       update.get("publishedAt", 0) if published_at is None else published_at, update.get("rules", 0))
+                       update.get("publishedAt", 0) if published_at is None else published_at, update.get("rules", 0),
+                       update.get("contentSchema"), update.get("mandatory"))
 
 
 def report_direct(update, attempts=1):
@@ -98,44 +49,54 @@ def crash_count(since_ms):
         page += 1
 
 
+def settle_rollout(play, track, release, update, availability):
+    """Выкладка production на долях: через сутки и без лишних падений - доводка до 100%. Возвращает долю после неё."""
+    if release.get("status") != "inProgress" or availability >= 1.0:
+        return availability
+    age = int(time.time() * 1000) - update["publishedAt"]
+    if age < PROMOTE_AFTER_MS:
+        say(f"PLAY: {update['versionName']} at {availability:.0%}, {age // 3600000} h since the release, waiting for 24 h")
+        return availability
+    crashes = crash_count(update["publishedAt"])
+    if crashes is None:
+        say("::notice::PLAY: promotion held: EXILEFORGE_TOKEN is missing, crashes cannot be checked")
+    elif crashes > CRASH_LIMIT:
+        say(f"::warning::PLAY: promotion to 100% halted: {crashes} open crash reports since the release (limit {CRASH_LIMIT})")
+    else:
+        play.promote(release, track)
+        say(f"PLAY: {update['versionName']} promoted to 100% ({crashes} open crash reports)")
+        return 1.0
+    return availability
+
+
 def report_play(catalog):
-    from play import TRACK, Play
+    """Канал PLAY отчитывается худшей из дорожек аудитории (AUDIENCE: production и PLAY_TRACK): меньшая доля, при равной - более старая
+    сборка. Так игрок production, которому новая сборка тестовой дорожки не досталась, не остаётся за окном ревизий. Нет релиза на
+    production - отчёт по PLAY_TRACK."""
+    from play import AUDIENCE, Play
 
     play = Play(os.environ["PLAY_SERVICE_ACCOUNT_JSON"], os.environ["APP_ID"])
-    release = play.newest()
-    if release is None:
+    candidates = []
+    for track in AUDIENCE:
+        release = play.newest(track)
+        if release is None:
+            continue
+        code = max(int(c) for c in release["versionCodes"])
+        update = catalog.by_code(code)
+        if update is None:
+            post_report("PLAY", True)
+            say(f"::warning::PLAY: version code {code} on {track} has no exile-ci release, only the channel state is reported")
+            return
+        status = release.get("status", "")
+        availability = 1.0 if status == "completed" else float(release.get("userFraction", 0.0)) if status == "inProgress" else 0.0
+        candidates.append((settle_rollout(play, track, release, update, availability), code, update, track))
+    if not candidates:
         post_report("PLAY", True)
-        say(f"PLAY: no release on the {TRACK} track yet")
+        say(f"PLAY: no release on the {' or '.join(AUDIENCE)} track yet")
         return
-    code = max(int(c) for c in release["versionCodes"])
-    status = release.get("status", "")
-    update = catalog.by_code(code)
-    if status == "completed":
-        availability = 1.0
-    elif status == "inProgress":
-        availability = float(release.get("userFraction", 0.0))
-    else:
-        availability = 0.0
-    if update is None:
-        post_report("PLAY", True)
-        say(f"::warning::PLAY: version code {code} has no exile-ci release, only the channel state is reported")
-        return
-    if status == "inProgress" and availability < 1.0:
-        age = int(time.time() * 1000) - update["publishedAt"]
-        if age < PROMOTE_AFTER_MS:
-            say(f"PLAY: {update['versionName']} at {availability:.0%}, {age // 3600000} h since the release, waiting for 24 h")
-        else:
-            crashes = crash_count(update["publishedAt"])
-            if crashes is None:
-                say("::notice::PLAY: promotion held: EXILEFORGE_TOKEN is missing, crashes cannot be checked")
-            elif crashes > CRASH_LIMIT:
-                say(f"::warning::PLAY: promotion to 100% halted: {crashes} open crash reports since the release (limit {CRASH_LIMIT})")
-            else:
-                play.promote(release)
-                availability = 1.0
-                say(f"PLAY: {update['versionName']} promoted to 100% ({crashes} open crash reports)")
+    availability, _, update, track = min(candidates, key=lambda candidate: candidate[:2])
     post_report("PLAY", True, entry_build(update, availability))
-    say(f"PLAY: {update['versionName']} reported at {availability:.0%}")
+    say(f"PLAY: {update['versionName']} on {track} reported at {availability:.0%}")
 
 
 def report_rustore(catalog):
