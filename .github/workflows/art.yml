@@ -1,6 +1,8 @@
-# Архив картинок игры - prerelease `art` этого репозитория: его берёт `update.sh art` сервера (без ссылки - самый новый архив).
-# Картинки приходят папкой `art/<категория>/<КОД>.png|jpg|jpeg|webp` с ветки [ref] этого же репозитория (обычно черновик `wip`
-# поверх `main`); архив - те же пути без `./`, имя `art-<дата UTC>.tar.gz`. Хранятся пять последних архивов.
+# Архив картинок игры - свой prerelease `art-<дата UTC>` на каждый архив: релизы репозитория неизменяемы (immutable), в
+# выложенный релиз файл уже не добавить, поэтому архив кладётся при создании релиза. `update.sh art` сервера без ссылки берёт
+# самый новый такой релиз. Картинки приходят папкой `art/<категория>/<КОД>.png|jpg|jpeg|webp` с ветки [ref] этого же
+# репозитория (обычно черновик `wip` поверх `main`); архив - те же пути без `./`, имя `art-<дата UTC>.tar.gz`. Хранятся пять
+# последних релизов архивов.
 # Запуск только вручную; картинки и так видит каждый игрок, тайного в журнале нет.
 name: Art
 
@@ -20,7 +22,6 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  TAG: art
   KEEP: 5
 
 jobs:
@@ -50,21 +51,23 @@ jobs:
       - name: Pack
         id: pack
         run: |
-          asset="art-$(date -u +%Y%m%d-%H%M%S).tar.gz"
+          stamp=$(date -u +%Y%m%d-%H%M%S)
+          asset="art-$stamp.tar.gz"
           (cd art && find . -type f | sed 's|^\./||' | sort | tar -czf "$RUNNER_TEMP/$asset" -T -)
           tar -tzf "$RUNNER_TEMP/$asset"
           echo "asset=$asset" >> "$GITHUB_OUTPUT"
+          echo "tag=art-$stamp" >> "$GITHUB_OUTPUT"
 
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
           ASSET: ${{ steps.pack.outputs.asset }}
+          TAG: ${{ steps.pack.outputs.tag }}
         run: |
-          if ! gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release create "$TAG" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease --latest=false --title "Art" \
-              --notes 'Game pictures for update.sh art on the server. Newest archive wins.'
-          fi
-          gh release upload "$TAG" "$RUNNER_TEMP/$ASSET" -R "$GITHUB_REPOSITORY"
-          gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json assets -q '.assets[].name' | grep '^art-.*\.tar\.gz$' | sort -r \
-            | tail -n +$((KEEP + 1)) | while read -r old; do gh release delete-asset "$TAG" "$old" -R "$GITHUB_REPOSITORY" -y; done
-          echo "published $ASSET"
+          # Файл отдаётся вместе с созданием: gh создаёт черновик, грузит архив и только потом публикует
+          gh release create "$TAG" "$RUNNER_TEMP/$ASSET" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease --latest=false \
+            --title "Art $TAG" --notes 'Game pictures for update.sh art on the server. Newest release wins.'
+          # Старые архивы - целыми релизами: тег неизменяемого релиза может остаться, это не мешает
+          gh release list -R "$GITHUB_REPOSITORY" --limit 200 --json tagName -q '.[].tagName' | grep -E '^art-[0-9]{8}-[0-9]{6}$' | sort -r \
+            | tail -n +$((KEEP + 1)) | while read -r old; do gh release delete "$old" -R "$GITHUB_REPOSITORY" -y || true; done
+          echo "published $TAG"
