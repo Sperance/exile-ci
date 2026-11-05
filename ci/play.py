@@ -81,7 +81,7 @@ class Play:
         with open(path, "rb") as bundle:
             response = self.http.post(f"{UPLOAD}/{self.package}/edits/{edit_id}/bundles?uploadType=media", data=bundle,
                                       headers={"Content-Type": "application/octet-stream"}, timeout=1800)
-        if response.status_code in (400, 403) and "apkUpgradeVersionConflict" in response.text:
+        if response.status_code in (400, 403) and ("apkUpgradeVersionConflict" in response.text or "has already been used" in response.text):
             # Повторный запуск после обрыва: пакет этой версии в Play уже есть - дальше только дорожка
             say(f"Play: bundle {version_code} is already uploaded")
             return
