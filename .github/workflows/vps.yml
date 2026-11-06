@@ -1,7 +1,11 @@
-# Обслуживание сервера на VPS и картинок игры: вручную, плюс суточная резервная копия картинок по расписанию.
-# status, logs, restart (job `run`): по SSH-ключу деплоя с принудительной командой уходит одно слово, update.sh сервера принимает
-# только точные команды (rules-md/server/ci-shell.md): status - версия и коммит образа, контейнеры, место, отчёт картинок; logs -
-# последние N строк журнала игры; restart - перезапуск контейнера игры без смены версии.
+# Обслуживание сервера на VPS, копии базы и картинки игры (правила - rules-md/server/vps-maintenance.md и ci-shell.md сервера).
+# Команды update.sh (job `run`): по SSH-ключу деплоя с принудительной командой уходит одно слово, update.sh принимает только точные
+# команды: status, logs [N], restart, backup (суточная копия базы, 7 на VPS), prune (чистка Docker и журналов), upgrade и reboot
+# (простой игры - только в окне 01:00-03:00 UTC, вне окна update.sh ставит их таймером на ближайшее окно).
+# health (каждый час): только сообщает - Issue «[VPS] Сервер требует внимания» в ExileForge (ci/vps_health.py), ничего не чинит.
+# db-export (воскресенье): свежая суточная копия, зашифрованная age (ключ владельца и ключ SEAL для восстановления), - в prerelease
+# db-<дата> закрытого ExileForge, 4 последних. restore: копия с VPS или недельная - только с подтверждением владельца (environment
+# release), update.sh перед ним снимает свежую копию.
 # Журнал публичен: хост и весь вывод сервера - только в зашифрованном артефакте `vps-<команда>` (age, открытый ключ
 # vars.LOG_AGE_RECIPIENT, 7 дней; читать: age -d -i key.txt), в журнал - итог шага. SSH идёт через ci/vps-ssh.sh: ключ хоста
 # закреплён в vars.VPS_HOST_KEY, StrictHostKeyChecking=yes. Секреты: DEPLOY_HOST, DEPLOY_SSH_KEY; переменные: VPS_HOST_KEY,
@@ -31,14 +35,21 @@ name: VPS
 
 on:
   schedule:
-    - cron: '27 3 * * *'
+    - cron: '27 3 * * *'   # art-backup
+    - cron: '17 * * * *'   # health
+    - cron: '35 0 * * *'   # backup
+    - cron: '50 0 * * 0'   # db-export
   workflow_dispatch:
     inputs:
       command:
-        description: 'status, logs, restart - command for update.sh on the server; art - pack the art/ folder of ref and publish it; art-backup - copy the server pictures into a release'
+        description: 'update.sh on the server (rules-md/server/vps-maintenance.md): status, logs, restart, health, backup, prune, upgrade, reboot; db-export - weekly encrypted DB copy into an ExileForge release; restore - DB from a copy (owner approval); art, art-backup - pictures'
         type: choice
-        options: [ status, logs, restart, art, art-backup ]
+        options: [ status, logs, restart, health, backup, prune, upgrade, reboot, db-export, restore, art, art-backup ]
         default: status
+      restore_from:
+        description: 'restore: a copy on the VPS (daily|deploy|pre/db-YYYYMMDD-HHMMSS.archive.gz, see status) or a weekly release tag db-YYYYMMDD-HHMMSS'
+        type: string
+        default: ''
       lines:
         description: 'logs: how many last lines (1-5000)'
         type: number
@@ -58,12 +69,13 @@ permissions:
 env:
   KEEP: 5
 
-# Расписание запускает только art-backup; inputs при нём пусты, поэтому выбор job'а - по github.event_name и inputs.command.
+# Расписания: art-backup (03:27), health (каждый час), backup (00:35), db-export (вс 00:50) - inputs при них пусты, поэтому выбор
+# job'а - по github.event.schedule и inputs.command.
 jobs:
   run:
-    if: ${{ github.event_name == 'workflow_dispatch' && contains(fromJSON('["status","logs","restart"]'), inputs.command) }}
+    if: ${{ (github.event_name == 'workflow_dispatch' && contains(fromJSON('["status","logs","restart","backup","prune","upgrade","reboot"]'), inputs.command)) || github.event.schedule == '35 0 * * *' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 30
     concurrency:
       group: vps
       cancel-in-progress: false
@@ -79,12 +91,12 @@ jobs:
           VPS_HOST_KEY: ${{ vars.VPS_HOST_KEY }}
           LOG_AGE_RECIPIENT: ${{ vars.LOG_AGE_RECIPIENT }}
           LOG_KEY: ${{ secrets.LOG_KEY }}
-          COMMAND: ${{ inputs.command }}
+          COMMAND: ${{ inputs.command || 'backup' }}
           LINES: ${{ inputs.lines }}
         run: |
           [[ -n $HOST && -n $KEY && ( -n $LOG_AGE_RECIPIENT || -n $LOG_KEY ) ]] || { echo '::error::DEPLOY_HOST, DEPLOY_SSH_KEY or LOG_AGE_RECIPIENT is not set'; exit 1; }
           case $COMMAND in
-            status|restart) line=$COMMAND ;;
+            status|restart|backup|prune|upgrade|reboot) line=$COMMAND ;;
             logs) [[ $LINES =~ ^[0-9]{1,4}$ ]] && ((LINES >= 1)) || { echo '::error::lines must be 1-5000'; exit 1; }; line="logs $LINES" ;;
             *) echo '::error::unknown command'; exit 1 ;;
           esac
@@ -103,7 +115,7 @@ jobs:
         if: always()
         uses: ./.github/actions/upload-log
         with:
-          name: vps-${{ inputs.command }}
+          name: vps-${{ inputs.command || 'backup' }}
 
   art:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.command == 'art' }}
@@ -182,7 +194,7 @@ jobs:
           name: art-log
 
   art-backup:
-    if: ${{ (github.event_name == 'schedule' || inputs.command == 'art-backup') && vars.DEPLOY_ENABLED == 'true' }}
+    if: ${{ (github.event.schedule == '27 3 * * *' || inputs.command == 'art-backup') && vars.DEPLOY_ENABLED == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -239,3 +251,154 @@ jobs:
         uses: ./.github/actions/upload-log
         with:
           name: art-backup-log
+
+  # Часовой присмотр: только сообщает (Issue «[VPS] Сервер требует внимания» в ExileForge, ci/vps_health.py), ничего не чинит
+  health:
+    if: ${{ (github.event.schedule == '17 * * * *' || inputs.command == 'health') && vars.DEPLOY_ENABLED == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: vps-health
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Check the server
+        env:
+          HOST: ${{ secrets.DEPLOY_HOST }}
+          KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          VPS_HOST_KEY: ${{ vars.VPS_HOST_KEY }}
+          LOG_AGE_RECIPIENT: ${{ vars.LOG_AGE_RECIPIENT }}
+          LOG_KEY: ${{ secrets.LOG_KEY }}
+          EXILEFORGE_TOKEN: ${{ secrets.EXILEFORGE_TOKEN }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          [[ -n $HOST && -n $KEY && -n $EXILEFORGE_TOKEN ]] || { echo '::error::DEPLOY_HOST, DEPLOY_SSH_KEY or EXILEFORGE_TOKEN is not set'; exit 1; }
+          tmp=${RUNNER_TEMP:?}
+          install -m 600 /dev/null "$tmp/key" && printf '%s\n' "$KEY" > "$tmp/key"
+          mkdir -p logs
+          code=0
+          VPS_HOST=$HOST VPS_KEY_FILE="$tmp/key" timeout 300 bash ci/vps-ssh.sh health </dev/null >"$tmp/out.txt" 2>&1 || code=$?
+          rm -f "$tmp/key"
+          python3 ci/vps_health.py "$tmp/out.txt" "$code"
+          bash ci/encrypt-log.sh "$tmp/out.txt" logs/vps-health.log.enc
+          rm -f "$tmp/out.txt"
+
+      - name: Encrypted output
+        if: always()
+        uses: ./.github/actions/upload-log
+        with:
+          name: vps-health
+
+  # Недельная копия базы вне VPS: самая свежая суточная копия, зашифрованная age на ключ владельца (LOG_AGE_RECIPIENT) и ключ
+  # CI для восстановления (SEAL_AGE_RECIPIENT), - в prerelease db-<дата UTC> закрытого ExileForge; хранятся 4 последних
+  db-export:
+    if: ${{ (github.event.schedule == '50 0 * * 0' || inputs.command == 'db-export') && vars.DEPLOY_ENABLED == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: vps-db
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Export, encrypt and publish
+        env:
+          HOST: ${{ secrets.DEPLOY_HOST }}
+          KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          VPS_HOST_KEY: ${{ vars.VPS_HOST_KEY }}
+          LOG_AGE_RECIPIENT: ${{ vars.LOG_AGE_RECIPIENT }}
+          SEAL_AGE_RECIPIENT: ${{ vars.SEAL_AGE_RECIPIENT }}
+          LOG_KEY: ${{ secrets.LOG_KEY }}
+          GH_TOKEN: ${{ secrets.EXILEFORGE_TOKEN }}
+        run: |
+          [[ -n $HOST && -n $KEY && -n $GH_TOKEN ]] || { echo '::error::DEPLOY_HOST, DEPLOY_SSH_KEY or EXILEFORGE_TOKEN is not set'; exit 1; }
+          [[ $LOG_AGE_RECIPIENT =~ ^age1 && $SEAL_AGE_RECIPIENT =~ ^age1 ]] || { echo '::error::LOG_AGE_RECIPIENT and SEAL_AGE_RECIPIENT are required'; exit 1; }
+          . ci/crypt.sh; ensure_age
+          tmp=${RUNNER_TEMP:?}
+          install -m 600 /dev/null "$tmp/key" && printf '%s\n' "$KEY" > "$tmp/key"
+          stamp=$(date -u +%Y%m%d-%H%M%S)
+          code=0
+          VPS_HOST=$HOST VPS_KEY_FILE="$tmp/key" bash ci/quiet.sh db-export bash -c 'bash ci/vps-ssh.sh backup-export </dev/null >"$1"' \
+            _ "$tmp/db.archive.gz" || code=$?
+          rm -f "$tmp/key"
+          ((code == 0)) || exit $code
+          gzip -t "$tmp/db.archive.gz" || { rm -f "$tmp/db.archive.gz"; echo '::error::the copy from the server is not a gzip archive'; exit 1; }
+          age -r "$LOG_AGE_RECIPIENT" -r "$SEAL_AGE_RECIPIENT" -o "$tmp/db-$stamp.archive.gz.age" "$tmp/db.archive.gz"
+          rm -f "$tmp/db.archive.gz"
+          gh release create "db-$stamp" "$tmp/db-$stamp.archive.gz.age" -R Sperance/ExileForge --prerelease --latest=false \
+            --title "DB db-$stamp" --notes 'Weekly encrypted copy of the game databases (age). Restore: workflow VPS in exile-ci, command restore.'
+          rm -f "$tmp/db-$stamp.archive.gz.age"
+          gh release list -R Sperance/ExileForge --limit 200 --json tagName -q '.[].tagName' | grep -E '^db-[0-9]{8}-[0-9]{6}$' | sort -r \
+            | tail -n +5 | while read -r old; do gh release delete "$old" -R Sperance/ExileForge -y --cleanup-tag || true; done
+          echo "published db-$stamp"
+
+      - name: Encrypted log
+        if: failure()
+        uses: ./.github/actions/upload-log
+        with:
+          name: db-export-log
+
+  # Восстановление базы: только вручную и только после подтверждения владельца (environment release); перед ним update.sh сам
+  # снимает свежую копию в backups/pre. Источник - копия на VPS или недельный релиз db-<дата> (CI расшифровывает его ключом SEAL).
+  restore:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.command == 'restore' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: release
+    concurrency:
+      group: vps-db
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Restore the databases
+        env:
+          HOST: ${{ secrets.DEPLOY_HOST }}
+          KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          VPS_HOST_KEY: ${{ vars.VPS_HOST_KEY }}
+          LOG_AGE_RECIPIENT: ${{ vars.LOG_AGE_RECIPIENT }}
+          LOG_KEY: ${{ secrets.LOG_KEY }}
+          SEAL_AGE_IDENTITY: ${{ secrets.SEAL_AGE_IDENTITY }}
+          GH_TOKEN: ${{ secrets.EXILEFORGE_TOKEN }}
+          FROM: ${{ inputs.restore_from }}
+        run: |
+          [[ -n $HOST && -n $KEY ]] || { echo '::error::DEPLOY_HOST or DEPLOY_SSH_KEY is not set'; exit 1; }
+          tmp=${RUNNER_TEMP:?}
+          mkdir -p logs
+          code=0
+          if [[ $FROM =~ ^(daily|deploy|pre)/db-[0-9]{8}-[0-9]{6}\.archive\.gz$ ]]; then
+            source_file=/dev/null
+            line="restore $FROM"
+          elif [[ $FROM =~ ^db-[0-9]{8}-[0-9]{6}$ ]]; then
+            [[ -n $SEAL_AGE_IDENTITY && -n $GH_TOKEN ]] || { echo '::error::SEAL_AGE_IDENTITY or EXILEFORGE_TOKEN is not set'; exit 1; }
+            . ci/crypt.sh; ensure_age
+            gh release download "$FROM" -R Sperance/ExileForge -p "$FROM.archive.gz.age" -O "$tmp/db.age" || { echo '::error::no such weekly copy'; exit 1; }
+            install -m 600 /dev/null "$tmp/id" && printf '%s\n' "$SEAL_AGE_IDENTITY" > "$tmp/id"
+            age -d -i "$tmp/id" -o "$tmp/db.archive.gz" "$tmp/db.age"
+            rm -f "$tmp/id" "$tmp/db.age"
+            gzip -t "$tmp/db.archive.gz" || { rm -f "$tmp/db.archive.gz"; echo '::error::the weekly copy is damaged'; exit 1; }
+            source_file=$tmp/db.archive.gz
+            line="restore stdin"
+          else
+            echo '::error::restore_from must be daily|deploy|pre/db-YYYYMMDD-HHMMSS.archive.gz or db-YYYYMMDD-HHMMSS'; exit 1
+          fi
+          install -m 600 /dev/null "$tmp/key" && printf '%s\n' "$KEY" > "$tmp/key"
+          VPS_HOST=$HOST VPS_KEY_FILE="$tmp/key" bash ci/vps-ssh.sh "$line" <"$source_file" >"$tmp/out.txt" 2>&1 || code=$?
+          rm -f "$tmp/key" "$tmp/db.archive.gz"
+          bash ci/encrypt-log.sh "$tmp/out.txt" logs/vps-restore.log.enc
+          rm -f "$tmp/out.txt"
+          echo "vps restore: exit $code"
+          exit $code
+
+      - name: Encrypted output
+        if: always()
+        uses: ./.github/actions/upload-log
+        with:
+          name: vps-restore

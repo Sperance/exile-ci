@@ -19,7 +19,9 @@ else
     sha=$INPUT_SHA
 fi
 if [[ -z $sha ]]; then
-    sha=$(git ls-remote "https://x-access-token:$TOKEN@github.com/$repo.git" "refs/heads/$branch" | cut -f1)
+    . "$(dirname "$0")/retry.sh"
+    head_of() { sha=$(git ls-remote "https://x-access-token:$TOKEN@github.com/$repo.git" "refs/heads/$branch" | cut -f1) && [[ -n $sha ]]; }
+    retry head_of || true
 fi
 [[ $sha =~ ^[0-9a-f]{40}$ ]] || { echo "::error::bad $label commit: '$sha'"; exit 1; }
 [[ " $* " == *" $mode "* ]] || { echo "::error::bad mode: '$mode'"; exit 1; }
