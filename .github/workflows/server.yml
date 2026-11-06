@@ -406,13 +406,14 @@ jobs:
             if [ "$made" = 201 ]; then echo "GH_ISSUES_TOKEN: метка $label создана (issues write ok)"; else echo "::warning::GH_ISSUES_TOKEN: метку $label создать не удалось ($made) - нет права Issues: write"; fi
           done
 
-      # Проверки прошли: тот же манифест получает проверенные теги, без пересборки и перекачки слоёв.
+      # Проверки прошли: тот же манифест получает проверенные теги, без пересборки и перекачки слоёв; --prefer-index=false - тег
+      # указывает ровно на этот манифест, а не на новый индекс вокруг него (иначе дайджест тега не совпал бы с собранным).
       - name: Mark the image as checked
         if: ${{ needs.resolve.outputs.mode == 'push' }}
         run: |
           . ci/branches.env
           [[ $PUSHED_DIGEST =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::no image digest from the image job"; exit 1; }
-          docker buildx imagetools create -t "$IMAGE:$SHA" -t "$IMAGE:${SERVER_BRANCH//\//-}" "$IMAGE@$PUSHED_DIGEST" >/dev/null
+          docker buildx imagetools create --prefer-index=false -t "$IMAGE:$SHA" -t "$IMAGE:${SERVER_BRANCH//\//-}" "$IMAGE@$PUSHED_DIGEST" >/dev/null
 
       # Запуск от релиза клиента: голова ветки выкатывается, только если её образ уже проверен. Иначе её пуш ещё
       # в работе и выкатит сам - релиз клиента к этому моменту уже опубликован.
