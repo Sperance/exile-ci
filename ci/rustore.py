@@ -36,6 +36,10 @@ class RuStoreError(RuntimeError):
         self.reason = reason
 
 
+class Queued(Exception):
+    """Магазин модерирует другую версию: эта не отправляется и уйдёт после её публикации."""
+
+
 class ManualUploadNeeded(RuStoreError):
     """APK несёт новое чувствительное разрешение: API его не примет, пока разрешение не объявлено в консоли."""
 
@@ -114,9 +118,15 @@ class RuStore:
     def submit(self, apk, version_code, notes, mandatory=False):
         """Черновик версии, APK и отправка на модерацию; публикация сразу после неё (publishType INSTANTLY)."""
         existing = self.versions()
-        if any(str(v.get("versionCode")) == str(version_code) and str(v.get("versionStatus", "")).upper() != "DRAFT" for v in existing):
+        if any(str(v.get("versionCode")) == str(version_code) and str(v.get("versionStatus", "")).upper() not in {"DRAFT", "ARCHIVED"} for v in existing):
             say(f"RuStore: version {version_code} is already submitted")
             return
+        # Новая версия поверх ждущей модерации отправляет ту в архив, и до игроков не доходит ни одна: пока магазин модерирует
+        # другую версию, эта ждёт; после публикации почасовая store-status сама отправит самую свежую (rustore_manual.retry)
+        busy = [v for v in existing if str(v.get("versionStatus", "")).upper() not in SETTLED]
+        if busy:
+            say(f"::notice::RuStore: {busy[0].get('versionName')} is still in review, {version_code} waits and goes out after its publication")
+            raise Queued()
         # Черновик не правится, только удаляется: брошенный прошлым прогоном уходит перед новым
         for draft in (v for v in existing if str(v.get("versionStatus", "")).upper() == "DRAFT"):
             self._body(self.http.delete(self._app(f"/{draft['versionId']}"), timeout=60), "draft delete")
@@ -159,6 +169,8 @@ def main():
     store = RuStore(os.environ["RUSTORE_KEY_ID"].strip(), os.environ["RUSTORE_PRIVATE_KEY"], os.environ["APP_ID"])
     try:
         store.submit(apk, update["versionCode"], update.get("notes", ""), bool(update.get("mandatory")))
+    except Queued:
+        return
     except ManualUploadNeeded as error:
         say(f"::warning::RuStore needs a manual upload of {update['versionName']}: {error.reason}")
         # Для шага выдачи APK: ждёт ли магазин модерации прошлой версии (тогда руками ничего не нужно) и что живо сейчас

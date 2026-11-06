@@ -90,19 +90,24 @@ def _dispatch_stores():
     response.raise_for_status()
 
 
-def retry(store):
-    """Почасовой шаг store-status: закрывает Issue выложенных версий, повторяет выкладку, когда магазин освободился."""
+# Статусы, при которых версия в магазине есть или ещё может туда дойти: такую версию заново не отправляем
+SUBMITTED = {"ACTIVE", "PUBLISHED", "MODERATION", "APPROVED", "READY_FOR_PUBLICATION", "PENDING_PUBLICATION"}
+REFUSED = {"REJECTED", "DECLINED"}
+
+
+def retry(store, latest=None):
+    """Почасовой шаг store-status: закрывает Issue выложенных версий, повторяет выкладку, когда магазин освободился, и
+    отправляет самый свежий релиз (latest - его update.json), если он ждал модерации прошлой версии."""
     token = _issue_token()
     issues = _open_issues(token)
-    if not issues:
-        return
     live, waiting = store.standing()
     # Версия уже в магазине - по коду или по названию: у загруженных через консоль магазин отдаёт versionCode -1
     versions = [v for v in store.versions() if str(v.get("versionStatus", "")).upper() != "DRAFT"]
     for v in versions:
         say(f"RUSTORE: version {v.get('versionName')} code {v.get('versionCode')} id {v.get('versionId')} {v.get('versionStatus')}")
-    present = {int(v["versionCode"]) for v in versions if int(v.get("versionCode") or 0) > 0}
-    names = {str(v.get("versionName")) for v in versions}
+    sent = [v for v in versions if str(v.get("versionStatus", "")).upper() in SUBMITTED]
+    present = {int(v["versionCode"]) for v in sent if int(v.get("versionCode") or 0) > 0}
+    names = {str(v.get("versionName")) for v in sent}
     dispatched = False
     for issue in issues:
         mark = MARK_RE.search(issue.get("body") or "")
@@ -124,6 +129,16 @@ def retry(store):
             say(f"RUSTORE: previous version is live, client.yml stores started again for {version}")
         else:
             say(f"::warning::RUSTORE: {version} still needs a manual upload in the console")
+    if issues or waiting or latest is None:
+        return
+    # Очередь: свежий релиз ждал модерации прошлой версии - магазин освободился, отправляем его (промежуточные пропускаются)
+    code, name = int(latest["versionCode"]), latest["versionName"]
+    status = {int(v.get("versionCode") or 0): str(v.get("versionStatus", "")).upper() for v in versions}
+    if status.get(code) in REFUSED:
+        say(f"::warning::RUSTORE: {name} was refused by the store review, it is not sent again")
+    elif code not in present and name not in names:
+        _dispatch_stores()
+        say(f"RUSTORE: the store is free, client.yml stores started for {name}")
 
 
 def main():

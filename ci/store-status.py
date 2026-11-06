@@ -117,7 +117,7 @@ def report_rustore(catalog):
     post_report("RUSTORE", True, entry_build(update, availability))
     if os.environ.get("EXILEFORGE_TOKEN", "").strip():
         from rustore_manual import retry
-        retry(store)
+        retry(store, catalog.latest())
     say(f"RUSTORE: {update['versionName']} status {version.get('versionStatus')}, reported at {availability:.0%}")
 
 
