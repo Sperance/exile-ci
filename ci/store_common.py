@@ -6,6 +6,7 @@
 """
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
@@ -37,9 +38,17 @@ def load_update(path):
         return json.load(file)
 
 
+def public_notes(text):
+    """Заметки для магазина: без служебного. HTML-комментарии (метка «<!-- quiet -->») и строки «Техническое: …» (их видит только
+    персонал игры) в Google Play и RuStore не уходят; в update.json для клиента заметки остаются целиком."""
+    text = re.sub(r"<!--.*?(-->|$)", "", text, flags=re.DOTALL)
+    lines = [line for line in text.splitlines() if not re.match(r"^\s*(?:[-*]\s+)?Техническое:", line)]
+    return "\n".join(lines).strip()
+
+
 def short_notes(text, limit):
-    """Заметки не длиннее limit знаков: обрезка по границе строки или слова, с многоточием."""
-    text = text.strip()
+    """Публичные заметки (public_notes) не длиннее limit знаков: обрезка по границе строки или слова, с многоточием."""
+    text = public_notes(text)
     if len(text) <= limit:
         return text
     cut = text[: limit - 1]
