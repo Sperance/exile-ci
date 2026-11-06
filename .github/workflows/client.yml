@@ -963,6 +963,13 @@ jobs:
           gh release view "$TAG" -R "$CLIENT_REPO" --json assets -q '.assets[].name' | grep '^build-cache-' | grep -vx "$ASSET" | while read -r old; do
             gh release delete-asset "$TAG" "$old" -R "$CLIENT_REPO" -y
           done
+      # Контрольные суммы архивов: хуки сессии сверяют их до распаковки (ci/cache-sums.sh, файл SHA256SUMS релиза)
+      - name: Checksums of the archives
+        env:
+          GH_TOKEN: ${{ secrets.EXILEFORGE_TOKEN }}
+        run: |
+          shopt -s nullglob
+          bash ci/cache-sums.sh "$CLIENT_REPO" "$TAG" gradle-cache-*.tar.gz build-cache-*.tar.gz
       - if: failure()
         uses: ./.github/actions/upload-log
         with:
@@ -1024,6 +1031,13 @@ jobs:
           gh release view "$TAG" -R "$CLIENT_REPO" --json assets -q '.assets[].name' | grep '^toolchain-' | grep -vx "$ASSET" | while read -r old; do
             gh release delete-asset "$TAG" "$old" -R "$CLIENT_REPO" -y
           done
+      - name: Checksums of the archives
+        working-directory: src
+        env:
+          GH_TOKEN: ${{ secrets.EXILEFORGE_TOKEN }}
+        run: |
+          shopt -s nullglob
+          bash ../ci/cache-sums.sh "$CLIENT_REPO" "$TAG" toolchain-*.tar.gz
       - if: failure()
         uses: ./.github/actions/upload-log
         with:
