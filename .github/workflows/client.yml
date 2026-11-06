@@ -466,13 +466,13 @@ jobs:
           name: exile-forge-play
           path: out/play.enc
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 7
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: exile-forge-rustore
           path: out/rustore.enc
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 7
       - name: Forget the key
         if: always()
         run: rm -f "$RUNNER_TEMP/release.jks"
@@ -679,11 +679,19 @@ jobs:
           GH_TOKEN: ${{ secrets.EXILEFORGE_TOKEN }}
           TAG: ${{ steps.version.outputs.tag }}
         run: |
+          # Карта сжатой (в ~10 раз меньше): сервер читает mapping.txt.gz, у старых релизов - mapping.txt (ReleaseMappings)
+          gzip -9 -kf mapping.txt
           if gh release view "$TAG" -R "$CLIENT_REPO" >/dev/null 2>&1; then
-            gh release upload "$TAG" mapping.txt -R "$CLIENT_REPO" --clobber
+            gh release upload "$TAG" mapping.txt.gz -R "$CLIENT_REPO" --clobber
           else
-            gh release create "$TAG" mapping.txt -R "$CLIENT_REPO" --target "$SHA" --title "ExileForge ${TAG#v}" --notes "R8 mapping of ${TAG#v}"
+            gh release create "$TAG" mapping.txt.gz -R "$CLIENT_REPO" --target "$SHA" --title "ExileForge ${TAG#v}" --notes "R8 mapping of ${TAG#v}"
           fi
+          # Карты хранятся у 10 последних релизов v*: у старших ассеты mapping.txt* удаляются (сам релиз и тег остаются)
+          # Порядок - по дате выхода, не по номеру: среди тегов есть старая схема v4.x, старше нынешних v0.x
+          gh api --paginate "repos/$CLIENT_REPO/releases?per_page=100" --jq '.[] | select(.tag_name | test("^v[0-9]")) | [.created_at, .tag_name, ([.assets[] | select(.name | startswith("mapping.txt")) | .id] | join(" "))] | @tsv' \
+            | sort -r | tail -n +11 | while IFS=$'\t' read -r _ old ids; do
+                for id in $ids; do gh api -X DELETE "repos/$CLIENT_REPO/releases/assets/$id" >/dev/null || echo "::warning::mapping of $old was not deleted"; done
+              done
       # Подпись описания: Ed25519 над байтами update.json как есть, 128 hex в update.json.sig (клиент: ManifestSignature)
       - if: steps.version.outputs.exists == 'false'
         name: Sign update.json

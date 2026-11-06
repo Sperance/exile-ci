@@ -1,5 +1,5 @@
-# Обновления действий GitHub: все действия закреплены полным SHA коммита (тег - в комментарии), Dependabot раз в неделю присылает
-# PR с новым SHA и тегом. Владелец принимает их сам (main защищён, rules-md/common/process/versions-release.md сервера).
+# Обновления действий GitHub: все действия закреплены полным SHA коммита (тег - в комментарии). Dependabot раз в месяц присылает
+# один сгруппированный PR - список «что обновить»: обновление переносится в main обычным коммитом, PR закрывается (схема без PR).
 version: 2
 updates:
   - package-ecosystem: github-actions
@@ -7,7 +7,10 @@ updates:
       - /
       - /.github/actions/*
     schedule:
-      interval: weekly
-    open-pull-requests-limit: 5
+      interval: monthly
+    open-pull-requests-limit: 1
+    groups:
+      actions:
+        patterns: [ "*" ]
     commit-message:
       prefix: "ci"

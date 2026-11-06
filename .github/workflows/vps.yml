@@ -5,7 +5,7 @@
 # health (каждый час): только сообщает - Issue «[VPS] Сервер требует внимания» в ExileForge (ci/vps_health.py), ничего не чинит.
 # db-export (воскресенье): свежая суточная копия, зашифрованная age (ключ владельца и ключ SEAL для восстановления), - в prerelease
 # db-<дата> закрытого ExileForge, 4 последних. restore: копия с VPS или недельная - только с подтверждением владельца (environment
-# release), update.sh перед ним снимает свежую копию.
+# release), update.sh перед ним снимает свежую копию. repo-mirror (понедельник): git bundle трёх репозиториев - на VPS, 4 последних.
 # Журнал публичен: хост и весь вывод сервера - только в зашифрованном артефакте `vps-<команда>` (age, открытый ключ
 # vars.LOG_AGE_RECIPIENT, 7 дней; читать: age -d -i key.txt), в журнал - итог шага. SSH идёт через ci/vps-ssh.sh: ключ хоста
 # закреплён в vars.VPS_HOST_KEY, StrictHostKeyChecking=yes. Секреты: DEPLOY_HOST, DEPLOY_SSH_KEY; переменные: VPS_HOST_KEY,
@@ -39,12 +39,13 @@ on:
     - cron: '17 * * * *'   # health
     - cron: '35 0 * * *'   # backup
     - cron: '50 0 * * 0'   # db-export
+    - cron: '10 1 * * 1'   # repo-mirror
   workflow_dispatch:
     inputs:
       command:
         description: 'update.sh on the server (rules-md/server/vps-maintenance.md): status, logs, restart, health, backup, prune, upgrade, reboot; db-export - weekly encrypted DB copy into an ExileForge release; restore - DB from a copy (owner approval); art, art-backup - pictures'
         type: choice
-        options: [ status, logs, restart, health, backup, prune, upgrade, reboot, db-export, restore, art, art-backup ]
+        options: [ status, logs, restart, health, backup, prune, upgrade, reboot, db-export, restore, repo-mirror, art, art-backup ]
         default: status
       restore_from:
         description: 'restore: a copy on the VPS (daily|deploy|pre/db-YYYYMMDD-HHMMSS.archive.gz, see status) or a weekly release tag db-YYYYMMDD-HHMMSS'
@@ -402,3 +403,44 @@ jobs:
         uses: ./.github/actions/upload-log
         with:
           name: vps-restore
+
+  # Зеркало кода вне GitHub: полные копии трёх репозиториев (все ветки и теги) git bundle'ами - на VPS, 4 последних
+  repo-mirror:
+    if: ${{ (github.event.schedule == '10 1 * * 1' || inputs.command == 'repo-mirror') && vars.DEPLOY_ENABLED == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Bundle and send
+        env:
+          HOST: ${{ secrets.DEPLOY_HOST }}
+          KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          VPS_HOST_KEY: ${{ vars.VPS_HOST_KEY }}
+          LOG_AGE_RECIPIENT: ${{ vars.LOG_AGE_RECIPIENT }}
+          LOG_KEY: ${{ secrets.LOG_KEY }}
+          SOURCE_TOKEN: ${{ secrets.SOURCE_TOKEN }}
+        run: |
+          [[ -n $HOST && -n $KEY && -n $SOURCE_TOKEN ]] || { echo '::error::DEPLOY_HOST, DEPLOY_SSH_KEY or SOURCE_TOKEN is not set'; exit 1; }
+          tmp=${RUNNER_TEMP:?}
+          mkdir -p "$tmp/bundles" logs
+          for repo in ExileForge ktor-bestgame exile-ci; do
+            git clone -q --mirror "https://x-access-token:$SOURCE_TOKEN@github.com/Sperance/$repo.git" "$tmp/$repo.git"
+            git -C "$tmp/$repo.git" bundle create -q "$tmp/bundles/$repo.bundle" --all
+          done
+          tar -C "$tmp/bundles" -cf "$tmp/repos.tar" ExileForge.bundle ktor-bestgame.bundle exile-ci.bundle
+          install -m 600 /dev/null "$tmp/key" && printf '%s\n' "$KEY" > "$tmp/key"
+          code=0
+          VPS_HOST=$HOST VPS_KEY_FILE="$tmp/key" bash ci/vps-ssh.sh repos-import <"$tmp/repos.tar" >"$tmp/out.txt" 2>&1 || code=$?
+          rm -f "$tmp/key" "$tmp/repos.tar"
+          bash ci/encrypt-log.sh "$tmp/out.txt" logs/repo-mirror.log.enc
+          echo "repo-mirror: exit $code"
+          exit $code
+
+      - name: Encrypted output
+        if: always()
+        uses: ./.github/actions/upload-log
+        with:
+          name: repo-mirror
