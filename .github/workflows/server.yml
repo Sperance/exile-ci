@@ -495,3 +495,35 @@ jobs:
       - name: Forget the key
         if: always()
         run: rm -f "$RUNNER_TEMP/key"
+
+  # Архив кэша Gradle сессий агента собирается под закреплённый в клиенте сервер. Деплой, изменивший файлы сборки сервера, сразу
+  # пересобирает архив под голову ветки сервера (client.yml, режим cache с server_head) - сессии не докачивают зависимости.
+  refresh-cache:
+    needs: [ resolve, deploy ]
+    if: ${{ !cancelled() && needs.deploy.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Compare build files with the client pin
+        env:
+          TOKEN: ${{ secrets.SOURCE_TOKEN }}
+          SHA: ${{ needs.resolve.outputs.sha }}
+          GH_TOKEN: ${{ github.token }}
+          CLIENT_REPO: Sperance/ExileForge
+        run: |
+          set -a; . ci/branches.env; set +a
+          bash ci/quiet.sh clone-sources sh -c 'git clone -q --filter=blob:none --no-checkout "https://x-access-token:$TOKEN@github.com/$SERVER_REPO" srv && git clone -q --filter=blob:none --no-checkout --branch "$CLIENT_BRANCH" "https://x-access-token:$TOKEN@github.com/$CLIENT_REPO" cli'
+          pin=$(git -C cli ls-tree "origin/$CLIENT_BRANCH" backend | awk '{print $3}')
+          [[ $pin =~ ^[0-9a-f]{40}$ ]] || { echo "::warning::client pin of backend not found, cache refresh skipped"; exit 0; }
+          files() { git -C srv ls-tree -r --name-only "$1" -- '*.gradle.kts' gradle.properties gradle | sort; }
+          sums() { files "$1" | while read -r f; do git -C srv show "$1:$f" | sha256sum; done | sha256sum | cut -c1-16; }
+          now=$(sums "$SHA"); old=$(sums "$pin")
+          if [ "$now" = "$old" ]; then echo "build files unchanged since the client pin: archive stays"; exit 0; fi
+          gh workflow run client.yml -R "$GITHUB_REPOSITORY" -f mode=cache -f server_head=true
+          echo "server build files changed since the client pin: client.yml cache started with the server head"

@@ -44,6 +44,10 @@ on:
       sha:
         description: 'Client commit (empty - head of the working branch)'
         required: false
+      server_head:
+        description: 'cache mode: build the archives with the head of the server working branch instead of the pinned server (server.yml starts it after a deploy that changed build files)'
+        type: boolean
+        default: false
 
 # Чужой код здесь не исполняется: триггеров pull_request нет, токен job'ов по умолчанию только читает.
 permissions:
@@ -731,7 +735,6 @@ jobs:
     if: ${{ !cancelled() && (needs.release.result == 'success' || needs.changes.outputs.stores == 'true') && needs.sign.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 75
-    environment: release
     permissions:
       contents: read
     concurrency:
@@ -788,7 +791,6 @@ jobs:
     if: ${{ !cancelled() && (needs.release.result == 'success' || needs.changes.outputs.stores == 'true') && needs.sign.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 75
-    environment: release
     permissions:
       contents: write
     concurrency:
@@ -894,6 +896,16 @@ jobs:
         with:
           sha: ${{ needs.changes.outputs.sha }}
           token: ${{ secrets.SOURCE_TOKEN }}
+      # После деплоя сервера с новыми файлами сборки: архив под голову рабочей ветки сервера, чтобы сессии не докачивали зависимости
+      - name: Server head instead of the pin
+        if: ${{ inputs.server_head == true }}
+        env:
+          TOKEN: ${{ secrets.SOURCE_TOKEN }}
+        run: |
+          . ci/branches.env
+          bash ci/quiet.sh server-head git -C src/backend fetch -q "https://x-access-token:$TOKEN@github.com/$SERVER_REPO" "$SERVER_BRANCH"
+          git -C src/backend checkout -q FETCH_HEAD
+          echo "server for the archives: $(git -C src/backend rev-parse --short HEAD)"
       - name: Cache key
         id: key
         env:
