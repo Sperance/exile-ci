@@ -273,6 +273,9 @@ jobs:
           token: ${{ secrets.SOURCE_TOKEN }}
       - name: Build release APK (build-only key)
         working-directory: src
+        env:
+          # Открытый ключ подписи update.json (64 hex) вшивается в прямой канал; пусто - клиент описание не проверяет
+          UPDATE_SIGN_PUBLIC_KEY: ${{ vars.UPDATE_SIGN_PUBLIC_KEY }}
         run: |
           . ../ci/build-tasks.env
           eval "$(bash ../ci/build-keystore.sh)"
@@ -681,13 +684,29 @@ jobs:
           else
             gh release create "$TAG" mapping.txt -R "$CLIENT_REPO" --target "$SHA" --title "ExileForge ${TAG#v}" --notes "R8 mapping of ${TAG#v}"
           fi
+      # Подпись описания: Ed25519 над байтами update.json как есть, 128 hex в update.json.sig (клиент: ManifestSignature)
+      - if: steps.version.outputs.exists == 'false'
+        name: Sign update.json
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+        run: |
+          if [ -z "$UPDATE_SIGNING_KEY" ]; then echo "::warning::UPDATE_SIGNING_KEY is not set: update.json goes out unsigned"; exit 0; fi
+          umask 077
+          printf '%s\n' "$UPDATE_SIGNING_KEY" > "$RUNNER_TEMP/update-signing.pem"
+          openssl pkeyutl -sign -rawin -inkey "$RUNNER_TEMP/update-signing.pem" -in update.json -out "$RUNNER_TEMP/update.sig.bin"
+          rm -f "$RUNNER_TEMP/update-signing.pem"
+          od -An -v -tx1 "$RUNNER_TEMP/update.sig.bin" | tr -d ' \n' > update.json.sig
+          [ "$(wc -c < update.json.sig)" = 128 ] || { echo "::error::update.json signature has a wrong length"; exit 1; }
+          echo "update.json signed"
       - if: steps.version.outputs.exists == 'false'
         name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.version.outputs.tag }}
           APK: ${{ steps.files.outputs.apk }}
-        run: gh release create "$TAG" "$APK" update.json -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "ExileForge ${TAG#v}" --notes-file RELEASE_NOTES.md --latest
+        run: |
+          sig=(); [ -s update.json.sig ] && sig=(update.json.sig)
+          gh release create "$TAG" "$APK" update.json "${sig[@]}" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "ExileForge ${TAG#v}" --notes-file RELEASE_NOTES.md --latest
       # Issues, что чинит релиз: коммиты с прошлого релиза, что называют «Closes #N» (fixes, resolves), - Issue получает метку
       # версии и закрывается выполненным, без комментария; игра увидит это синхронизацией сервера.
       # Рабочая ветка - не основная, сам GitHub по таким словам Issues не закрывает.
