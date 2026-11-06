@@ -23,10 +23,18 @@ NOTES_LIMIT = 4000
 LIVE = {"ACTIVE", "PUBLISHED"}
 # priorityUpdate коммита версии: 0..5, обязательный релиз - наибольший
 MANDATORY_PRIORITY = 5
+# Код выхода «магазин требует ручной загрузки»: новое чувствительное разрешение в APK объявляется только в консоли RuStore
+MANUAL_UPLOAD_EXIT = 3
 
 
 class RuStoreError(RuntimeError):
-    pass
+    def __init__(self, message, reason=""):
+        super().__init__(message)
+        self.reason = reason
+
+
+class ManualUploadNeeded(RuStoreError):
+    """APK несёт новое чувствительное разрешение: API его не примет, пока разрешение не объявлено в консоли."""
 
 
 def load_key(text):
@@ -69,9 +77,11 @@ class RuStore:
             print(response.text)
             # Причина отказа магазина - его же короткий текст (без данных игры): видна в публичном журнале без расшифровки
             reason = str(data.get("message") or "")[:200] if isinstance(data, dict) else ""
+            if "sensitive permission" in reason.lower():
+                raise ManualUploadNeeded(f"{what}: HTTP {response.status_code}", reason)
             if reason:
                 say(f"::error::RuStore {what}: {reason}")
-            raise RuStoreError(f"{what}: HTTP {response.status_code}")
+            raise RuStoreError(f"{what}: HTTP {response.status_code}", reason)
         return data.get("body")
 
     def _app(self, suffix=""):
@@ -104,12 +114,23 @@ class RuStore:
         if contacts:
             draft["developerContacts"] = contacts
         version_id = self._body(self.http.post(self._app(), json=draft, timeout=60), "draft create")
-        with open(apk, "rb") as file:
-            self._body(self.http.post(self._app(f"/{version_id}/apk"), params={"isMainApk": "true", "servicesType": "Unknown"},
-                                      files={"file": (os.path.basename(apk), file, "application/vnd.android.package-archive")},
-                                      timeout=1800), "apk upload")
+        try:
+            with open(apk, "rb") as file:
+                self._body(self.http.post(self._app(f"/{version_id}/apk"), params={"isMainApk": "true", "servicesType": "Unknown"},
+                                          files={"file": (os.path.basename(apk), file, "application/vnd.android.package-archive")},
+                                          timeout=1800), "apk upload")
+        except RuStoreError:
+            # Черновик без APK в консоли выглядит как «версия без пакета»: убираем его, а не оставляем пустым
+            self._drop_draft(version_id)
+            raise
         priority = MANDATORY_PRIORITY if mandatory else 0
         self._body(self.http.post(self._app(f"/{version_id}/commit"), params={"priorityUpdate": priority}, timeout=60), "commit")
+
+    def _drop_draft(self, version_id):
+        try:
+            self._body(self.http.delete(self._app(f"/{version_id}"), timeout=60), "draft delete")
+        except (RuStoreError, requests.RequestException):
+            say("::warning::RuStore: the empty draft could not be deleted, remove it in the console")
 
 
 def developer_contacts():
@@ -125,7 +146,11 @@ def main():
         fail("usage: rustore.py upload <app.apk> <update.json>")
     apk, update = sys.argv[2], load_update(sys.argv[3])
     store = RuStore(os.environ["RUSTORE_KEY_ID"].strip(), os.environ["RUSTORE_PRIVATE_KEY"], os.environ["APP_ID"])
-    store.submit(apk, update["versionCode"], update.get("notes", ""), bool(update.get("mandatory")))
+    try:
+        store.submit(apk, update["versionCode"], update.get("notes", ""), bool(update.get("mandatory")))
+    except ManualUploadNeeded as error:
+        say(f"::warning::RuStore needs a manual upload of {update['versionName']}: {error.reason}")
+        sys.exit(MANUAL_UPLOAD_EXIT)
     say(f"RuStore: {update['versionName']} ({update['versionCode']}) sent to review with auto-publish")
 
 

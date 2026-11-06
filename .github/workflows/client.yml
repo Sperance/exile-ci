@@ -681,7 +681,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 75
     permissions:
-      contents: read
+      contents: write
     concurrency:
       group: publish-rustore
       cancel-in-progress: false
@@ -715,6 +715,7 @@ jobs:
       - if: steps.gate.outputs.enabled == 'true'
         uses: ./.github/actions/store-tools
       - if: steps.gate.outputs.enabled == 'true'
+        id: upload
         name: Upload to RuStore
         env:
           GH_TOKEN: ${{ github.token }}
@@ -725,7 +726,35 @@ jobs:
           code=0
           bash ci/quiet.sh publish-rustore python3 ci/rustore.py upload "$RUSTORE_APK" update.json || code=$?
           cat "$PUBLIC_NOTES" 2>/dev/null || true
+          # 3 - RuStore требует ручной загрузки (новое чувствительное разрешение): APK - в релиз, владельцу - Issue с шагами
+          if [ "$code" = 3 ]; then
+            echo "manual=true" >> "$GITHUB_OUTPUT"
+            echo "apk=$RUSTORE_APK" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           exit $code
+      - if: steps.upload.outputs.manual == 'true'
+        name: Hand the APK over for a manual RuStore upload
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_TOKEN: ${{ secrets.EXILEFORGE_TOKEN }}
+          APK: ${{ steps.upload.outputs.apk }}
+        run: |
+          version=$(python3 -c 'import json;print(json.load(open("update.json"))["versionName"])')
+          asset="ExileForge-$version-rustore.apk"
+          cp "$APK" "$RUNNER_TEMP/$asset"
+          gh release upload "$TAG" "$RUNNER_TEMP/$asset" -R "$GITHUB_REPOSITORY" --clobber
+          url="https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/$asset"
+          title="[RuStore] Загрузить $version вручную"
+          body=$(printf '%s\n\n%s\n%s\n%s\n%s\n\n%s' \
+            "RuStore не принял APK через API: в сборке новое чувствительное разрешение, его объявляют только в консоли." \
+            "1. Скачать APK: $url" \
+            "2. Консоль RuStore → приложение → Новая версия → загрузить APK." \
+            "3. Объявить разрешение (текст в шаге ниже) и отправить на модерацию." \
+            "4. Следующие версии снова уйдут автоматически." \
+            "POST_NOTIFICATIONS: локальные напоминания игроку (конец состязания, новые задания, готовое ремесло), без сервера и рекламы; отключаются в настройках игры.")
+          GH_TOKEN="$ISSUE_TOKEN" gh issue create -R Sperance/ExileForge --title "$title" --body "$body" > /dev/null
+          echo "::warning::RuStore needs a manual upload: APK attached to $TAG, Issue opened in ExileForge"
       - name: Encrypted log
         if: failure()
         uses: ./.github/actions/upload-log
