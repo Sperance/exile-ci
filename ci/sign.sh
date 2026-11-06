@@ -37,7 +37,8 @@ case $kind in
         "$tools/apksigner" sign --ks "$RELEASE_KEYSTORE_PATH" --ks-key-alias "$RELEASE_KEY_ALIAS" \
             --ks-pass env:RELEASE_KEYSTORE_PASSWORD --key-pass env:RELEASE_KEY_PASSWORD --out "$out" "$work/aligned.apk"
         "$tools/apksigner" verify --print-certs "$out" >"$work/certs.txt"
-        grep -q '^Number of signers: 1$' "$work/certs.txt" || { echo "::error::$out has not exactly one signer"; exit 1; }
+        # Без --verbose apksigner не печатает «Number of signers»: считаем строки «Signer #N certificate DN»
+        [ "$(grep -cE '^Signer #[0-9]+ certificate DN:' "$work/certs.txt")" = 1 ] || { echo "::error::$out has not exactly one signer"; exit 1; }
         grep -qi "SHA-256 digest: $expected" "$work/certs.txt" || { echo "::error::$out is not signed with the release key"; exit 1; } ;;
     aab)
         strip_signature
