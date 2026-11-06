@@ -83,7 +83,7 @@ jobs:
           echo "enabled=true" >> "$GITHUB_OUTPUT"
           if [ -n "$PLAY_SERVICE_ACCOUNT_JSON" ] || { [ -n "$RUSTORE_KEY_ID" ] && [ -n "$RUSTORE_PRIVATE_KEY" ]; }; then echo "stores=true" >> "$GITHUB_OUTPUT"; fi
       - if: steps.gate.outputs.enabled == 'true'
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
       - if: steps.gate.outputs.stores == 'true'
@@ -118,7 +118,7 @@ jobs:
       group: cleanup
       cancel-in-progress: false
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
       # Шаги независимы: отказ или срок одного не мешает другому, прогон красный, если упал любой
@@ -182,7 +182,7 @@ jobs:
       CLEANUP_TOKEN: ${{ secrets.CLEANUP_TOKEN }}
     steps:
       # Скрипты ci/ (ключ подписи, ветки); без сохранённых прав - иначе git ls-remote к закрытым репо идёт токеном этого репо
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
       - name: Secrets and tokens
@@ -239,7 +239,7 @@ jobs:
           done
           [ -n "$SERVER_URL" ] && ok "variable SERVER_URL is set" || echo "WAIT  variable SERVER_URL is not set (channel reports stay off)"
           exit $fail
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
