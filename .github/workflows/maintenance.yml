@@ -245,9 +245,12 @@ jobs:
           [[ $DEPLOY_HOST =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ || $DEPLOY_HOST =~ ^[a-zA-Z0-9.-]+$ ]] && ok "DEPLOY_HOST looks like a host" || bad "DEPLOY_HOST is not an IP or host name"
           timeout 10 bash -c "</dev/tcp/$DEPLOY_HOST/22" 2>/dev/null && ok "DEPLOY_HOST port 22 is open" || bad "DEPLOY_HOST port 22 unreachable"
           # Ключ хоста, который отдаёт VPS, должен совпасть с закреплённым VPS_HOST_KEY (адрес не печатается)
-          seen=$(ssh-keyscan -T 10 -t "${VPS_HOST_KEY%% *}" "$DEPLOY_HOST" 2>/dev/null | awk '{print $2" "$3; exit}')
-          [ -n "$seen" ] && [ "$seen" = "$(echo "$VPS_HOST_KEY" | awk '{print $1" "$2}')" ] \
-            && ok "VPS_HOST_KEY matches the key the VPS presents" || bad "VPS_HOST_KEY does not match the key the VPS presents (or the VPS did not answer)"
+          pinned=$(echo "$VPS_HOST_KEY" | awk '{print $1" "$2}')
+          seen=$(ssh-keyscan -T 15 -t "${pinned%% *}" "$DEPLOY_HOST" 2>/dev/null | awk '!/^#/{print $2" "$3; exit}')
+          fp() { echo "$1" | ssh-keygen -lf - 2>/dev/null | awk '{print $2}'; }
+          if [ -z "$seen" ]; then bad "the VPS did not present a ${pinned%% *} host key (ssh-keyscan got no answer)"
+          elif [ "$seen" = "$pinned" ]; then ok "VPS_HOST_KEY matches the key the VPS presents"
+          else bad "VPS_HOST_KEY $(fp "$pinned") differs from the key the VPS presents $(fp "$seen")"; fi
           install -m 600 /dev/null "$RUNNER_TEMP/k" && printf '%s\n' "$DEPLOY_SSH_KEY" > "$RUNNER_TEMP/k"
           if ssh-keygen -y -f "$RUNNER_TEMP/k" > "$RUNNER_TEMP/k.pub" 2>/dev/null; then
             ok "DEPLOY_SSH_KEY is a valid private key, public fingerprint: $(ssh-keygen -lf "$RUNNER_TEMP/k.pub" | cut -d' ' -f2)"
