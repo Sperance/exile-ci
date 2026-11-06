@@ -11,6 +11,8 @@
 # его нет; без SERVER_URL и RELEASE_STATUS_TOKEN прогон красный: экран «Версии» в игре остаётся без данных.
 # Выкладку Play доводит до 100%: сборка на 20% не меньше суток и не больше 3 открытых Issues crash+auto ExileForge с её выхода -
 # ci/store-status.py; при всплеске падений доводка останавливается с предупреждением, пока их не разберут.
+# RuStore, ручная выкладка (ci/rustore_manual.py): открытый Issue «[RuStore] Загрузить X вручную» закрывается, когда X в магазине;
+# когда магазин ничего не модерирует, а живая версия сменилась после прошлой попытки - client.yml запускается в режиме stores (actions: write).
 # Журнал публичен: скрипты идут через ci/quiet.sh, в журнал - короткие строки (канал, версия, доля), подробности падения - в
 # зашифрованном артефакте (ключ LOG_KEY).
 # Секреты: RELEASE_STATUS_TOKEN, PLAY_SERVICE_ACCOUNT_JSON, RUSTORE_KEY_ID, RUSTORE_PRIVATE_KEY, EXILEFORGE_TOKEN (проверка падений),
@@ -58,6 +60,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      actions: write
     timeout-minutes: 15
     concurrency:
       group: store-status

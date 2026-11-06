@@ -724,10 +724,11 @@ jobs:
           set -a; . ci/build-tasks.env; set +a
           bash ci/seal.sh -d sealed/rustore.enc .
           code=0
+          export RUSTORE_STATE="$RUNNER_TEMP/rustore-state.json"
           bash ci/quiet.sh publish-rustore python3 ci/rustore.py upload "$RUSTORE_APK" update.json || code=$?
           cat "$PUBLIC_NOTES" 2>/dev/null || true
-          # 3 - RuStore требует ручной загрузки (новое чувствительное разрешение): APK - в релиз, владельцу - Issue с шагами
-          if [ "$code" = 3 ]; then
+          # Файл состояния RuStore есть - магазин требует ручной загрузки или ждёт модерации прошлой версии: APK - в релиз, владельцу - Issue
+          if [ "$code" = 0 ] && [ -s "$RUSTORE_STATE" ]; then
             echo "manual=true" >> "$GITHUB_OUTPUT"
             echo "apk=$RUSTORE_APK" >> "$GITHUB_OUTPUT"
             exit 0
@@ -744,17 +745,9 @@ jobs:
           asset="ExileForge-$version-rustore.apk"
           cp "$APK" "$RUNNER_TEMP/$asset"
           gh release upload "$TAG" "$RUNNER_TEMP/$asset" -R "$GITHUB_REPOSITORY" --clobber
-          url="https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/$asset"
-          title="[RuStore] Загрузить $version вручную"
-          body=$(printf '%s\n\n%s\n%s\n%s\n%s\n\n%s' \
-            "RuStore не принял APK через API: в сборке новое чувствительное разрешение, его объявляют только в консоли." \
-            "1. Скачать APK: $url" \
-            "2. Консоль RuStore → приложение → Новая версия → загрузить APK." \
-            "3. Объявить разрешение (текст в шаге ниже) и отправить на модерацию." \
-            "4. Следующие версии снова уйдут автоматически." \
-            "POST_NOTIFICATIONS: локальные напоминания игроку (конец состязания, новые задания, готовое ремесло), без сервера и рекламы; отключаются в настройках игры.")
-          GH_TOKEN="$ISSUE_TOKEN" gh issue create -R Sperance/ExileForge --title "$title" --body "$body" > /dev/null
-          echo "::warning::RuStore needs a manual upload: APK attached to $TAG, Issue opened in ExileForge"
+          # Один Issue на версию: шаги, строка «ждёт модерации прошлой / нужна ручная загрузка»; повтор - store-status (maintenance.yml)
+          EXILEFORGE_TOKEN="$ISSUE_TOKEN" bash ci/quiet.sh rustore-manual python3 ci/rustore_manual.py note "$version" \
+            "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/$asset" "$RUNNER_TEMP/rustore-state.json"
       - name: Encrypted log
         if: failure()
         uses: ./.github/actions/upload-log

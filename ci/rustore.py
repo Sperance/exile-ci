@@ -10,6 +10,7 @@
 """
 import base64
 import datetime
+import json
 import os
 import sys
 
@@ -21,6 +22,8 @@ BASE = "https://public-api.rustore.ru"
 NOTES_LIMIT = 4000
 # Версия в магазине у игроков: ACTIVE - опубликована; остальные статусы (DRAFT, MODERATION, APPROVED до публикации, REJECTED) - ещё нет
 LIVE = {"ACTIVE", "PUBLISHED"}
+# Не на модерации: черновик, отказ, снятая с публикации или живая версия; остальное (MODERATION, APPROVED до публикации) - ждёт магазина
+SETTLED = LIVE | {"DRAFT", "REJECTED", "DECLINED", "ARCHIVED", "INACTIVE"}
 # priorityUpdate коммита версии: 0..5, обязательный релиз - наибольший
 MANDATORY_PRIORITY = 5
 # Код выхода «магазин требует ручной загрузки»: новое чувствительное разрешение в APK объявляется только в консоли RuStore
@@ -96,6 +99,13 @@ class RuStore:
         """Версия с наибольшим versionCode или None."""
         return max((v for v in self.versions() if v.get("versionCode")), key=lambda v: int(v["versionCode"]), default=None)
 
+    def standing(self):
+        """Что в магазине сейчас: наибольший versionCode живой версии (0 - нет) и коды версий, ждущих модерации или публикации."""
+        versions = self.versions()
+        live = max((int(v["versionCode"]) for v in versions if str(v.get("versionStatus", "")).upper() in LIVE and v.get("versionCode")), default=0)
+        waiting = sorted(int(v["versionCode"]) for v in versions if str(v.get("versionStatus", "")).upper() not in SETTLED and v.get("versionCode"))
+        return live, waiting
+
     @staticmethod
     def availability(version):
         return 1.0 if str(version.get("versionStatus", "")).upper() in LIVE else 0.0
@@ -150,6 +160,13 @@ def main():
         store.submit(apk, update["versionCode"], update.get("notes", ""), bool(update.get("mandatory")))
     except ManualUploadNeeded as error:
         say(f"::warning::RuStore needs a manual upload of {update['versionName']}: {error.reason}")
+        # Для шага выдачи APK: ждёт ли магазин модерации прошлой версии (тогда руками ничего не нужно) и что живо сейчас
+        state = os.environ.get("RUSTORE_STATE", "").strip()
+        if state:
+            live, waiting = store.standing()
+            with open(state, "w") as file:
+                json.dump({"code": int(update["versionCode"]), "live": live, "waiting": waiting}, file)
+            return
         sys.exit(MANUAL_UPLOAD_EXIT)
     say(f"RuStore: {update['versionName']} ({update['versionCode']}) sent to review with auto-publish")
 
