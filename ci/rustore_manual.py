@@ -23,8 +23,8 @@ CLIENT_REPO = "Sperance/ExileForge"
 API = "https://api.github.com"
 TITLE = "[RuStore] Загрузить {} вручную"
 TITLE_RE = re.compile(r"^\[RuStore\] Загрузить (\S+) вручную$")
-# Метка в теле Issue: код версии и живой код магазина при последней попытке; повтор - только когда живой код вырос
-MARK_RE = re.compile(r"<!-- rustore code=(\d+) after=(\d+) -->")
+# Метка в теле Issue: код версии и versionId живой версии магазина при последней попытке; повтор - только когда живая версия сменилась
+MARK_RE = re.compile(r"<!-- rustore code=(\d+) after=(-?\d+) -->")
 PERMISSION_NOTE = ("POST_NOTIFICATIONS: локальные напоминания игроку (конец состязания, новые задания, готовое ремесло), без сервера и "
                    "рекламы; отключаются в настройках игры.")
 
@@ -97,7 +97,12 @@ def retry(store):
     if not issues:
         return
     live, waiting = store.standing()
-    present = {int(v["versionCode"]) for v in store.versions() if v.get("versionCode") and str(v.get("versionStatus", "")).upper() != "DRAFT"}
+    # Версия уже в магазине - по коду или по названию: у загруженных через консоль магазин отдаёт versionCode -1
+    versions = [v for v in store.versions() if str(v.get("versionStatus", "")).upper() != "DRAFT"]
+    for v in versions:
+        say(f"RUSTORE: version {v.get('versionName')} code {v.get('versionCode')} id {v.get('versionId')} {v.get('versionStatus')}")
+    present = {int(v["versionCode"]) for v in versions if int(v.get("versionCode") or 0) > 0}
+    names = {str(v.get("versionName")) for v in versions}
     dispatched = False
     for issue in issues:
         mark = MARK_RE.search(issue.get("body") or "")
@@ -105,7 +110,7 @@ def retry(store):
             continue
         code, after = int(mark.group(1)), int(mark.group(2))
         version = TITLE_RE.match(issue["title"]).group(1)
-        if any(c >= code for c in present):
+        if any(c >= code for c in present) or version in names:
             requests.patch(f"{API}/repos/{CLIENT_REPO}/issues/{issue['number']}", json={"state": "closed", "state_reason": "completed"},
                            headers=_headers(token), timeout=60).raise_for_status()
             say(f"RUSTORE: {version} is in the store, manual-upload Issue closed")

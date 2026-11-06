@@ -100,10 +100,11 @@ class RuStore:
         return max((v for v in self.versions() if v.get("versionCode")), key=lambda v: int(v["versionCode"]), default=None)
 
     def standing(self):
-        """Что в магазине сейчас: наибольший versionCode живой версии (0 - нет) и коды версий, ждущих модерации или публикации."""
+        """Что в магазине сейчас: наибольший versionId живой версии (0 - нет) и коды версий, ждущих модерации или публикации.
+        Живую версию отмечаем по versionId, а не по versionCode: у версий, загруженных через консоль, магазин отдаёт versionCode -1."""
         versions = self.versions()
-        live = max((int(v["versionCode"]) for v in versions if str(v.get("versionStatus", "")).upper() in LIVE and v.get("versionCode")), default=0)
-        waiting = sorted(int(v["versionCode"]) for v in versions if str(v.get("versionStatus", "")).upper() not in SETTLED and v.get("versionCode"))
+        live = max((int(v["versionId"]) for v in versions if str(v.get("versionStatus", "")).upper() in LIVE and v.get("versionId")), default=0)
+        waiting = sorted(int(v.get("versionCode") or 0) for v in versions if str(v.get("versionStatus", "")).upper() not in SETTLED)
         return live, waiting
 
     @staticmethod
