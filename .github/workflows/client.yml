@@ -1,7 +1,11 @@
 # CI и релизы приватного клиента Sperance/ExileForge на бесплатных минутах публичного репозитория.
 # Код клиента здесь не хранится: job'ы скачивают нужный коммит токеном SOURCE_TOKEN (.github/actions/source). Журналы и
 # артефакты публичны: сборки и тесты идут через ci/quiet.sh (в журнал - только итог шага), артефакты зашифрованы ci/seal.sh
-# (ключ LOG_KEY) - APK UI-тестов не ужат, отчёты и снимки экранов раскрывают код.
+# (age, открытые ключи vars.LOG_AGE_RECIPIENT и SEAL_AGE_RECIPIENT; ci/crypt.sh) - APK UI-тестов не ужат, отчёты и снимки экранов
+# раскрывают код.
+# Подпись отделена от сборки: Gradle собирает релизные пакеты в job'ах БЕЗ секретов подписи (одноразовый ключ, ci/build-keystore.sh),
+# а job `sign` (environment `release` - ручное подтверждение владельца) без кода игры снимает эту подпись, подписывает пакеты
+# ключом релиза (apksigner / jarsigner, ci/sign.sh) и проверяет отпечаток. Выкладка в магазины (publish-*) - тоже в environment `release`.
 #
 # Запуск:
 #   repository_dispatch client-push - пуш в рабочую ветку клиента (job `forward` в android.yml ExileForge): sha и before;
@@ -17,10 +21,11 @@
 # `publish-rustore`); задачи сборки и пути результатов - ci/build-tasks.env. Загрузка в магазин идёт после релиза, дождавшись сервера на
 # ревизии релиза, и только если в репозитории есть ключи магазина, иначе job зелёный без дела. Состояние каналов опрашивает maintenance.yml (задача store-status); прямой канал
 # отчётом серверу объявляет сам `release` (переменная SERVER_URL, секрет RELEASE_STATUS_TOKEN).
-# Секреты: SOURCE_TOKEN, EXILEFORGE_TOKEN (Contents и Issues: write на ExileForge), LOG_KEY, RELEASE_KEYSTORE,
-# RELEASE_KEYSTORE_PASSWORD, RELEASE_KEY_ALIAS, RELEASE_KEY_PASSWORD; магазины: PLAY_SERVICE_ACCOUNT_JSON, RUSTORE_KEY_ID,
+# Секреты: SOURCE_TOKEN, EXILEFORGE_TOKEN (Contents и Issues: write на ExileForge), SEAL_AGE_IDENTITY (закрытый ключ age для
+# распаковки артефактов между job'ами; только шагам, что их распаковывают), RELEASE_KEYSTORE, RELEASE_KEYSTORE_PASSWORD,
+# RELEASE_KEY_ALIAS, RELEASE_KEY_PASSWORD (только job `sign`); переходный LOG_KEY - пока не заданы ключи age; магазины: PLAY_SERVICE_ACCOUNT_JSON, RUSTORE_KEY_ID,
 # RUSTORE_PRIVATE_KEY; RELEASE_STATUS_TOKEN. Переменные: RUSTORE_CONTACT_EMAIL, RUSTORE_CONTACT_WEBSITE, RUSTORE_CONTACT_VK -
-# контакты разработчика карточки RuStore (без email магазин может отказать в черновике).
+# контакты разработчика карточки RuStore (без email магазин может отказать в черновике); LOG_AGE_RECIPIENT, SEAL_AGE_RECIPIENT.
 # Ручной режим stores - заново собрать и выложить в Google Play и RuStore уже выпущенную версию (без проверок и релиза здесь).
 # Архивы для облачных сессий агента (job'ы `gradle-cache` и `gradle-toolchain`, в конце файла) пересобираются после каждого
 # релиза версии в этом прогоне и вручную (режим cache).
@@ -46,8 +51,10 @@ permissions:
 
 env:
   CLIENT_REPO: Sperance/ExileForge
-  # Ключ шифрования журналов ci/quiet.sh: общий для всех job'ов
-  LOG_KEY: ${{ secrets.LOG_KEY }}
+  # Открытые ключи age (ci/crypt.sh) для журналов и артефактов: общие для всех job'ов. Пароль LOG_KEY (переходный запасной способ)
+  # на уровне workflow не выдаётся: его получают только job'ы без кода игры и шаги шифрования артефактов.
+  LOG_AGE_RECIPIENT: ${{ vars.LOG_AGE_RECIPIENT }}
+  SEAL_AGE_RECIPIENT: ${{ vars.SEAL_AGE_RECIPIENT }}
 
 # Каждый job проверок в своей группе: новый пуш отменяет устаревший прогон, а начатую публикацию (job `release`) - нет.
 jobs:
@@ -226,10 +233,11 @@ jobs:
         env:
           SEALED: ../sealed/${{ matrix.artifact }}.enc
           STAGE: ${{ matrix.stage }}
+          LOG_KEY: ${{ secrets.LOG_KEY }}
         run: |
           . ../ci/build-tasks.env
           if [ "$STAGE" = true ]; then paths=ui-apks; else paths="$MINIFIED_APK_DIR $MINIFIED_TEST_APK_DIR"; fi
-          bash ../ci/seal.sh "$SEALED" $paths
+          bash ../ci/seal.sh --transit "$SEALED" $paths
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ${{ matrix.artifact }}
@@ -242,7 +250,9 @@ jobs:
         with:
           name: ${{ matrix.name }}-log
 
-  # Подписанный релиз собирается один раз, здесь, и уходит в job `release` зашифрованным артефактом: там больше не пересобирают.
+  # Релизные пакеты собираются один раз, здесь, БЕЗ секретов подписи: Gradle подписывает их одноразовым ключом
+  # (ci/build-keystore.sh), а пакеты уходят в job `sign` зашифрованными артефактами `unsigned-*`. Код игры исполняется только
+  # в этих job'ах.
   release-apk:
     needs: changes
     if: ${{ needs.changes.outputs.release == 'true' }}
@@ -257,41 +267,33 @@ jobs:
         with:
           sha: ${{ needs.changes.outputs.sha }}
           token: ${{ secrets.SOURCE_TOKEN }}
-      - name: Build signed release APK
+      - name: Build release APK (build-only key)
         working-directory: src
-        env:
-          RELEASE_KEYSTORE: ${{ secrets.RELEASE_KEYSTORE }}
-          RELEASE_KEYSTORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
-          RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
-          RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
-        # Опубликованный APK всегда подписан ключом релиза, поэтому каждый ставится поверх прошлого: нет ключа - нет релиза.
         run: |
           . ../ci/build-tasks.env
-          bash ../ci/keystore.sh
-          export RELEASE_KEYSTORE_PATH="$RUNNER_TEMP/release.jks"
+          eval "$(bash ../ci/build-keystore.sh)"
           bash ../ci/quiet.sh release-apk bash gradlew "$DIRECT_APK_TASK"
-          apk=$DIRECT_APK
-          signer=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)/apksigner
-          "$signer" verify --print-certs "$apk" > "$RUNNER_TEMP/signer.txt"
-          expected=$(keytool -list -v -keystore "$RUNNER_TEMP/release.jks" -storepass "$RELEASE_KEYSTORE_PASSWORD" -alias "$RELEASE_KEY_ALIAS" | sed -n 's/.*SHA256: *//p' | tr -d ':' | tr 'A-F' 'a-f')
-          rm -f "$RUNNER_TEMP/release.jks"
-          grep -qi "SHA-256 digest: $expected" "$RUNNER_TEMP/signer.txt" || { echo "::error::APK is not signed with the release key"; exit 1; }
-          echo "APK signed with the release key"
-          bash ../ci/seal.sh ../sealed/release.enc "$DIRECT_APK" "$DIRECT_MAPPING"
+      - name: Seal the unsigned package
+        working-directory: src
+        env:
+          LOG_KEY: ${{ secrets.LOG_KEY }}
+        run: |
+          . ../ci/build-tasks.env
+          bash ../ci/seal.sh --transit ../sealed/unsigned-apk.enc "$DIRECT_APK" "$DIRECT_MAPPING"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: exile-forge-release
-          path: sealed/release.enc
+          name: unsigned-apk
+          path: sealed/unsigned-apk.enc
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 1
       - name: Encrypted log
         if: failure()
         uses: ./.github/actions/upload-log
         with:
           name: release-apk-log
 
-  # Пакет для Google Play (канал `play`: без самообновления и REQUEST_INSTALL_PACKAGES): тем же ключом релиза, но не в публичный релиз, а
-  # зашифрованным артефактом; в Play его кладёт job `publish-play` (или вручную: `ci/seal.sh -d`, Play Console).
+  # Пакет для Google Play (канал `play`: без самообновления и REQUEST_INSTALL_PACKAGES): собирается так же без секретов подписи;
+  # подпись ключом релиза - job `sign`, в Play его кладёт job `publish-play` (или вручную: `ci/seal.sh -d`, Play Console).
   release-aab:
     needs: changes
     if: ${{ needs.changes.outputs.release == 'true' || needs.changes.outputs.stores == 'true' }}
@@ -306,34 +308,33 @@ jobs:
         with:
           sha: ${{ needs.changes.outputs.sha }}
           token: ${{ secrets.SOURCE_TOKEN }}
-      - name: Build signed Play bundle
+      - name: Build Play bundle (build-only key)
         working-directory: src
-        env:
-          RELEASE_KEYSTORE: ${{ secrets.RELEASE_KEYSTORE }}
-          RELEASE_KEYSTORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
-          RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
-          RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
         run: |
           . ../ci/build-tasks.env
-          bash ../ci/keystore.sh
-          export RELEASE_KEYSTORE_PATH="$RUNNER_TEMP/release.jks"
+          eval "$(bash ../ci/build-keystore.sh)"
           bash ../ci/quiet.sh release-aab bash gradlew "$PLAY_AAB_TASK"
-          rm -f "$RUNNER_TEMP/release.jks"
-          bash ../ci/seal.sh ../sealed/play.enc "$PLAY_AAB" "$PLAY_MAPPING"
+      - name: Seal the unsigned package
+        working-directory: src
+        env:
+          LOG_KEY: ${{ secrets.LOG_KEY }}
+        run: |
+          . ../ci/build-tasks.env
+          bash ../ci/seal.sh --transit ../sealed/unsigned-aab.enc "$PLAY_AAB" "$PLAY_MAPPING"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: exile-forge-play
-          path: sealed/play.enc
+          name: unsigned-aab
+          path: sealed/unsigned-aab.enc
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 1
       - name: Encrypted log
         if: failure()
         uses: ./.github/actions/upload-log
         with:
           name: release-aab-log
 
-  # APK для RuStore (канал `rustore`: свой магазин обновлений вместо самообновления) тем же ключом релиза: зашифрованным артефактом, в
-  # магазин его кладёт job `publish-rustore`.
+  # APK для RuStore (канал `rustore`: свой магазин обновлений вместо самообновления): так же без секретов подписи; подпись -
+  # job `sign`, в магазин его кладёт job `publish-rustore`.
   release-rustore:
     needs: changes
     if: ${{ needs.changes.outputs.release == 'true' || needs.changes.outputs.stores == 'true' }}
@@ -348,36 +349,131 @@ jobs:
         with:
           sha: ${{ needs.changes.outputs.sha }}
           token: ${{ secrets.SOURCE_TOKEN }}
-      - name: Build signed RuStore APK
+      - name: Build RuStore APK (build-only key)
         working-directory: src
-        env:
-          RELEASE_KEYSTORE: ${{ secrets.RELEASE_KEYSTORE }}
-          RELEASE_KEYSTORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
-          RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
-          RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
         run: |
           . ../ci/build-tasks.env
-          bash ../ci/keystore.sh
-          export RELEASE_KEYSTORE_PATH="$RUNNER_TEMP/release.jks"
+          eval "$(bash ../ci/build-keystore.sh)"
           bash ../ci/quiet.sh release-rustore bash gradlew "$RUSTORE_APK_TASK"
-          signer=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)/apksigner
-          "$signer" verify --print-certs "$RUSTORE_APK" > "$RUNNER_TEMP/signer.txt"
-          expected=$(keytool -list -v -keystore "$RUNNER_TEMP/release.jks" -storepass "$RELEASE_KEYSTORE_PASSWORD" -alias "$RELEASE_KEY_ALIAS" | sed -n 's/.*SHA256: *//p' | tr -d ':' | tr 'A-F' 'a-f')
-          rm -f "$RUNNER_TEMP/release.jks"
-          grep -qi "SHA-256 digest: $expected" "$RUNNER_TEMP/signer.txt" || { echo "::error::APK is not signed with the release key"; exit 1; }
-          echo "RuStore APK signed with the release key"
-          bash ../ci/seal.sh ../sealed/rustore.enc "$RUSTORE_APK"
+      - name: Seal the unsigned package
+        working-directory: src
+        env:
+          LOG_KEY: ${{ secrets.LOG_KEY }}
+        run: |
+          . ../ci/build-tasks.env
+          bash ../ci/seal.sh --transit ../sealed/unsigned-rustore.enc "$RUSTORE_APK"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: exile-forge-rustore
-          path: sealed/rustore.enc
+          name: unsigned-rustore
+          path: sealed/unsigned-rustore.enc
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 1
       - name: Encrypted log
         if: failure()
         uses: ./.github/actions/upload-log
         with:
           name: release-rustore-log
+
+  # Подпись ключом релиза: job без кода игры (только ci/ этого репозитория и артефакты сборки), environment `release` - владелец
+  # подтверждает каждый запуск вручную (required reviewers в настройках репозитория). Опубликованный APK всегда подписан ключом
+  # релиза, поэтому каждый ставится поверх прошлого: нет ключа или отпечаток не совпал - нет релиза. Подписанное уходит дальше теми же
+  # именами артефактов, что были раньше (`exile-forge-release`, `exile-forge-play`, `exile-forge-rustore`).
+  sign:
+    needs: [ changes, release-apk, release-aab, release-rustore ]
+    if: ${{ !cancelled() && (needs.changes.outputs.release == 'true' || needs.changes.outputs.stores == 'true') && needs.release-aab.result == 'success' && needs.release-rustore.result == 'success' && (needs.changes.outputs.stores == 'true' || needs.release-apk.result == 'success') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: release
+    permissions:
+      contents: read
+    concurrency:
+      group: client-sign
+      cancel-in-progress: false
+    env:
+      LOG_KEY: ${{ secrets.LOG_KEY }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        if: ${{ needs.release-apk.result == 'success' }}
+        with:
+          name: unsigned-apk
+          path: sealed
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: unsigned-aab
+          path: sealed
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: unsigned-rustore
+          path: sealed
+      - name: Sign with the release key
+        env:
+          SEAL_AGE_IDENTITY: ${{ secrets.SEAL_AGE_IDENTITY }}
+          RELEASE_KEYSTORE: ${{ secrets.RELEASE_KEYSTORE }}
+          RELEASE_KEYSTORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
+          RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+          RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+        run: |
+          . ci/build-tasks.env
+          bash ci/keystore.sh
+          export RELEASE_KEYSTORE_PATH="$RUNNER_TEMP/release.jks"
+          sign() {   # sign <имя артефакта> <apk|aab> <путь пакета> [сопутствующие файлы...]
+            local artifact=$1 kind=$2 pkg=$3 extra
+            shift 3
+            bash ci/seal.sh -d "sealed/unsigned-$artifact.enc" "unsigned/$artifact"
+            bash ci/quiet.sh "sign-$artifact" bash ci/sign.sh "$kind" "unsigned/$artifact/$pkg" "signed/$artifact/$pkg"
+            for extra in "$@"; do
+              mkdir -p "signed/$artifact/$(dirname "$extra")"
+              cp "unsigned/$artifact/$extra" "signed/$artifact/$extra"
+            done
+          }
+          [ ! -f sealed/unsigned-apk.enc ] || sign apk apk "$DIRECT_APK" "$DIRECT_MAPPING"
+          sign aab aab "$PLAY_AAB" "$PLAY_MAPPING"
+          sign rustore apk "$RUSTORE_APK"
+          rm -f "$RUNNER_TEMP/release.jks"
+      - name: Seal the signed packages
+        env:
+          LOG_KEY: ${{ secrets.LOG_KEY }}
+        run: |
+          . ci/build-tasks.env
+          mkdir -p out
+          seal() {   # seal <имя артефакта> <файл.enc> <пути...>
+            local artifact=$1 target=$2
+            shift 2
+            (cd "signed/$artifact" && bash "$GITHUB_WORKSPACE/ci/seal.sh" --transit "$GITHUB_WORKSPACE/out/$target" "$@")
+          }
+          [ ! -d signed/apk ] || seal apk release.enc "$DIRECT_APK" "$DIRECT_MAPPING"
+          seal aab play.enc "$PLAY_AAB" "$PLAY_MAPPING"
+          seal rustore rustore.enc "$RUSTORE_APK"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: ${{ needs.release-apk.result == 'success' }}
+        with:
+          name: exile-forge-release
+          path: out/release.enc
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: exile-forge-play
+          path: out/play.enc
+          if-no-files-found: error
+          retention-days: 30
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: exile-forge-rustore
+          path: out/rustore.enc
+          if-no-files-found: error
+          retention-days: 30
+      - name: Forget the key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/release.jks"
+      - name: Encrypted log
+        if: failure()
+        uses: ./.github/actions/upload-log
+        with:
+          name: sign-log
 
   # UI-тесты и смоук R8 - только перед релизом и по shots: собранные APK приходят артефактами, Gradle здесь не нужен.
   emulator:
@@ -402,6 +498,9 @@ jobs:
           name: ui-apks-minified
           path: sealed
       - name: Unpack APKs
+        env:
+          SEAL_AGE_IDENTITY: ${{ secrets.SEAL_AGE_IDENTITY }}
+          LOG_KEY: ${{ secrets.LOG_KEY }}
         run: |
           bash ci/seal.sh -d sealed/ui-apks.enc .
           bash ci/seal.sh -d sealed/ui-apks-minified.enc .
@@ -451,6 +550,8 @@ jobs:
       # Отчёты UI-тестов, превью и снимки ключевых экранов (design-preview/shots при shots) - одним зашифрованным артефактом
       - name: Seal UI reports and preview
         if: always()
+        env:
+          LOG_KEY: ${{ secrets.LOG_KEY }}
         run: bash ci/seal.sh sealed/ui.enc ui-results.txt release-smoke.txt design-preview
       - name: Upload UI reports and preview
         if: always()
@@ -492,6 +593,8 @@ jobs:
       - name: Seal reports
         if: always()
         working-directory: src
+        env:
+          LOG_KEY: ${{ secrets.LOG_KEY }}
         run: bash ../ci/seal.sh ../sealed/client-server.enc core/build/reports/tests core/build/test-results build/client-server.log
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
@@ -507,8 +610,8 @@ jobs:
   # Пропущенные по фильтру проверки (core без изменений) релиз не держат; упавшие или отменённые - держат.
   release:
     # Пакеты магазинов собираются до публикации: сломанный вариант сборки не даёт выпустить версию в одном канале и не выпустить в другом
-    needs: [ changes, core, app, minified, release-apk, release-aab, release-rustore, emulator, client-server ]
-    if: ${{ !cancelled() && needs.changes.outputs.release == 'true' && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') }}
+    needs: [ changes, core, app, minified, release-apk, release-aab, release-rustore, sign, emulator, client-server ]
+    if: ${{ !cancelled() && needs.changes.outputs.release == 'true' && needs.sign.result == 'success' && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     outputs:
@@ -522,6 +625,7 @@ jobs:
       cancel-in-progress: false
     env:
       SHA: ${{ needs.changes.outputs.sha }}
+      LOG_KEY: ${{ secrets.LOG_KEY }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       # Публикации нужны заметки, версии и ревизии из исходников, а закрытию Issues - история с тегами
@@ -553,6 +657,7 @@ jobs:
         working-directory: src
         env:
           TAG: ${{ steps.version.outputs.tag }}
+          SEAL_AGE_IDENTITY: ${{ secrets.SEAL_AGE_IDENTITY }}
         run: |
           . ../ci/build-tasks.env
           export DIRECT_APK DIRECT_MAPPING
@@ -622,16 +727,18 @@ jobs:
   # перезапуском упавшего job'а: пакеты лежат в артефактах прогона, повторная загрузка той же версии безопасна. Заметки магазинов и
   # обязательность (приоритет обновления 5) - из update.json релиза (RELEASE_NOTES.md без заголовка).
   publish-play:
-    needs: [ changes, release, release-aab ]
-    if: ${{ !cancelled() && (needs.release.result == 'success' || needs.changes.outputs.stores == 'true') && needs.release-aab.result == 'success' }}
+    needs: [ changes, release, sign ]
+    if: ${{ !cancelled() && (needs.release.result == 'success' || needs.changes.outputs.stores == 'true') && needs.sign.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 75
+    environment: release
     permissions:
       contents: read
     concurrency:
       group: publish-play
       cancel-in-progress: false
     env:
+      LOG_KEY: ${{ secrets.LOG_KEY }}
       PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
       PLAY_TRACK: ${{ vars.PLAY_TRACK }}
       TAG: ${{ needs.release.outputs.tag || needs.changes.outputs.tag }}
@@ -662,6 +769,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PUBLIC_NOTES: ${{ runner.temp }}/notes.txt
+          SEAL_AGE_IDENTITY: ${{ secrets.SEAL_AGE_IDENTITY }}
         run: |
           set -a; . ci/build-tasks.env; set +a
           bash ci/seal.sh -d sealed/play.enc .
@@ -676,16 +784,18 @@ jobs:
           name: publish-play-log
 
   publish-rustore:
-    needs: [ changes, release, release-rustore ]
-    if: ${{ !cancelled() && (needs.release.result == 'success' || needs.changes.outputs.stores == 'true') && needs.release-rustore.result == 'success' }}
+    needs: [ changes, release, sign ]
+    if: ${{ !cancelled() && (needs.release.result == 'success' || needs.changes.outputs.stores == 'true') && needs.sign.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 75
+    environment: release
     permissions:
       contents: write
     concurrency:
       group: publish-rustore
       cancel-in-progress: false
     env:
+      LOG_KEY: ${{ secrets.LOG_KEY }}
       RUSTORE_KEY_ID: ${{ secrets.RUSTORE_KEY_ID }}
       RUSTORE_PRIVATE_KEY: ${{ secrets.RUSTORE_PRIVATE_KEY }}
       TAG: ${{ needs.release.outputs.tag || needs.changes.outputs.tag }}
@@ -720,6 +830,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PUBLIC_NOTES: ${{ runner.temp }}/notes.txt
+          SEAL_AGE_IDENTITY: ${{ secrets.SEAL_AGE_IDENTITY }}
         run: |
           set -a; . ci/build-tasks.env; set +a
           bash ci/seal.sh -d sealed/rustore.enc .
