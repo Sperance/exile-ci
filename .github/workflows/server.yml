@@ -1,7 +1,7 @@
 # CI и авто-деплой приватного сервера Sperance/ktor-bestgame на бесплатных минутах публичного репозитория.
 # Код сервера здесь не хранится: каждый job скачивает нужный коммит токеном SOURCE_TOKEN (fine-grained, Contents: read
 # на ExileForge и ktor-bestgame). Журналы публичны, поэтому сборка, проверки и деплой идут через ci/quiet.sh: в журнал - только итог
-# шага, полный вывод падения - в зашифрованном артефакте (ключ LOG_KEY).
+# шага, полный вывод падения - в зашифрованном артефакте (age, открытый ключ LOG_AGE_RECIPIENT).
 #
 # Запуск:
 #   repository_dispatch server-push   - пуш в рабочую ветку сервера (job `forward` в deploy.yml сервера): проверки, браузерная
@@ -15,7 +15,12 @@
 # Перед деплоем (job `deploy`) - защита ci/deploy-guard.py: сервер не выкатывается, если отрежет самую старую сборку, ещё лежащую в
 # канале магазина (минимум ревизии, форма контента CONTENT_SCHEMA и правила RULES_VERSION против update.json этих сборок; каналы - из
 # публичного манифеста SERVER_URL/static/index.json). Разрыв, одобренный владельцем, - ручной запуск с force_breaking.
-# Секреты: SOURCE_TOKEN, LOG_KEY, DEPLOY_HOST, DEPLOY_SSH_KEY, GH_ISSUES_TOKEN. Переменная DEPLOY_ENABLED=true включает образ и деплой.
+# Деплой: по SSH идёт ci/vps-ssh.sh - ключ хоста закреплён в vars.VPS_HOST_KEY, StrictHostKeyChecking=yes; на VPS уходит команда
+# `deploy <sha> <sha256:дайджест>`: update.sh тянет образ по неизменяемому дайджесту, а не по тегу, и сверяет метку sha образа.
+# Журналы шифруются age (открытый ключ vars.LOG_AGE_RECIPIENT, ci/crypt.sh); запасной openssl с LOG_KEY - только пока он не задан.
+# Job `scan` (Trivy: зависимости сервера и образ) пока не блокирует: только предупреждение, отчёт - в зашифрованном артефакте.
+# Секреты: SOURCE_TOKEN, DEPLOY_HOST, DEPLOY_SSH_KEY, GH_ISSUES_TOKEN. Переменные: DEPLOY_ENABLED=true включает образ и деплой,
+# VPS_HOST_KEY, LOG_AGE_RECIPIENT.
 # Пакету в GHCR выдан доступ этого репозитория (Package settings - Manage Actions access - Write).
 name: Server
 
@@ -44,6 +49,9 @@ permissions:
 env:
   IMAGE: ghcr.io/sperance/ktor-bestgame
   SERVER_REPO: Sperance/ktor-bestgame
+  # Открытые ключи age (ci/crypt.sh): на раннере только они; LOG_KEY выдаётся лишь job'ам и шагам без кода сервера
+  LOG_AGE_RECIPIENT: ${{ vars.LOG_AGE_RECIPIENT }}
+  SEAL_AGE_RECIPIENT: ${{ vars.SEAL_AGE_RECIPIENT }}
 
 jobs:
   resolve:
@@ -95,8 +103,6 @@ jobs:
           node-version: 22
       - name: Content and contract checks
         working-directory: server
-        env:
-          LOG_KEY: ${{ secrets.LOG_KEY }}
         run: bash ../ci/quiet.sh checks bash scripts/check.sh all
       - name: Encrypted log
         if: failure()
@@ -132,8 +138,6 @@ jobs:
           node-version: 22
       - name: Browser check of the panel charts
         working-directory: server
-        env:
-          LOG_KEY: ${{ secrets.LOG_KEY }}
         run: bash ../ci/quiet.sh panel bash scripts/check.sh panel
       - name: Encrypted log
         if: failure()
@@ -153,8 +157,6 @@ jobs:
     concurrency:
       group: server-compat
       cancel-in-progress: true
-    env:
-      LOG_KEY: ${{ secrets.LOG_KEY }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       # Вся история: версию сервера Gradle считает по коммитам
@@ -210,6 +212,8 @@ jobs:
       - name: Seal reports
         if: ${{ always() && steps.oldest.outputs.tag != '' }}
         working-directory: src
+        env:
+          LOG_KEY: ${{ secrets.LOG_KEY }}
         run: bash ../ci/seal.sh ../sealed/compat.enc core/build/reports/tests core/build/test-results build/client-server.log
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
@@ -231,6 +235,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       # Вся история: patch версии - число коммитов после правки server-version, плюс список изменений в метке образа
@@ -256,11 +262,11 @@ jobs:
       # Метаданные и сборка - одним шагом: список коммитов (метка образа) не попадает ни в env шага, ни в команду в журнале.
       # Одинаковые библиотеки дают одинаковый слой (время файлов обнулено): VPS докачивает только слой app.
       - name: Build and push the image
+        id: build
         working-directory: server
         env:
           SHA: ${{ needs.resolve.outputs.sha }}
           SOURCE_DATE_EPOCH: 0
-          LOG_KEY: ${{ secrets.LOG_KEY }}
         run: |
           bash ../ci/quiet.sh layout bash gradlew dockerLayers
           # Версию посчитал Gradle из git (server-version.properties) - та же, что сервер отдаёт в манифесте.
@@ -272,13 +278,72 @@ jobs:
           export SERVER_VERSION API_REVISION CHANGELOG REVISION
           echo "server $SERVER_VERSION, API $API_REVISION"
           bash ../ci/quiet.sh image docker buildx build . --provenance=false \
+            --metadata-file "$RUNNER_TEMP/build-meta.json" \
             --output "type=image,name=$IMAGE:build-$SHA,push=true,rewrite-timestamp=true" \
             --build-arg REVISION --build-arg SERVER_VERSION --build-arg API_REVISION --build-arg CHANGELOG
+          # Дайджест собранного манифеста: деплой ставит образ по нему, а не по изменяемому тегу
+          digest=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["containerimage.digest"])' "$RUNNER_TEMP/build-meta.json")
+          [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::image digest not found in the build metadata"; exit 1; }
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
       - name: Encrypted log
         if: failure()
         uses: ./.github/actions/upload-log
         with:
           name: image-log
+
+  # Уязвимости: зависимости сервера (Gradle lockfile, если есть) и собранный образ. Пока не блокирует деплой: только предупреждение со
+  # счётчиком; сам отчёт (имена и версии зависимостей приватного кода) - в зашифрованном артефакте.
+  scan:
+    needs: [ resolve, image ]
+    if: ${{ !cancelled() && needs.image.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: ./.github/actions/source
+        with:
+          repo: ${{ env.SERVER_REPO }}
+          sha: ${{ needs.resolve.outputs.sha }}
+          token: ${{ secrets.SOURCE_TOKEN }}
+          path: server
+          submodules: 'false'
+          persist-credentials: 'false'
+      - uses: aquasecurity/setup-trivy@81e514348e19b6112ce2a7e3ecbafe19c1e1f567 # v0.3.1
+        with:
+          version: v0.76.2
+      - name: Scan dependencies and the image
+        continue-on-error: true
+        env:
+          DIGEST: ${{ needs.image.outputs.digest }}
+          TRIVY_USERNAME: ${{ github.actor }}
+          TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+          TRIVY_DISABLE_VEX_NOTICE: 'true'
+        run: |
+          mkdir -p scan
+          bash ci/quiet.sh scan-fs trivy fs --scanners vuln --severity HIGH,CRITICAL --exit-code 0 --format json --output scan/fs.json server || true
+          bash ci/quiet.sh scan-image trivy image --scanners vuln --severity HIGH,CRITICAL --exit-code 0 --format json --output scan/image.json "$IMAGE@$DIGEST" || true
+          for report in fs image; do
+            count=$(python3 -c 'import json, sys; print(sum(len(r.get("Vulnerabilities") or []) for r in json.load(open(sys.argv[1])).get("Results") or []))' "scan/$report.json" 2>/dev/null || echo 0)
+            echo "scan $report: $count HIGH/CRITICAL findings"
+            [[ $count -eq 0 ]] || echo "::warning::scan $report found $count HIGH/CRITICAL vulnerabilities: see the sealed artifact vuln-scan (this check does not block yet)"
+          done
+      - name: Seal the scan report
+        if: always()
+        env:
+          LOG_KEY: ${{ secrets.LOG_KEY }}
+        run: bash ci/seal.sh sealed/vuln-scan.enc scan
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: vuln-scan
+          path: |
+            sealed/vuln-scan.enc
+            logs
+          retention-days: 7
+          if-no-files-found: ignore
 
   deploy:
     needs: [ resolve, checks, panel, compat, image ]
@@ -294,6 +359,8 @@ jobs:
       packages: write
     env:
       SHA: ${{ needs.resolve.outputs.sha }}
+      # Дайджест, который собрал job `image` этого прогона (режим push); в режиме deploy пуст - берётся у проверенного тега ниже
+      PUSHED_DIGEST: ${{ needs.image.outputs.digest }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       # Деплою нужны только Protocol.kt (API_REVISION, MIN_API_REVISION) и Content.kt (RULES_VERSION, CONTENT_SCHEMA) правил
@@ -344,15 +411,19 @@ jobs:
         if: ${{ needs.resolve.outputs.mode == 'push' }}
         run: |
           . ci/branches.env
-          docker buildx imagetools create -t "$IMAGE:$SHA" -t "$IMAGE:${SERVER_BRANCH//\//-}" "$IMAGE:build-$SHA" >/dev/null
+          [[ $PUSHED_DIGEST =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::no image digest from the image job"; exit 1; }
+          docker buildx imagetools create -t "$IMAGE:$SHA" -t "$IMAGE:${SERVER_BRANCH//\//-}" "$IMAGE@$PUSHED_DIGEST" >/dev/null
 
       # Запуск от релиза клиента: голова ветки выкатывается, только если её образ уже проверен. Иначе её пуш ещё
       # в работе и выкатит сам - релиз клиента к этому моменту уже опубликован.
       - name: Checked image of the branch head
         id: image
         run: |
-          if docker buildx imagetools inspect "$IMAGE:$SHA" >/dev/null 2>&1; then
+          if digest=$(docker buildx imagetools inspect "$IMAGE:$SHA" --format '{{.Manifest.Digest}}' 2>/dev/null); then
+            [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::bad image digest for $SHA"; exit 1; }
+            [[ -z $PUSHED_DIGEST || $PUSHED_DIGEST == "$digest" ]] || { echo "::error::the checked tag no longer points at the image built by this run"; exit 1; }
             echo "ready=true" >> "$GITHUB_OUTPUT"
+            echo "digest=$digest" >> "$GITHUB_OUTPUT"
           else
             echo "::notice::no checked image for $SHA yet: its push run deploys it"
             echo "ready=false" >> "$GITHUB_OUTPUT"
@@ -403,14 +474,18 @@ jobs:
           HOST: ${{ secrets.DEPLOY_HOST }}
           KEY: ${{ secrets.DEPLOY_SSH_KEY }}
           GH_ISSUES_TOKEN: ${{ secrets.GH_ISSUES_TOKEN }}
+          DIGEST: ${{ steps.image.outputs.digest }}
+          VPS_HOST_KEY: ${{ vars.VPS_HOST_KEY }}
           LOG_KEY: ${{ secrets.LOG_KEY }}
         run: |
+          [[ $DIGEST =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::no image digest to deploy"; exit 1; }
           install -m 600 /dev/null "$RUNNER_TEMP/key" && printf '%s\n' "$KEY" > "$RUNNER_TEMP/key"
           # Ключ на VPS привязан к одной команде (update.sh без вопросов): её код выхода - итог деплоя.
-          # Строка команды доходит до update.sh как SSH_ORIGINAL_COMMAND - из неё он берёт sha образа.
+          # Строка команды доходит до update.sh как SSH_ORIGINAL_COMMAND - из неё он берёт sha коммита и дайджест образа:
+          # образ тянется по неизменяемому @sha256, а не по тегу, и его метка sha сверяется с коммитом.
           # Токен GitHub Issues (0.14.1, GH-ISSUES) - первой строкой stdin: в строку команды и журналы он не попадает.
-          printf '%s\n' "$GH_ISSUES_TOKEN" | bash ci/quiet.sh deploy \
-            ssh -i "$RUNNER_TEMP/key" -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 "root@$HOST" "deploy $SHA"
+          printf '%s\n' "$GH_ISSUES_TOKEN" | VPS_HOST=$HOST VPS_KEY_FILE="$RUNNER_TEMP/key" bash ci/quiet.sh deploy \
+            bash ci/vps-ssh.sh "deploy $SHA $DIGEST"
       - name: Encrypted log
         if: failure()
         uses: ./.github/actions/upload-log

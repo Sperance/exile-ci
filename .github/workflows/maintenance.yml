@@ -14,18 +14,18 @@
 # RuStore, ручная выкладка (ci/rustore_manual.py): открытый Issue «[RuStore] Загрузить X вручную» закрывается, когда X в магазине;
 # когда магазин ничего не модерирует, а живая версия сменилась после прошлой попытки - client.yml запускается в режиме stores (actions: write).
 # Журнал публичен: скрипты идут через ci/quiet.sh, в журнал - короткие строки (канал, версия, доля), подробности падения - в
-# зашифрованном артефакте (ключ LOG_KEY).
+# зашифрованном артефакте (age, открытый ключ vars.LOG_AGE_RECIPIENT).
 # Секреты: RELEASE_STATUS_TOKEN, PLAY_SERVICE_ACCOUNT_JSON, RUSTORE_KEY_ID, RUSTORE_PRIVATE_KEY, EXILEFORGE_TOKEN (проверка падений),
-# LOG_KEY. Переменные: SERVER_URL (адрес сервера с https://, без слеша в конце), PLAY_TRACK (дорожка Play, ci/play.py).
+# Переменные: LOG_AGE_RECIPIENT, SERVER_URL (адрес сервера с https://, без слеша в конце), PLAY_TRACK (дорожка Play, ci/play.py).
 #
 # Задача cleanup:
 # Чистка платного хранилища GitHub (бесплатно 0,5 ГБ на аккаунт, считаются только приватные репозитории): раз в сутки (расписание ниже) и вручную.
 # Артефакты Actions в ExileForge и ktor-bestgame удаляются все - их оставили прогоны до переезда CI сюда, новые их не создают.
 # Образы сервера ghcr.io/sperance/ktor-bestgame: живут тег ветки и 5 последних проверенных, черновые и безымянные старше суток
 # удаляются; откат на VPS идёт на локальную копию прежнего образа (deploy/update.sh сервера). Правила - ci/cleanup.py.
-# Журнал публичен: только счётчики и коды ответов, подробности падения - в зашифрованном артефакте (ключ LOG_KEY).
+# Журнал публичен: только счётчики и коды ответов, подробности падения - в зашифрованном артефакте (age, открытый ключ vars.LOG_AGE_RECIPIENT).
 # Секреты: CLEANUP_TOKEN (fine-grained, ExileForge и ktor-bestgame, Actions: Read and write; нет - артефакты пропускаются с
-# предупреждением), LOG_KEY. Образы удаляет GITHUB_TOKEN: пакету выдана роль Admin этого репозитория
+# предупреждением). Переменная LOG_AGE_RECIPIENT. Образы удаляет GITHUB_TOKEN: пакету выдана роль Admin этого репозитория
 # (Package settings - Manage Actions access).
 #
 # Задача doctor:
@@ -52,7 +52,8 @@ permissions:
   contents: read
 
 env:
-  LOG_KEY: ${{ secrets.LOG_KEY }}
+  # Открытый ключ age для журналов (ci/crypt.sh); переходный запасной LOG_KEY выдаётся job'ам ниже, а не всему workflow
+  LOG_AGE_RECIPIENT: ${{ vars.LOG_AGE_RECIPIENT }}
 
 jobs:
   store-status:
@@ -66,6 +67,7 @@ jobs:
       group: store-status
       cancel-in-progress: false
     env:
+      LOG_KEY: ${{ secrets.LOG_KEY }}
       SERVER_URL: ${{ vars.SERVER_URL }}
       RELEASE_STATUS_TOKEN: ${{ secrets.RELEASE_STATUS_TOKEN }}
       PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
@@ -117,6 +119,8 @@ jobs:
     concurrency:
       group: cleanup
       cancel-in-progress: false
+    env:
+      LOG_KEY: ${{ secrets.LOG_KEY }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -167,6 +171,11 @@ jobs:
       EXILEFORGE_TOKEN: ${{ secrets.EXILEFORGE_TOKEN }}
       GH_ISSUES_TOKEN: ${{ secrets.GH_ISSUES_TOKEN }}
       LOG_KEY: ${{ secrets.LOG_KEY }}
+      LOG_AGE_RECIPIENT: ${{ vars.LOG_AGE_RECIPIENT }}
+      SEAL_AGE_RECIPIENT: ${{ vars.SEAL_AGE_RECIPIENT }}
+      SEAL_AGE_IDENTITY: ${{ secrets.SEAL_AGE_IDENTITY }}
+      VPS_HOST_KEY: ${{ vars.VPS_HOST_KEY }}
+      UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
       DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
       DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
       RELEASE_KEYSTORE: ${{ secrets.RELEASE_KEYSTORE }}
@@ -191,11 +200,21 @@ jobs:
           ok() { echo "OK    $*"; }
           bad() { echo "FAIL  $*"; fail=1; }
           api() { curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $1" -H "Accept: application/vnd.github+json" "${@:2}" 2>/dev/null || echo 000; }
-          for name in SOURCE_TOKEN EXILEFORGE_TOKEN GH_ISSUES_TOKEN LOG_KEY DEPLOY_HOST DEPLOY_SSH_KEY; do
+          for name in SOURCE_TOKEN EXILEFORGE_TOKEN GH_ISSUES_TOKEN DEPLOY_HOST DEPLOY_SSH_KEY; do
             [ -n "${!name}" ] && ok "secret $name is set" || bad "secret $name is missing"
           done
           [ "$DEPLOY_ENABLED" = true ] && ok "variable DEPLOY_ENABLED=true" || bad "variable DEPLOY_ENABLED is '$DEPLOY_ENABLED', need true"
-          [ ${#LOG_KEY} -ge 16 ] && ok "LOG_KEY length ${#LOG_KEY}" || bad "LOG_KEY shorter than 16"
+          # Шифрование журналов и артефактов (ci/crypt.sh): age с открытыми ключами; LOG_KEY - только переходный запасной способ
+          . ci/crypt.sh; ensure_age
+          if [[ $LOG_AGE_RECIPIENT =~ ^age1[a-z0-9]{50,}$ ]]; then ok "variable LOG_AGE_RECIPIENT is an age public key"; else bad "variable LOG_AGE_RECIPIENT is missing or not an age public key (age-keygen)"; fi
+          if [[ $SEAL_AGE_RECIPIENT =~ ^age1[a-z0-9]{50,}$ && -n $SEAL_AGE_IDENTITY ]]; then
+            [ "$(printf '%s\n' "$SEAL_AGE_IDENTITY" | age-keygen -y 2>/dev/null)" = "$SEAL_AGE_RECIPIENT" ] \
+              && ok "SEAL_AGE_RECIPIENT matches the secret SEAL_AGE_IDENTITY" || bad "SEAL_AGE_RECIPIENT does not match the secret SEAL_AGE_IDENTITY"
+          else bad "variable SEAL_AGE_RECIPIENT or secret SEAL_AGE_IDENTITY is missing (artifacts between jobs)"; fi
+          [ -z "$LOG_KEY" ] || echo "WAIT  secret LOG_KEY is still set: the deprecated openssl fallback; delete it once the age keys work"
+          [[ $VPS_HOST_KEY =~ ^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp[0-9]+)[[:space:]]+[A-Za-z0-9+/]+=*([[:space:]].*)?$ ]] \
+            && ok "variable VPS_HOST_KEY looks like a host key" || bad "variable VPS_HOST_KEY is missing: SSH to the VPS is refused (ssh-keyscan -t ed25519 <host>)"
+          [ -n "$UPDATE_SIGNING_KEY" ] && ok "secret UPDATE_SIGNING_KEY is set" || echo "WAIT  secret UPDATE_SIGNING_KEY is not set (update.json signing is off)"
 
           for repo in ExileForge ktor-bestgame; do
             git ls-remote "https://x-access-token:$SOURCE_TOKEN@github.com/Sperance/$repo.git" HEAD >/dev/null 2>&1 \
