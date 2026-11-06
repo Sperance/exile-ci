@@ -1,0 +1,17 @@
+// Init-скрипт Gradle для job gradle-cache (client.yml): задача resolveAllDependencies в каждом проекте разрешает все его
+// конфигурации, что можно разрешить, - так в архив попадают и зависимости запуска тестов без самого запуска тестов.
+// Конфигурацию, которую разрешить нельзя (неоднозначные варианты KMP и Android), пропускает с предупреждением.
+allprojects {
+    tasks.register('resolveAllDependencies') {
+        notCompatibleWithConfigurationCache('resolves every configuration of the project')
+        doLast {
+            project.configurations.findAll { it.canBeResolved }.each { configuration ->
+                try {
+                    configuration.resolve()
+                } catch (Exception ignored) {
+                    logger.warn("resolveAllDependencies: skipped ${project.path}:${configuration.name}")
+                }
+            }
+        }
+    }
+}
