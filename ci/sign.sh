@@ -37,9 +37,13 @@ case $kind in
         "$tools/apksigner" sign --ks "$RELEASE_KEYSTORE_PATH" --ks-key-alias "$RELEASE_KEY_ALIAS" \
             --ks-pass env:RELEASE_KEYSTORE_PASSWORD --key-pass env:RELEASE_KEY_PASSWORD --out "$out" "$work/aligned.apk"
         "$tools/apksigner" verify --print-certs "$out" >"$work/certs.txt"
-        # Без --verbose apksigner не печатает «Number of signers»: считаем строки «Signer #N certificate DN»
-        [ "$(grep -cE '^Signer #[0-9]+ certificate DN:' "$work/certs.txt")" = 1 ] || { echo "::error::$out has not exactly one signer"; exit 1; }
-        grep -qi "SHA-256 digest: $expected" "$work/certs.txt" || { echo "::error::$out is not signed with the release key"; exit 1; } ;;
+        # Подписант - любой блок с отпечатком SHA-256 (вид строки зависит от версии apksigner: «Signer #1 …» или
+        # «Signer (minSdkVersion=…) …»): все отпечатки должны быть ровно одним ключом релиза
+        mapfile -t digests < <(grep -oiE 'SHA-256 digest: [0-9a-f]{64}' "$work/certs.txt" | awk '{print tolower($NF)}' | sort -u)
+        if ((${#digests[@]} != 1)) || [[ ${digests[0]} != "$expected" ]]; then
+            sed 's/:.*//' "$work/certs.txt" | sort | uniq -c >&2
+            echo "::error::$out is not signed by the release key alone (${#digests[@]} distinct signers)"; exit 1
+        fi ;;
     aab)
         strip_signature
         jarsigner -keystore "$RELEASE_KEYSTORE_PATH" -storepass:env RELEASE_KEYSTORE_PASSWORD -keypass:env RELEASE_KEY_PASSWORD \
