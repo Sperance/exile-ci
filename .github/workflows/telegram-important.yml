@@ -1,0 +1,67 @@
+# Пост в тему «Важное» группы Telegram (TELEGRAM_IMPORTANT_TOPIC ниже) из IMPORTANT.md сервера: только то, что задевает нынешних
+# игроков (вайп, обязательное обновление, потери) и что одобрил владелец; формат файла - ci/telegram/important.py.
+# Запуск: job `deploy` в server.yml после выкладки сервера (в том числе после каждого релиза клиента); вручную - Release → important
+# (голова рабочей ветки сервера) или здесь с коммитом.
+# Один текст - один пост: после поста в этом репозитории ставится тег important-<12 знаков sha256 файла>; есть тег - текст уже
+# вышел. Нет файла или он пуст - поста нет. Сбой Telegram - предупреждение, тег не ставится, повтор - Release → important.
+# Секреты: TELEGRAM_BOT_TOKEN, SOURCE_TOKEN (чтение IMPORTANT.md приватного сервера).
+name: Telegram important
+
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: 'server commit; empty - head of the working branch'
+        required: false
+        default: ''
+
+permissions:
+  # Тег вышедшего текста
+  contents: write
+
+concurrency:
+  group: telegram-important
+  cancel-in-progress: false
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      SERVER_REPO: Sperance/ktor-bestgame
+      TELEGRAM_CHAT: '@exileforge'
+      # Тема «Важное»: t.me/exileforge/28
+      TELEGRAM_IMPORTANT_TOPIC: '28'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Important text
+        id: text
+        env:
+          GH_TOKEN: ${{ secrets.SOURCE_TOKEN }}
+          REPO_TOKEN: ${{ github.token }}
+          SHA: ${{ inputs.sha }}
+        run: |
+          . ci/branches.env
+          sha=${SHA:-$(gh api "repos/$SERVER_REPO/commits/$SERVER_BRANCH" --jq .sha)}
+          if ! gh api -H "Accept: application/vnd.github.raw" "repos/$SERVER_REPO/contents/IMPORTANT.md?ref=$sha" > IMPORTANT.md 2> "$RUNNER_TEMP/err"; then
+            grep -q "HTTP 404" "$RUNNER_TEMP/err" || { echo "::error::IMPORTANT.md of the server was not read"; exit 1; }
+            : > IMPORTANT.md
+          fi
+          if ! grep -q '[^[:space:]]' IMPORTANT.md; then echo "no important text"; echo "tag=" >> "$GITHUB_OUTPUT"; exit 0; fi
+          tag="important-$(sha256sum IMPORTANT.md | cut -c1-12)"
+          if GH_TOKEN=$REPO_TOKEN gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" >/dev/null 2>&1; then
+            echo "already posted: $tag"; echo "tag=" >> "$GITHUB_OUTPUT"
+          else
+            echo "new important text: $tag"; echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Post
+        if: steps.text.outputs.tag != ''
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.text.outputs.tag }}
+        run: |
+          if python3 ci/telegram/important.py IMPORTANT.md; then
+            gh api -X POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$TAG" -f sha="$GITHUB_SHA" >/dev/null
+            echo "tagged $TAG"
+          fi

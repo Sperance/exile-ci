@@ -357,6 +357,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+      # Запуск поста «Важное» (telegram-important.yml)
+      actions: write
     env:
       SHA: ${{ needs.resolve.outputs.sha }}
       # Дайджест, который собрал job `image` этого прогона (режим push); в режиме deploy пуст - берётся у проверенного тега ниже
@@ -487,6 +489,13 @@ jobs:
           # Токен GitHub Issues (0.14.1, GH-ISSUES) - первой строкой stdin: в строку команды и журналы он не попадает.
           printf '%s\n' "$GH_ISSUES_TOKEN" | VPS_HOST=$HOST VPS_KEY_FILE="$RUNNER_TEMP/key" bash ci/quiet.sh deploy \
             bash ci/vps-ssh.sh "deploy $SHA $DIGEST"
+      # Новый текст IMPORTANT.md выложенного сервера - пост в тему «Важное» группы Telegram (telegram-important.yml)
+      - name: Announce the important news
+        if: ${{ steps.client.outputs.ready == 'true' }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run telegram-important.yml -R "$GITHUB_REPOSITORY" --ref main -f sha="$SHA"
       - name: Encrypted log
         if: failure()
         uses: ./.github/actions/upload-log
