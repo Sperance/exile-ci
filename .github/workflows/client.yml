@@ -8,14 +8,19 @@
 # ключом релиза (apksigner / jarsigner, ci/sign.sh) и проверяет отпечаток. Выкладка в магазины (publish-*) - тоже в environment `release`.
 #
 # Запуск:
-#   repository_dispatch client-push - пуш в рабочую ветку клиента (job `forward` в android.yml ExileForge): sha и before;
-#   workflow_dispatch               - вручную: push - как пуш (все проверки, релиз новой версии); shots - UI-тесты на эмуляторе
-#                                     и снимки ключевых экранов (KeyScreensShotTest), без релиза; stores - заново выложить выпущенную версию
-#                                     в магазины; cache - только архивы для облачных сессий агента (job `gradle-cache`).
-# Релиз: versionName без релиза в exile-ci после зелёных проверок - тег v<versionName> здесь с APK, update.json и заметками
+#   repository_dispatch client-push - пуш в рабочую ветку клиента (job `forward` в android.yml ExileForge): sha и before. ТОЛЬКО
+#                                     проверки затронутого, без релиза: выпуски накопительные (заметки копятся в RELEASE_NOTES.md
+#                                     под `## Следующая версия`, номер версии в работах не трогается). Коммит выпуска `feat: release
+#                                     <версия>` (его делает release.yml) проверки пуша пропускает: те же проверки идут в режиме release;
+#   workflow_dispatch               - вручную: push - как пуш (проверки затронутого, без релиза); release - все проверки и релиз
+#                                     коммита (его запускает Release → client после коммита номера версии, руками не запускать);
+#                                     shots - UI-тесты на эмуляторе и снимки ключевых экранов (KeyScreensShotTest), без релиза;
+#                                     stores - заново выложить выпущенную версию в магазины; cache - только архивы для облачных
+#                                     сессий агента (job `gradle-cache`).
+# Релиз (только режим release): versionName без релиза в exile-ci после зелёных проверок - тег v<версия> здесь с APK, update.json и заметками
 # RELEASE_NOTES.md (их читает игра, Updates.kt); карты R8 (mapping.txt прямого APK, mapping-play.txt и mapping-rustore.txt магазинов) - только в релиз того же тега приватного ExileForge
-# (её качает сервер, ReleaseMappings). Затем Issues, что называют коммиты релиза «Closes #N», закрываются, и запускается
-# деплой сервера (server.yml, режим deploy).
+# (её качает сервер, ReleaseMappings). Затем Issues, что называют коммиты с прошлого релиза «Closes #N», получают метку версии, теряют
+# метки `ready` и `in-progress` и закрываются, и запускается деплой сервера (server.yml, режим deploy).
 # Каналы: прямой APK (релиз здесь), Google Play (AAB на дорожку переменной PLAY_TRACK: alpha - закрытый тест, beta - ранний доступ,
 # production - долей 20%; job `publish-play`) и RuStore (APK с автопубликацией, job
 # `publish-rustore`); задачи сборки и пути результатов - ci/build-tasks.env. Загрузка в магазин идёт после релиза, дождавшись сервера на
@@ -27,8 +32,8 @@
 # RUSTORE_PRIVATE_KEY; RELEASE_STATUS_TOKEN. Переменные: RUSTORE_CONTACT_EMAIL, RUSTORE_CONTACT_WEBSITE, RUSTORE_CONTACT_VK -
 # контакты разработчика карточки RuStore (без email магазин может отказать в черновике); LOG_AGE_RECIPIENT, SEAL_AGE_RECIPIENT.
 # Ручной режим stores - заново собрать и выложить в Google Play и RuStore уже выпущенную версию (без проверок и релиза здесь).
-# Архивы для облачных сессий агента (job'ы `gradle-cache` и `gradle-toolchain`, в конце файла) пересобираются после каждого
-# релиза версии в этом прогоне и вручную (режим cache).
+# Архивы для облачных сессий агента (job'ы `gradle-cache` и `gradle-toolchain`, в конце файла) пересобираются после релиза версии
+# в этом прогоне (режим release) и вручную (режим cache).
 name: Client
 
 on:
@@ -37,9 +42,9 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'push - checks and release of a new version; shots - emulator UI tests and key screen shots, no release; stores - publish the already released version to Google Play and RuStore again; cache - only rebuild the agent session archives (gradle-cache release of ExileForge)'
+        description: 'push - checks of the changed parts, no release; release - all checks and release of the commit (started by Release -> client after the version commit); shots - emulator UI tests and key screen shots, no release; stores - publish the already released version to Google Play and RuStore again; cache - only rebuild the agent session archives (gradle-cache release of ExileForge)'
         type: choice
-        options: [ push, shots, stores, cache ]
+        options: [ push, release, shots, stores, cache ]
         default: push
       sha:
         description: 'Client commit (empty - head of the working branch)'
@@ -67,7 +72,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     concurrency:
-      group: client-changes
+      group: client-changes-${{ github.event_name == 'workflow_dispatch' && inputs.mode || 'push' }}
       cancel-in-progress: true
     outputs:
       sha: ${{ steps.target.outputs.sha }}
@@ -91,7 +96,7 @@ jobs:
           INPUT_MODE: ${{ inputs.mode }}
           INPUT_SHA: ${{ inputs.sha }}
           TOKEN: ${{ secrets.SOURCE_TOKEN }}
-        run: . ci/branches.env && bash ci/resolve.sh "$CLIENT_REPO" "$CLIENT_BRANCH" client push shots stores cache
+        run: . ci/branches.env && bash ci/resolve.sh "$CLIENT_REPO" "$CLIENT_BRANCH" client push release shots stores cache
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: ${{ env.CLIENT_REPO }}
@@ -111,7 +116,10 @@ jobs:
           BEFORE: ${{ github.event.client_payload.before }}
           SHA: ${{ steps.target.outputs.sha }}
         run: |
-          if [ "$EVENT" != repository_dispatch ] || [[ ! $BEFORE =~ ^[0-9a-f]{40}$ || $BEFORE =~ ^0+$ ]] || ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+          if [ "$EVENT" = repository_dispatch ] && git log -1 --format=%s "$SHA" | grep -qE '^feat: release [0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "commit of the release number: the release run checks it, the push run does nothing"
+            core=false; app=false
+          elif [ "$EVENT" != repository_dispatch ] || [[ ! $BEFORE =~ ^[0-9a-f]{40}$ || $BEFORE =~ ^0+$ ]] || ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
             core=true; app=true
           else
             files=$(git diff --name-only "$BEFORE" "$SHA")
@@ -120,7 +128,8 @@ jobs:
           fi
           echo "core=$core app=$app"
           { echo "core=$core"; echo "app=$app"; } >> "$GITHUB_OUTPUT"
-      # Релиз будет, если это пуш и у versionName ещё нет релиза здесь: только тогда собираются R8-сборки и идёт эмулятор.
+      # Релиз только в режиме release (пуш не выпускает): тогда собираются R8-сборки и идёт эмулятор. У versionName уже есть релиз
+      # здесь - ошибка, номер версии занят.
       - id: release
         working-directory: src
         env:
@@ -128,7 +137,11 @@ jobs:
           MODE: ${{ steps.target.outputs.mode }}
         run: |
           version=$(sed -n 's/.*versionName = "\(.*\)".*/\1/p' app/build.gradle.kts | head -1)
-          if [ "$MODE" = push ] && ! gh release view "v$version" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then pending=true; else pending=false; fi
+          pending=false
+          if [ "$MODE" = release ]; then
+            ! gh release view "v$version" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 || { echo "::error::v$version is already released: release mode needs a new versionName"; exit 1; }
+            pending=true
+          fi
           # Режим stores: версия уже выпущена здесь - заново собираются и выкладываются только сборки магазинов
           stores=false
           if [ "$MODE" = stores ]; then
@@ -145,8 +158,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     concurrency:
-      group: client-core
-      cancel-in-progress: true
+      group: client-core${{ needs.changes.outputs.release == 'true' && '-release' || '' }}
+      cancel-in-progress: ${{ needs.changes.outputs.release != 'true' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: ./.github/actions/source
@@ -169,8 +182,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     concurrency:
-      group: client-app
-      cancel-in-progress: true
+      group: client-app${{ needs.changes.outputs.release == 'true' && '-release' || '' }}
+      cancel-in-progress: ${{ needs.changes.outputs.release != 'true' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: ./.github/actions/source
@@ -196,8 +209,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     concurrency:
-      group: client-${{ matrix.name }}
-      cancel-in-progress: true
+      group: client-${{ matrix.name }}${{ needs.changes.outputs.release == 'true' && '-release' || '' }}
+      cancel-in-progress: ${{ needs.changes.outputs.release != 'true' }}
     strategy:
       fail-fast: false
       matrix:
@@ -263,8 +276,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     concurrency:
-      group: client-release-apk
-      cancel-in-progress: true
+      group: client-release-apk${{ needs.changes.outputs.release == 'true' && '-release' || '' }}
+      cancel-in-progress: ${{ needs.changes.outputs.release != 'true' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: ./.github/actions/source
@@ -307,8 +320,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     concurrency:
-      group: client-release-aab
-      cancel-in-progress: true
+      group: client-release-aab${{ needs.changes.outputs.release == 'true' && '-release' || '' }}
+      cancel-in-progress: ${{ needs.changes.outputs.release != 'true' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: ./.github/actions/source
@@ -348,8 +361,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     concurrency:
-      group: client-release-rustore
-      cancel-in-progress: true
+      group: client-release-rustore${{ needs.changes.outputs.release == 'true' && '-release' || '' }}
+      cancel-in-progress: ${{ needs.changes.outputs.release != 'true' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: ./.github/actions/source
@@ -489,8 +502,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     concurrency:
-      group: client-emulator
-      cancel-in-progress: true
+      group: client-emulator${{ needs.changes.outputs.release == 'true' && '-release' || '' }}
+      cancel-in-progress: ${{ needs.changes.outputs.release != 'true' }}
     env:
       API_LEVEL: 35
       SHOTS: ${{ needs.changes.outputs.shots }}
@@ -577,8 +590,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     concurrency:
-      group: client-client-server
-      cancel-in-progress: true
+      group: client-client-server${{ needs.changes.outputs.release == 'true' && '-release' || '' }}
+      cancel-in-progress: ${{ needs.changes.outputs.release != 'true' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       # Сервер под проверкой - закреплённый сабмодуль backend/: его HEAD - сгенерированный SERVER_COMMIT

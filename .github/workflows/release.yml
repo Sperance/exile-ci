@@ -3,9 +3,13 @@
 #
 #   server          - выкатить сервер: деплой головы рабочей ветки, чей образ уже проверен пушем (server.yml mode=deploy). Вайп коллекций
 #                     делает сам сервер при старте по CollectionSchemas;
-#   server-rebuild  - сервер заново: проверки, образ и деплой (server.yml mode=push), если образ головы не собрался или не проверен;
-#   client          - новая версия клиента: все проверки и релиз (client.yml mode=push); после публикации релиза client.yml сам
-#                     запускает деплой сервера, так что сервер отдельно не нужен;
+#   server-rebuild  - сервер заново: проверки, образ и деплой (server.yml mode=rebuild), если образ головы не собрался или не проверен;
+#   client          - ВЫПУСК: накопительный, пуши в рабочие ветки сами ничего не выпускают и не выкатывают. Поле bump (patch - x.y.z+1,
+#                     minor - x.y+1.0, от последнего выпущенного тега v<версия> здесь): job `client` берёт голову рабочей ветки
+#                     клиента, коммитом `feat: release <версия>` ставит versionCode/versionName в app/build.gradle.kts и переименовывает
+#                     `## Следующая версия` в RELEASE_NOTES.md (нет раздела или он пуст - ошибка), затем запускает client.yml mode=release
+#                     на этом коммите: все проверки, релиз, закрытие Issues «Closes #N», выкат сервера (деплой после релиза запускает
+#                     client.yml сам), выкладка в магазины. Коммит делает EXILEFORGE_TOKEN (Contents: write на ExileForge);
 #   client-shots    - UI-тесты и снимки ключевых экранов, без релиза (client.yml mode=shots);
 #   telegram        - пост о последнем релизе в тему «Обновления» группы Telegram заново (telegram.yml): пост той же версии правится;
 #   important       - пост IMPORTANT.md головы сервера в тему «Важное» (telegram-important.yml), если этот текст ещё не выходил.
@@ -15,10 +19,15 @@ on:
   workflow_dispatch:
     inputs:
       what:
-        description: 'server - deploy checked head; server-rebuild - checks, image and deploy; client - checks and release (deploys the server after); client-shots - UI tests only; telegram - post the latest release to the Telegram group again; important - post the new IMPORTANT.md of the server'
+        description: 'server - deploy checked head; server-rebuild - checks, image and deploy; client - cumulative release: version commit, checks, release, server deploy (bump below); client-shots - UI tests only; telegram - post the latest release to the Telegram group again; important - post the new IMPORTANT.md of the server'
         type: choice
         options: [ server, server-rebuild, client, client-shots, telegram, important ]
         default: server
+      bump:
+        description: 'client only: patch - next patch version, minor - next minor version (x.y+1.0)'
+        type: choice
+        options: [ patch, minor ]
+        default: patch
 
 permissions:
   actions: write
@@ -26,6 +35,7 @@ permissions:
 
 jobs:
   dispatch:
+    if: ${{ inputs.what != 'client' }}
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:
@@ -36,11 +46,66 @@ jobs:
         run: |
           case "$WHAT" in
             server)         gh workflow run server.yml -R "$GITHUB_REPOSITORY" --ref main -f mode=deploy ;;
-            server-rebuild) gh workflow run server.yml -R "$GITHUB_REPOSITORY" --ref main -f mode=push ;;
-            client)         gh workflow run client.yml -R "$GITHUB_REPOSITORY" --ref main -f mode=push ;;
+            server-rebuild) gh workflow run server.yml -R "$GITHUB_REPOSITORY" --ref main -f mode=rebuild ;;
             client-shots)   gh workflow run client.yml -R "$GITHUB_REPOSITORY" --ref main -f mode=shots ;;
             telegram)       gh workflow run telegram.yml -R "$GITHUB_REPOSITORY" --ref main ;;
             important)      gh workflow run telegram-important.yml -R "$GITHUB_REPOSITORY" --ref main ;;
             *) echo "::error::unknown choice '$WHAT'"; exit 1 ;;
           esac
           echo "started: $WHAT"
+
+  # Выпуск клиента: коммит номера версии в рабочую ветку приватного ExileForge и запуск client.yml mode=release на нём. Коммит с
+  # темой `feat: release <версия>` проверки пуша пропускают (client.yml, шаг Changed parts), так что петли нет: пуш не выпускает.
+  client:
+    if: ${{ inputs.what == 'client' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: release-client
+      cancel-in-progress: false
+    env:
+      LOG_AGE_RECIPIENT: ${{ vars.LOG_AGE_RECIPIENT }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Head of the client working branch
+        env:
+          TOKEN: ${{ secrets.EXILEFORGE_TOKEN }}
+        run: |
+          . ci/branches.env
+          bash ci/quiet.sh clone-client git clone -q --depth 1 --branch "$CLIENT_BRANCH" "https://x-access-token:$TOKEN@github.com/Sperance/ExileForge.git" src
+      - name: Next version
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUMP: ${{ inputs.bump }}
+        run: |
+          last=$(gh release list -R "$GITHUB_REPOSITORY" --limit 300 --json tagName --jq '.[].tagName' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1 || true)
+          [ -n "$last" ] || { echo "::error::no released v<x.y.z> tag in $GITHUB_REPOSITORY"; exit 1; }
+          echo "last release: $last, bump: $BUMP"
+          python3 -I ci/bump-release.py src "$BUMP" "$last" "$GITHUB_OUTPUT"
+      - name: Commit the release number
+        id: commit
+        env:
+          TOKEN: ${{ secrets.EXILEFORGE_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          . ci/branches.env
+          export GIT_AUTHOR_NAME=Sperance GIT_AUTHOR_EMAIL=dmitriymalaye@gmail.com GIT_COMMITTER_NAME=Sperance GIT_COMMITTER_EMAIL=dmitriymalaye@gmail.com
+          git -C src add app/build.gradle.kts RELEASE_NOTES.md
+          git -C src commit -q -m "feat: release $VERSION" -m "Cumulative release: the version number and the notes heading are set when the release is started." -m $'Server-Update: yes\nServer-Wipe: no\nVerified: ci'
+          bash ci/quiet.sh push-client git -C src push -q "https://x-access-token:$TOKEN@github.com/Sperance/ExileForge.git" "HEAD:refs/heads/$CLIENT_BRANCH"
+          echo "sha=$(git -C src rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Start the release run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ steps.commit.outputs.sha }}
+        run: |
+          gh workflow run client.yml -R "$GITHUB_REPOSITORY" --ref main -f mode=release -f sha="$SHA"
+          echo "started: release of ${{ steps.version.outputs.version }} at $SHA"
+      - name: Encrypted log
+        if: failure()
+        uses: ./.github/actions/upload-log
+        with:
+          name: release-start-log

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Issues, что чинит релиз: коммиты с прошлого релиза, что называют «Closes #N» (fixes, resolves), - Issue получает метку версии и
-# закрывается выполненным, без комментария; игра увидит это синхронизацией сервера. Рабочая ветка - не основная, сам GitHub по таким
+# закрывается выполненным, без комментария; метки `ready` («ждёт выпуска») и `in-progress` снимаются; игра увидит это синхронизацией сервера. Рабочая ветка - не основная, сам GitHub по таким
 # словам Issues не закрывает.
 # Запуск из каталога исходников клиента (src/) с историей и тегами; GH_TOKEN - токен с Issues: write на репозиторий клиента.
 # Использование: ci/close-issues.sh <репозиторий клиента> <тег> <коммит релиза>
@@ -22,6 +22,7 @@ for n in $issues; do
   state=$(gh issue view "$n" -R "$repo" --json state --jq .state 2>/dev/null) || { echo "::warning::issue #$n not found"; continue; }
   [ "$state" = OPEN ] || continue
   gh issue edit "$n" -R "$repo" --add-label "$TAG" >/dev/null
+  for stale in ready in-progress; do gh issue edit "$n" -R "$repo" --remove-label "$stale" >/dev/null 2>&1 || true; done
   gh issue close "$n" -R "$repo" --reason completed >/dev/null
   echo "closed #$n in ${TAG#v}"
 done

@@ -6,10 +6,13 @@
 # Запуск:
 #   repository_dispatch server-push   - пуш в рабочую ветку сервера (job `forward` в deploy.yml сервера): проверки, браузерная
 #                                       проверка графиков панели, совместимость со старейшим клиентом окна ревизий (job `compat`)
-#                                       и сборка образа параллельно, затем деплой проверенного образа;
+#                                       и сборка образа параллельно, затем метка «проверен» на образ (job `mark`). БЕЗ деплоя:
+#                                       выпуски накопительные, сервер выкатывается вместе с выпуском клиента;
 #   repository_dispatch server-deploy - workflow_dispatch сервера (job `release` client.yml после релиза клиента): деплой головы
 #                                       ветки, если её образ уже проверен;
-#   workflow_dispatch                 - вручную, те же два режима.
+#   workflow_dispatch                 - вручную: push - как пуш (без деплоя); deploy - деплой проверенного образа головы (срочный
+#                                       выкат только сервера: Release → server); rebuild - проверки, образ и деплой (Release →
+#                                       server-rebuild).
 # Образ уходит в приватный пакет ghcr.io/sperance/ktor-bestgame черновым тегом :build-<sha>, после зелёных проверок получает
 # :<sha> и :<ветка>; на VPS по SSH запускается deploy/update.sh сервера с этим sha.
 # Перед деплоем (job `deploy`) - защита ci/deploy-guard.py: сервер не выкатывается, если отрежет самую старую сборку, ещё лежащую в
@@ -30,9 +33,9 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'push - checks, image and deploy; deploy - deploy the checked head image'
+        description: 'push - checks and image, no deploy; deploy - deploy the checked head image; rebuild - checks, image and deploy'
         type: choice
-        options: [ deploy, push ]
+        options: [ deploy, push, rebuild ]
         default: deploy
       sha:
         description: 'Server commit (empty - head of the working branch)'
@@ -73,11 +76,11 @@ jobs:
           INPUT_MODE: ${{ inputs.mode }}
           INPUT_SHA: ${{ inputs.sha }}
           TOKEN: ${{ secrets.SOURCE_TOKEN }}
-        run: . ci/branches.env && bash ci/resolve.sh "$SERVER_REPO" "$SERVER_BRANCH" server push deploy
+        run: . ci/branches.env && bash ci/resolve.sh "$SERVER_REPO" "$SERVER_BRANCH" server push deploy rebuild
 
   checks:
     needs: resolve
-    if: ${{ needs.resolve.outputs.mode == 'push' }}
+    if: ${{ needs.resolve.outputs.mode == 'push' || needs.resolve.outputs.mode == 'rebuild' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     # Новый пуш отменяет проверки устаревшего: выкатывать всё равно будут его
@@ -115,7 +118,7 @@ jobs:
   # Отчёт проверки не выкладывается: в нём страницы панели.
   panel:
     needs: resolve
-    if: ${{ needs.resolve.outputs.mode == 'push' }}
+    if: ${{ needs.resolve.outputs.mode == 'push' || needs.resolve.outputs.mode == 'rebuild' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     concurrency:
@@ -151,7 +154,7 @@ jobs:
   # Нет релиза в окне - прогон зелёный без дела (старее нового клиента поддерживать нечего).
   compat:
     needs: resolve
-    if: ${{ needs.resolve.outputs.mode == 'push' }}
+    if: ${{ needs.resolve.outputs.mode == 'push' || needs.resolve.outputs.mode == 'rebuild' }}
     runs-on: ubuntu-latest
     timeout-minutes: 40
     concurrency:
@@ -226,7 +229,7 @@ jobs:
 
   image:
     needs: resolve
-    if: ${{ needs.resolve.outputs.mode == 'push' && vars.DEPLOY_ENABLED == 'true' }}
+    if: ${{ (needs.resolve.outputs.mode == 'push' || needs.resolve.outputs.mode == 'rebuild') && vars.DEPLOY_ENABLED == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     concurrency:
@@ -345,10 +348,44 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
-  deploy:
+  # Метка «проверен» на образ: после зелёных проверок, проверки панели, совместимости со старейшим клиентом окна и образа. Пуш на этом
+  # заканчивается (деплой - с выпуском клиента); деплой по голове ветки берёт только помеченный образ.
+  mark:
     needs: [ resolve, checks, panel, compat, image ]
-    # Пуш - после зелёных проверок, проверки панели, совместимости со старейшим клиентом окна и образа; режим deploy (релиз клиента или вручную) - сразу, по голове ветки.
-    if: ${{ !cancelled() && needs.resolve.result == 'success' && vars.DEPLOY_ENABLED == 'true' && (needs.resolve.outputs.mode == 'deploy' || (needs.checks.result == 'success' && needs.panel.result == 'success' && needs.compat.result == 'success' && needs.image.result == 'success')) }}
+    if: ${{ !cancelled() && vars.DEPLOY_ENABLED == 'true' && (needs.resolve.outputs.mode == 'push' || needs.resolve.outputs.mode == 'rebuild') && needs.checks.result == 'success' && needs.panel.result == 'success' && needs.compat.result == 'success' && needs.image.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: mark
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: write
+    env:
+      SHA: ${{ needs.resolve.outputs.sha }}
+      PUSHED_DIGEST: ${{ needs.image.outputs.digest }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      # Тег указывает ровно на собранный манифест, без пересборки и перекачки слоёв; --prefer-index=false - а не на новый индекс вокруг
+      # него (иначе дайджест тега не совпал бы с собранным).
+      - name: Mark the image as checked
+        run: |
+          . ci/branches.env
+          [[ $PUSHED_DIGEST =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::no image digest from the image job"; exit 1; }
+          docker buildx imagetools create --prefer-index=false -t "$IMAGE:$SHA" -t "$IMAGE:${SERVER_BRANCH//\//-}" "$IMAGE@$PUSHED_DIGEST" >/dev/null
+
+  # Деплой: режим deploy (релиз клиента или вручную) - сразу, по голове ветки; режим rebuild - после метки образа этого прогона.
+  # Пуш (режим push) не выкатывает.
+  deploy:
+    needs: [ resolve, image, mark ]
+    if: ${{ !cancelled() && needs.resolve.result == 'success' && vars.DEPLOY_ENABLED == 'true' && (needs.resolve.outputs.mode == 'deploy' || (needs.resolve.outputs.mode == 'rebuild' && needs.mark.result == 'success')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     concurrency:
@@ -408,17 +445,8 @@ jobs:
             if [ "$made" = 201 ]; then echo "GH_ISSUES_TOKEN: метка $label создана (issues write ok)"; else echo "::warning::GH_ISSUES_TOKEN: метку $label создать не удалось ($made) - нет права Issues: write"; fi
           done
 
-      # Проверки прошли: тот же манифест получает проверенные теги, без пересборки и перекачки слоёв; --prefer-index=false - тег
-      # указывает ровно на этот манифест, а не на новый индекс вокруг него (иначе дайджест тега не совпал бы с собранным).
-      - name: Mark the image as checked
-        if: ${{ needs.resolve.outputs.mode == 'push' }}
-        run: |
-          . ci/branches.env
-          [[ $PUSHED_DIGEST =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::no image digest from the image job"; exit 1; }
-          docker buildx imagetools create --prefer-index=false -t "$IMAGE:$SHA" -t "$IMAGE:${SERVER_BRANCH//\//-}" "$IMAGE@$PUSHED_DIGEST" >/dev/null
-
-      # Запуск от релиза клиента: голова ветки выкатывается, только если её образ уже проверен. Иначе её пуш ещё
-      # в работе и выкатит сам - релиз клиента к этому моменту уже опубликован.
+      # Запуск от релиза клиента: голова ветки выкатывается, только если её образ уже проверен. Иначе пуш ещё
+      # в работе или проверки красные: выкат - Release → server-rebuild.
       - name: Checked image of the branch head
         id: image
         run: |
@@ -428,7 +456,7 @@ jobs:
             echo "ready=true" >> "$GITHUB_OUTPUT"
             echo "digest=$digest" >> "$GITHUB_OUTPUT"
           else
-            echo "::notice::no checked image for $SHA yet: its push run deploys it"
+            echo "::warning::no checked image for $SHA: its push run has not finished or failed; after fixing use Release -> server-rebuild"
             echo "ready=false" >> "$GITHUB_OUTPUT"
           fi
 
