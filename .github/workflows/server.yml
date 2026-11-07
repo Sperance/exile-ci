@@ -9,7 +9,8 @@
 #                                       и сборка образа параллельно, затем метка «проверен» на образ (job `mark`). БЕЗ деплоя:
 #                                       выпуски накопительные, сервер выкатывается вместе с выпуском клиента;
 #   repository_dispatch server-deploy - workflow_dispatch сервера (job `release` client.yml после релиза клиента): деплой головы
-#                                       ветки, если её образ уже проверен;
+#                                       ветки, если её образ уже проверен (после правки только .md вне образа - образ ближайшего
+#                                       проверенного предка, ci/checked-image.sh);
 #   workflow_dispatch                 - вручную: push - как пуш (без деплоя); deploy - деплой проверенного образа головы (срочный
 #                                       выкат только сервера: Release → server); rebuild - проверки, образ и деплой (Release →
 #                                       server-rebuild).
@@ -402,7 +403,8 @@ jobs:
       PUSHED_DIGEST: ${{ needs.image.outputs.digest }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      # Деплою нужны только Protocol.kt (API_REVISION, MIN_API_REVISION) и Content.kt (RULES_VERSION, CONTENT_SCHEMA) правил
+      # Деплою нужны только Protocol.kt (API_REVISION, MIN_API_REVISION) и Content.kt (RULES_VERSION, CONTENT_SCHEMA) правил; история
+      # без содержимого файлов - для выбора проверенного образа (ci/checked-image.sh)
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: ${{ env.SERVER_REPO }}
@@ -410,6 +412,8 @@ jobs:
           token: ${{ secrets.SOURCE_TOKEN }}
           path: server
           persist-credentials: false
+          fetch-depth: 0
+          filter: blob:none
           sparse-checkout: |
             rules/src/main/kotlin/com/sperance/exileforge/rules/wire/Protocol.kt
             rules/src/main/kotlin/com/sperance/exileforge/rules/content/Content.kt
@@ -445,16 +449,17 @@ jobs:
             if [ "$made" = 201 ]; then echo "GH_ISSUES_TOKEN: метка $label создана (issues write ok)"; else echo "::warning::GH_ISSUES_TOKEN: метку $label создать не удалось ($made) - нет права Issues: write"; fi
           done
 
-      # Запуск от релиза клиента: голова ветки выкатывается, только если её образ уже проверен. Иначе пуш ещё
-      # в работе или проверки красные: выкат - Release → server-rebuild.
+      # Запуск от релиза клиента: голова ветки выкатывается, только если её образ уже проверен. Пуш, где менялись только .md вне
+      # образа, CI не проверяет: тогда выкатывается образ ближайшего проверенного предка - код тот же. Нет и его - пуш ещё в работе
+      # или проверки красные: выкат - Release → server-rebuild.
       - name: Checked image of the branch head
         id: image
         run: |
-          if digest=$(docker buildx imagetools inspect "$IMAGE:$SHA" --format '{{.Manifest.Digest}}' 2>/dev/null); then
-            [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::bad image digest for $SHA"; exit 1; }
-            [[ -z $PUSHED_DIGEST || $PUSHED_DIGEST == "$digest" ]] || { echo "::error::the checked tag no longer points at the image built by this run"; exit 1; }
-            echo "ready=true" >> "$GITHUB_OUTPUT"
-            echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          if found=$(bash ci/checked-image.sh "$IMAGE" server "$SHA"); then
+            read -r commit digest <<<"$found"
+            [[ -z $PUSHED_DIGEST || $commit != "$SHA" || $PUSHED_DIGEST == "$digest" ]] || { echo "::error::the checked tag no longer points at the image built by this run"; exit 1; }
+            [[ $commit == "$SHA" ]] || echo "only notes changed after $commit: its checked image goes out"
+            { echo "ready=true"; echo "digest=$digest"; echo "sha=$commit"; } >> "$GITHUB_OUTPUT"
           else
             echo "::warning::no checked image for $SHA: its push run has not finished or failed; after fixing use Release -> server-rebuild"
             echo "ready=false" >> "$GITHUB_OUTPUT"
@@ -506,17 +511,19 @@ jobs:
           KEY: ${{ secrets.DEPLOY_SSH_KEY }}
           GH_ISSUES_TOKEN: ${{ secrets.GH_ISSUES_TOKEN }}
           DIGEST: ${{ steps.image.outputs.digest }}
+          IMAGE_SHA: ${{ steps.image.outputs.sha }}
           VPS_HOST_KEY: ${{ vars.VPS_HOST_KEY }}
           LOG_KEY: ${{ secrets.LOG_KEY }}
         run: |
           [[ $DIGEST =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::no image digest to deploy"; exit 1; }
+          [[ $IMAGE_SHA =~ ^[0-9a-f]{40}$ ]] || { echo "::error::no commit of the image to deploy"; exit 1; }
           install -m 600 /dev/null "$RUNNER_TEMP/key" && printf '%s\n' "$KEY" > "$RUNNER_TEMP/key"
           # Ключ на VPS привязан к одной команде (update.sh без вопросов): её код выхода - итог деплоя.
           # Строка команды доходит до update.sh как SSH_ORIGINAL_COMMAND - из неё он берёт sha коммита и дайджест образа:
           # образ тянется по неизменяемому @sha256, а не по тегу, и его метка sha сверяется с коммитом.
           # Токен GitHub Issues (0.14.1, GH-ISSUES) - первой строкой stdin: в строку команды и журналы он не попадает.
           printf '%s\n' "$GH_ISSUES_TOKEN" | VPS_HOST=$HOST VPS_KEY_FILE="$RUNNER_TEMP/key" bash ci/quiet.sh deploy \
-            bash ci/vps-ssh.sh "deploy $SHA $DIGEST"
+            bash ci/vps-ssh.sh "deploy $IMAGE_SHA $DIGEST"
       # Новый текст IMPORTANT.md выложенного сервера - пост в тему «Важное» группы Telegram (telegram-important.yml)
       - name: Announce the important news
         if: ${{ steps.client.outputs.ready == 'true' }}

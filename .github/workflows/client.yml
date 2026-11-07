@@ -9,7 +9,7 @@
 #
 # Запуск:
 #   repository_dispatch client-push - пуш в рабочую ветку клиента (job `forward` в android.yml ExileForge): sha и before. ТОЛЬКО
-#                                     проверки затронутого, без релиза: выпуски накопительные (заметки копятся в RELEASE_NOTES.md
+#                                     проверки затронутого (с R8-сборками и эмулятором, если задет код), без релиза: выпуски накопительные (заметки копятся в RELEASE_NOTES.md
 #                                     под `## Следующая версия`, номер версии в работах не трогается). Коммит выпуска `feat: release
 #                                     <версия>` (его делает release.yml) проверки пуша пропускает: те же проверки идут в режиме release;
 #   workflow_dispatch               - вручную: push - как пуш (проверки затронутого, без релиза); release - все проверки и релиз
@@ -80,6 +80,8 @@ jobs:
       app: ${{ steps.diff.outputs.app }}
       release: ${{ steps.release.outputs.pending }}
       shots: ${{ steps.target.outputs.mode == 'shots' }}
+      # R8-сборки и эмулятор: выпуск, снимки и каждый пуш, что задел core, app или сервер - зелёный пуш значит, что выпуск пройдёт
+      ui: ${{ steps.target.outputs.mode == 'release' || steps.target.outputs.mode == 'shots' || (steps.target.outputs.mode == 'push' && (steps.diff.outputs.core == 'true' || steps.diff.outputs.app == 'true')) }}
       stores: ${{ steps.release.outputs.stores }}
       cache: ${{ steps.target.outputs.mode == 'cache' }}
       tag: ${{ steps.release.outputs.tag }}
@@ -128,7 +130,7 @@ jobs:
           fi
           echo "core=$core app=$app"
           { echo "core=$core"; echo "app=$app"; } >> "$GITHUB_OUTPUT"
-      # Релиз только в режиме release (пуш не выпускает): тогда собираются R8-сборки и идёт эмулятор. У versionName уже есть релиз
+      # Релиз только в режиме release (пуш не выпускает); R8-сборки и эмулятор идут и на пуш (выход ui). У versionName уже есть релиз
       # здесь - ошибка, номер версии занят.
       - id: release
         working-directory: src
@@ -205,7 +207,7 @@ jobs:
   minified:
     name: ${{ matrix.name }}
     needs: changes
-    if: ${{ needs.changes.outputs.release == 'true' || needs.changes.outputs.shots == 'true' }}
+    if: ${{ needs.changes.outputs.ui == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     concurrency:
@@ -498,7 +500,7 @@ jobs:
   # UI-тесты и смоук R8 - только перед релизом и по shots: собранные APK приходят артефактами, Gradle здесь не нужен.
   emulator:
     needs: [ changes, minified ]
-    if: ${{ needs.changes.outputs.release == 'true' || needs.changes.outputs.shots == 'true' }}
+    if: ${{ needs.changes.outputs.ui == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
     concurrency:

@@ -8,7 +8,8 @@
 #                     minor - x.y+1.0, от последнего выпущенного тега v<версия> здесь): job `client` берёт голову рабочей ветки
 #                     клиента, коммитом `feat: release <версия>` ставит versionCode/versionName в app/build.gradle.kts и переименовывает
 #                     `## Следующая версия` в RELEASE_NOTES.md (нет раздела или он пуст - ошибка), затем запускает client.yml mode=release
-#                     на этом коммите: все проверки, релиз, закрытие Issues «Closes #N», выкат сервера (деплой после релиза запускает
+#                     на этом коммите (до коммита - стоп, если голова сервера по коду не закреплена в клиенте или её образ не
+#                     проверен): все проверки, релиз, закрытие Issues «Closes #N», выкат сервера (деплой после релиза запускает
 #                     client.yml сам), выкладка в магазины. Коммит делает EXILEFORGE_TOKEN (Contents: write на ExileForge);
 #   client-shots    - UI-тесты и снимки ключевых экранов, без релиза (client.yml mode=shots);
 #   telegram        - пост о последнем релизе в тему «Обновления» группы Telegram заново (telegram.yml): пост той же версии правится;
@@ -63,6 +64,10 @@ jobs:
     concurrency:
       group: release-client
       cancel-in-progress: false
+    permissions:
+      actions: write
+      contents: read
+      packages: read
     env:
       LOG_AGE_RECIPIENT: ${{ vars.LOG_AGE_RECIPIENT }}
     steps:
@@ -75,6 +80,28 @@ jobs:
         run: |
           . ci/branches.env
           bash ci/quiet.sh clone-client git clone -q --branch "$CLIENT_BRANCH" "https://x-access-token:$TOKEN@github.com/Sperance/ExileForge.git" src
+      # Выпуск выходит парой, проверенной вместе: голова рабочей ветки сервера по коду равна серверу, закреплённому в клиенте (разница -
+      # только .md вне образа, ci/server-diff.sh), и у неё есть проверенный образ (ci/checked-image.sh). Иначе выпуск не начинается:
+      # клиент со старыми правилами рядом с новым сервером никто не проверял, а без образа сервер не выкатился бы.
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Server pinned and checked
+        env:
+          TOKEN: ${{ secrets.SOURCE_TOKEN }}
+          IMAGE: ghcr.io/sperance/ktor-bestgame
+        run: |
+          . ci/branches.env
+          bash ci/quiet.sh clone-server git clone -q --filter=blob:none --no-checkout --branch "$SERVER_BRANCH" "https://x-access-token:$TOKEN@github.com/Sperance/ktor-bestgame.git" srv
+          pin=$(git -C src ls-tree HEAD backend | awk '{print $3}')
+          head=$(git -C srv rev-parse HEAD)
+          [[ $pin =~ ^[0-9a-f]{40}$ ]] || { echo "::error::no server is pinned in backend/ of the client"; exit 1; }
+          git -C srv cat-file -e "$pin^{commit}" 2>/dev/null || { echo "::error::the pinned server $pin is not in the server working branch"; exit 1; }
+          bash ci/server-diff.sh srv "$pin" "$head" || { echo "::error::the server head $head has code the client does not pin ($pin): pin it in ExileForge (backend/, API_REVISION by its rules) and press Release again"; exit 1; }
+          bash ci/checked-image.sh "$IMAGE" srv "$head" >/dev/null || { echo "::error::the server head $head has no checked image: wait for its push checks (or start Server with mode push) and press Release again"; exit 1; }
+          echo "server $head: pinned and checked"
       - name: Next version
         id: version
         env:
