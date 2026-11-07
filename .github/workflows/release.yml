@@ -8,8 +8,9 @@
 #                     minor - x.y+1.0, от последнего выпущенного тега v<версия> здесь): job `client` берёт голову рабочей ветки
 #                     клиента, коммитом `feat: release <версия>` ставит versionCode/versionName в app/build.gradle.kts и переименовывает
 #                     `## Следующая версия` в RELEASE_NOTES.md (нет раздела или он пуст - ошибка), затем запускает client.yml mode=release
-#                     на этом коммите (до коммита - стоп, если голова сервера по коду не закреплена в клиенте или её образ не
-#                     проверен): все проверки, релиз, закрытие Issues «Closes #N», выкат сервера (деплой после релиза запускает
+#                     на этом коммите (до коммита - стоп, если голова сервера по коду не закреплена в клиенте, её образ не
+#                     проверен или сторож деплоя ci/deploy-guard.py --candidate против выката: новый клиент не играл бы на сервере
+#                     после выката, или выкат отрезал бы сборки каналов без force_breaking): все проверки, релиз, закрытие Issues «Closes #N», выкат сервера (деплой после релиза запускает
 #                     client.yml сам), выкладка в магазины. Коммит делает EXILEFORGE_TOKEN (Contents: write на ExileForge);
 #   client-shots    - UI-тесты и снимки ключевых экранов, без релиза (client.yml mode=shots);
 #   telegram        - пост о последнем релизе в тему «Обновления» группы Telegram заново (telegram.yml): пост той же версии правится;
@@ -29,6 +30,10 @@ on:
         type: choice
         options: [ patch, minor ]
         default: patch
+      force_breaking:
+        description: 'client only: owner-approved break - the server deploy after the release may cut older builds of the store channels'
+        type: boolean
+        default: false
 
 permissions:
   actions: write
@@ -102,6 +107,23 @@ jobs:
           bash ci/server-diff.sh srv "$pin" "$head" || { echo "::error::the server head $head has code the client does not pin ($pin): pin it in ExileForge (backend/, API_REVISION by its rules) and press Release again"; exit 1; }
           bash ci/checked-image.sh "$IMAGE" srv "$head" >/dev/null || { echo "::error::the server head $head has no checked image: wait for its push checks (or start Server with mode push) and press Release again"; exit 1; }
           echo "server $head: pinned and checked"
+      # Тот же сторож, что у деплоя (ci/deploy-guard.py), до коммита версии: выпуск не начинается, если новый клиент не будет играть
+      # на сервере после выката или сервер не посчитает свою эпоху (это не одобряется), или если выкат отрежет сборки каналов магазинов
+      # без force_breaking. Исходники сторожа - Protocol.kt и Content.kt головы сервера (по коду она равна закреплённой).
+      - name: The released pair plays after the server deploy
+        env:
+          SERVER_URL: ${{ vars.SERVER_URL }}
+          FORCE_BREAKING: ${{ inputs.force_breaking }}
+          GITHUB_TOKEN: ${{ github.token }}
+          PUBLIC_NOTES: ${{ runner.temp }}/guard.txt
+        run: |
+          for path in rules/src/main/kotlin/com/sperance/exileforge/rules/wire/Protocol.kt rules/src/main/kotlin/com/sperance/exileforge/rules/content/Content.kt; do
+            mkdir -p "guard/$(dirname "$path")" && git -C srv show "HEAD:$path" > "guard/$path"
+          done
+          code=0
+          bash ci/quiet.sh deploy-guard python3 ci/deploy-guard.py guard --candidate || code=$?
+          cat "$PUBLIC_NOTES" 2>/dev/null || true
+          exit $code
       - name: Next version
         id: version
         env:
@@ -148,8 +170,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           SHA: ${{ steps.commit.outputs.sha }}
+          FORCE: ${{ inputs.force_breaking }}
         run: |
-          gh workflow run client.yml -R "$GITHUB_REPOSITORY" --ref main -f mode=release -f sha="$SHA"
+          gh workflow run client.yml -R "$GITHUB_REPOSITORY" --ref main -f mode=release -f sha="$SHA" -f force_breaking="$FORCE"
           echo "started: release of ${{ steps.version.outputs.version }} at $SHA"
       - name: Encrypted log
         if: failure()

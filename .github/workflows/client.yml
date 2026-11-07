@@ -53,6 +53,10 @@ on:
         description: 'cache mode: build the archives with the head of the server working branch instead of the pinned server (server.yml starts it after a deploy that changed build files)'
         type: boolean
         default: false
+      force_breaking:
+        description: 'release mode: owner-approved break for the server deploy after the release (set by Release -> client)'
+        type: boolean
+        default: false
 
 # Чужой код здесь не исполняется: триггеров pull_request нет, токен job'ов по умолчанию только читает.
 permissions:
@@ -773,7 +777,8 @@ jobs:
         name: Trigger the server deploy
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh workflow run server.yml -R "$GITHUB_REPOSITORY" --ref main -f mode=deploy
+          FORCE: ${{ inputs.force_breaking || false }}
+        run: gh workflow run server.yml -R "$GITHUB_REPOSITORY" --ref main -f mode=deploy -f force_breaking="$FORCE"
       # Прямой канал сервер узнаёт отчётом: релиз GitHub вышел, доля 1.0. Новый деплой сервера (шаг выше) ещё идёт, поэтому отчёт
       # может не дойти (маршрута нет у прежнего сервера) - это предупреждение, отчёт повторит задача store-status (после выкладки и раз в 6 часов) в maintenance.yml.
       - if: steps.version.outputs.exists == 'false'

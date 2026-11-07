@@ -105,6 +105,11 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
+      # Одна версия правил за выпуск: накопленные работы не поднимают RULES_VERSION дважды до выпуска (ci/rules-step.py)
+      - name: One rules version per release
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 ci/rules-step.py server
       - name: Content and contract checks
         working-directory: server
         run: bash ../ci/quiet.sh checks bash scripts/check.sh all

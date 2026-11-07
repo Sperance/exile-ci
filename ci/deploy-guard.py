@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Защита деплоя сервера (job `deploy` server.yml): не выкатывать сервер, который отрежет сборку, ещё лежащую в канале магазина.
 
-    python3 ci/deploy-guard.py <каталог с исходниками сервера>
+    python3 ci/deploy-guard.py <каталог с исходниками сервера> [--candidate]
 
 Проверка на РЕГРЕССИЮ: сервер судит сборки по живому окну, а не по константам кода. Берётся публичный манифест работающего сервера
 `${SERVER_URL}/static/index.json` (`revision`, `minRevision`, `activeRules`, `content.schema`, `content.minSchema`, `channels`: у канала
@@ -12,10 +12,16 @@
 сервера лежит в [rules-1..rules] (спящие правила; сборка без contentSchema - только rules); форма контента сервера лежит в
 [contentSchema-1..contentSchema] при minSchema не выше contentSchema (сборка без contentSchema - только форма 3).
 
-Сервер после деплоя: minRevision живого окна (MIN_API_REVISION, если MIN_API_REVISION_FORCED=true: тогда окно и activeRules
-поднимаются до RULES_VERSION разом), activeRules живой (деплой её не двигает), форма CONTENT_SCHEMA и minSchema не ниже
-CONTENT_SCHEMA-1. Отдельная ошибка: RULES_VERSION-1 выше живых activeRules - новый сервер не сможет считать живую эпоху.
-Блокирует только сборка, которую живой сервер принимает, а новый отрежет; не принимаемая уже сейчас - предупреждение.
+Сервер после деплоя: minRevision и activeRules живого окна; MIN_API_REVISION_FORCED=true при MIN_API_REVISION выше живого минимума
+поднимает минимум до MIN_API_REVISION и activeRules до RULES_VERSION разом (ClientWindows.raise: при прежнем минимуме окно не
+двигается); форма CONTENT_SCHEMA и minSchema не ниже CONTENT_SCHEMA-1. Отдельная ошибка: RULES_VERSION-1 выше activeRules после
+деплоя - новый сервер не сможет считать эпоху, по которой будет судить. Блокирует только сборка, которую живой сервер принимает,
+а новый отрежет; не принимаемая уже сейчас - предупреждение.
+
+Новейший клиент обязан играть с сервером после деплоя: при деплое - последний релиз exile-ci (его update.json); с --candidate
+(Release → client до коммита версии) - клиент, что выйдет из этих исходников (клиент берёт API_REVISION, RULES_VERSION и
+CONTENT_SCHEMA из закреплённого сервера). Не играет - ошибка: выпуск вышел бы без сервера, на котором он играет. Её и эпоху,
+которую сервер не считает, FORCE_BREAKING не одобряет: он разрешает только отрезать старые сборки каналов.
 
 Окружение: SERVER_URL (нет - защита выключена, предупреждение), FORCE_BREAKING=true (владелец одобрил разрыв: нарушения - лишь
 предупреждение), GITHUB_TOKEN, GITHUB_REPOSITORY. Нет манифеста или update.json нужной сборки - тоже ошибка: слепой деплой не
@@ -61,7 +67,7 @@ def live_state(base):
 
 def after_deploy(live, revision, revision_min, forced, rules, schema):
     """Окно сервера после деплоя: ревизия и схема новые, минимум ревизии и правила двигаются только вынужденным минимумом."""
-    if forced:
+    if forced and revision_min > live.min_revision:
         return Server(revision, max(live.min_revision, revision_min), max(live.active_rules, rules), schema, max(live.min_schema, schema - 1))
     return Server(revision, live.min_revision, live.active_rules, schema, max(live.min_schema, schema - 1))
 
@@ -94,6 +100,7 @@ def problems(update, server):
 
 def main():
     source = sys.argv[1]
+    candidate = "--candidate" in sys.argv[2:]
     base = os.environ.get("SERVER_URL", "").strip().rstrip("/")
     if not base:
         say("::warning::SERVER_URL is not set: the deploy guard is off")
@@ -111,11 +118,21 @@ def main():
         say(f"::warning::deploy guard: the live manifest is unavailable ({type(error).__name__}), deploy goes on")
         return
     after = after_deploy(live, revision, revision_min, revision_forced, rules, schema)
-    broken = 0
-    if rules - 1 > live.active_rules:
-        broken += 1
-        say(f"::error::deploy guard: the new server rules {rules} cannot compute the live era {live.active_rules} (needs active rules >= {rules - 1})")
+    # hard - разрыв, который force_breaking не одобряет: сервер не считает свою эпоху или новейший клиент на нём не играет
+    broken = hard = 0
+    if rules - 1 > after.active_rules:
+        hard += 1
+        say(f"::error::deploy guard: the new server rules {rules} cannot compute the era {after.active_rules} it would judge by (needs active rules >= {rules - 1})")
     catalog = Catalog()
+    newest = {"versionCode": "next", "apiRevision": revision, "rules": rules, "contentSchema": schema} if candidate else catalog.latest()
+    if newest is None:
+        hard += 1
+        say("::error::deploy guard: no exile-ci release to check the newest client against")
+    elif blocked := problems(newest, after):
+        hard += 1
+        say(f"::error::deploy guard: the newest client {newest['versionCode']} would not play the new server: {'; '.join(blocked)}")
+    else:
+        say(f"deploy guard: the newest client {newest['versionCode']} plays the new server")
     for channel, code in sorted(held.items()):
         update = catalog.by_code(code) if code else None
         if update is None:
@@ -130,6 +147,9 @@ def main():
             say(f"::error::deploy guard: {channel} build {code} plays the live server but the new one would cut it: {'; '.join(will)}")
         else:
             say(f"deploy guard: {channel} build {code} keeps playing")
+    if hard:
+        say("::error::The new server could not judge its era or the newest client would not play it: force_breaking does not approve this, fix the server")
+        sys.exit(1)
     if broken and forced:
         say("::warning::deploy guard: the break is approved by force_breaking")
     elif broken:
