@@ -1,10 +1,11 @@
-"""Пост об обновлении в канал Telegram: заметки релиза (RELEASE_NOTES.md из тела релиза) с баннером крупным превью над текстом
-и кнопками RuStore, Google Play и APK. Новый пост закрепляется вместо прошлого.
+"""Пост об обновлении в тему группы Telegram: заметки релиза (RELEASE_NOTES.md из тела релиза) с баннером крупным превью над
+текстом и кнопками RuStore, Google Play и APK. Новый пост закрепляется в теме вместо прошлых.
 
-Повтор без дублей: закреплён пост той же версии - он правится, а не выходит снова. Сбой - предупреждение в журнале и код 0:
-релиз уже вышел, пост повторяет ручной запуск (Release → telegram).
-Окружение: TELEGRAM_BOT_TOKEN (секрет), TELEGRAM_CHAT (@канал), GITHUB_SERVER_URL и GITHUB_REPOSITORY (их ставит Actions).
-Использование: python3 post.py <тег> <файл заметок> <URL баннера>
+Повтор без дублей: номер поста версии хранится в файле состояния (кэш Actions по тегу) - есть номер, пост правится, а не выходит
+снова. Сбой - предупреждение в журнале и код 0: релиз уже вышел, пост повторяет ручной запуск (Release → telegram).
+Окружение: TELEGRAM_BOT_TOKEN (секрет), TELEGRAM_CHAT (@группа), TELEGRAM_TOPIC (номер темы - последнее число ссылки t.me/группа/N),
+GITHUB_SERVER_URL и GITHUB_REPOSITORY (их ставит Actions).
+Использование: python3 post.py <тег> <файл заметок> <URL баннера> <файл состояния>
 """
 import html
 import json
@@ -103,45 +104,51 @@ def wait_for_image(url, timeout=180):
         time.sleep(10)
 
 
-def publish(bot, chat, header, text, banner_url, markup):
+def publish(bot, chat, topic, text, banner_url, markup, known_id):
+    """Правит пост known_id, если он есть и не удалён; иначе отправляет новый и закрепляет его один в теме. Возвращает номер поста."""
     content = {
         "text": text,
         "parse_mode": "HTML",
         "link_preview_options": {"url": banner_url, "prefer_large_media": True, "show_above_text": True},
         "reply_markup": markup,
     }
-    pinned = bot.call("getChat", chat_id=chat).get("pinned_message") or {}
-    if pinned.get("text", "").split("\n", 1)[0] == header:
+    if known_id:
         try:
-            bot.call("editMessageText", chat_id=chat, message_id=pinned["message_id"], **content)
+            bot.call("editMessageText", chat_id=chat, message_id=known_id, **content)
+            return known_id, "edited"
         except TelegramError as e:
-            if "message is not modified" not in str(e):
+            if "message is not modified" in str(e):
+                return known_id, "unchanged"
+            if "message to edit not found" not in str(e):
                 raise
-        return "edited"
-    message = bot.call("sendMessage", chat_id=chat, **content)
+    message_id = bot.call("sendMessage", chat_id=chat, message_thread_id=topic, **content)["message_id"]
+    bot.call("unpinAllForumTopicMessages", chat_id=chat, message_thread_id=topic)
     # Пост уже прозвенел - закреп без второго уведомления
-    bot.call("pinChatMessage", chat_id=chat, message_id=message["message_id"], disable_notification=True)
-    return "posted"
+    bot.call("pinChatMessage", chat_id=chat, message_id=message_id, disable_notification=True)
+    return message_id, "posted"
 
 
-def main(tag, notes_file, banner_url):
+def main(tag, notes_file, banner_url, state_file):
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
     if not token:
         print("::warning::TELEGRAM_BOT_TOKEN is not set: no Telegram post")
         return
     releases = f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/releases"
-    header = f"Обновление {tag.removeprefix('v')}"
     with open(notes_file, encoding="utf-8") as f:
-        text = compose(header, f.read(), f"{releases}/tag/{tag}")
+        text = compose(f"Обновление {tag.removeprefix('v')}", f.read(), f"{releases}/tag/{tag}")
     markup = keyboard(f"{releases}/download/{tag}/ExileForge-{tag}.apk")
+    state = json.loads(open(state_file).read()) if os.path.exists(state_file) else {}
     try:
         wait_for_image(banner_url)
-        result = publish(Bot(token), os.environ["TELEGRAM_CHAT"], header, text, banner_url, markup)
+        message_id, result = publish(Bot(token), os.environ["TELEGRAM_CHAT"], int(os.environ["TELEGRAM_TOPIC"]), text, banner_url,
+                                     markup, state.get("message_id"))
     except TelegramError as e:
         print(f"::warning::Telegram post of {tag} failed: {e}. Repeat: Release → telegram")
         return
+    with open(state_file, "w") as f:
+        json.dump({"message_id": message_id}, f)
     print(f"telegram: {result} {tag}, {text_length(text)} of {LIMIT} characters")
 
 
 if __name__ == "__main__":
-    main(*sys.argv[1:4])
+    main(*sys.argv[1:5])

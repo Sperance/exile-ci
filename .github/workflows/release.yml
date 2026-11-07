@@ -7,14 +7,14 @@
 #   client          - новая версия клиента: все проверки и релиз (client.yml mode=push); после публикации релиза client.yml сам
 #                     запускает деплой сервера, так что сервер отдельно не нужен;
 #   client-shots    - UI-тесты и снимки ключевых экранов, без релиза (client.yml mode=shots);
-#   telegram        - пост о последнем релизе в канал Telegram заново (telegram.yml): закреплённый пост той же версии правится.
+#   telegram        - пост о последнем релизе в тему «Обновления» группы Telegram заново (telegram.yml): пост той же версии правится.
 name: Release
 
 on:
   workflow_dispatch:
     inputs:
       what:
-        description: 'server - deploy checked head; server-rebuild - checks, image and deploy; client - checks and release (deploys the server after); client-shots - UI tests only; telegram - post the latest release to the Telegram channel again'
+        description: 'server - deploy checked head; server-rebuild - checks, image and deploy; client - checks and release (deploys the server after); client-shots - UI tests only; telegram - post the latest release to the Telegram group again'
         type: choice
         options: [ server, server-rebuild, client, client-shots, telegram ]
         default: server
