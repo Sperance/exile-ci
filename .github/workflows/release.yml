@@ -74,7 +74,7 @@ jobs:
           TOKEN: ${{ secrets.EXILEFORGE_TOKEN }}
         run: |
           . ci/branches.env
-          bash ci/quiet.sh clone-client git clone -q --depth 1 --branch "$CLIENT_BRANCH" "https://x-access-token:$TOKEN@github.com/Sperance/ExileForge.git" src
+          bash ci/quiet.sh clone-client git clone -q --branch "$CLIENT_BRANCH" "https://x-access-token:$TOKEN@github.com/Sperance/ExileForge.git" src
       - name: Next version
         id: version
         env:
@@ -83,18 +83,38 @@ jobs:
         run: |
           last=$(gh release list -R "$GITHUB_REPOSITORY" --limit 300 --json tagName --jq '.[].tagName' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1 || true)
           [ -n "$last" ] || { echo "::error::no released v<x.y.z> tag in $GITHUB_REPOSITORY"; exit 1; }
+          echo "last=$last" >> "$GITHUB_OUTPUT"
           echo "last release: $last, bump: $BUMP"
           python3 -I ci/bump-release.py src "$BUMP" "$last" "$GITHUB_OUTPUT"
+      # Обязательность релиза читает ci/release-files.py из последнего коммита, а им станет коммит выпуска: трейлер «Update-Mandatory: yes»
+      # любой работы с прошлого выпуска переносится в него. Начало диапазона - тег прошлого выпуска в ExileForge; нет тега - коммит
+      # `feat: release <прошлая версия>`, иначе последние 100 коммитов. Метка «<!-- quiet -->» лежит внутри раздела заметок и
+      # переименование заголовка её сохраняет.
+      - name: Mandatory update from the accumulated work
+        id: mandatory
+        env:
+          PREV: ${{ steps.version.outputs.last }}
+        run: |
+          if git -C src rev-parse -q --verify "refs/tags/$PREV" >/dev/null; then range="$PREV..HEAD"
+          elif base=$(git -C src log --format=%H -1 --grep="^feat: release ${PREV#v}$"); [ -n "$base" ]; then range="$base..HEAD"
+          else range="HEAD~100..HEAD"; fi
+          if git -C src log --format=%B "$range" 2>/dev/null | grep -qiE '^Update-Mandatory: yes'; then
+            echo "mandatory update found in $range"
+            echo "mandatory=yes" >> "$GITHUB_OUTPUT"
+          else
+            echo "mandatory=no" >> "$GITHUB_OUTPUT"
+          fi
       - name: Commit the release number
         id: commit
         env:
           TOKEN: ${{ secrets.EXILEFORGE_TOKEN }}
           VERSION: ${{ steps.version.outputs.version }}
+          MANDATORY: ${{ steps.mandatory.outputs.mandatory }}
         run: |
           . ci/branches.env
           export GIT_AUTHOR_NAME=Sperance GIT_AUTHOR_EMAIL=dmitriymalaye@gmail.com GIT_COMMITTER_NAME=Sperance GIT_COMMITTER_EMAIL=dmitriymalaye@gmail.com
           git -C src add app/build.gradle.kts RELEASE_NOTES.md
-          git -C src commit -q -m "feat: release $VERSION" -m "Cumulative release: the version number and the notes heading are set when the release is started." -m $'Server-Update: yes\nServer-Wipe: no\nVerified: ci'
+          git -C src commit -q -m "feat: release $VERSION" -m "Cumulative release: the version number and the notes heading are set when the release is started." -m "$(printf 'Server-Update: yes\nServer-Wipe: no\nVerified: ci'; [ "$MANDATORY" = yes ] && printf '\nUpdate-Mandatory: yes')"
           bash ci/quiet.sh push-client git -C src push -q "https://x-access-token:$TOKEN@github.com/Sperance/ExileForge.git" "HEAD:refs/heads/$CLIENT_BRANCH"
           echo "sha=$(git -C src rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - name: Start the release run
