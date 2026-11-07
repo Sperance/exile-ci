@@ -13,7 +13,7 @@
 #                                     и снимки ключевых экранов (KeyScreensShotTest), без релиза; stores - заново выложить выпущенную версию
 #                                     в магазины; cache - только архивы для облачных сессий агента (job `gradle-cache`).
 # Релиз: versionName без релиза в exile-ci после зелёных проверок - тег v<versionName> здесь с APK, update.json и заметками
-# RELEASE_NOTES.md (их читает игра, Updates.kt); карта R8 mapping.txt - только в релиз того же тега приватного ExileForge
+# RELEASE_NOTES.md (их читает игра, Updates.kt); карты R8 (mapping.txt прямого APK, mapping-play.txt и mapping-rustore.txt магазинов) - только в релиз того же тега приватного ExileForge
 # (её качает сервер, ReleaseMappings). Затем Issues, что называют коммиты релиза «Closes #N», закрываются, и запускается
 # деплой сервера (server.yml, режим deploy).
 # Каналы: прямой APK (релиз здесь), Google Play (AAB на дорожку переменной PLAY_TRACK: alpha - закрытый тест, beta - ранний доступ,
@@ -368,7 +368,7 @@ jobs:
           LOG_KEY: ${{ secrets.LOG_KEY }}
         run: |
           . ../ci/build-tasks.env
-          bash ../ci/seal.sh --transit ../sealed/unsigned-rustore.enc "$RUSTORE_APK"
+          bash ../ci/seal.sh --transit ../sealed/unsigned-rustore.enc "$RUSTORE_APK" "$RUSTORE_MAPPING"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: unsigned-rustore
@@ -438,7 +438,7 @@ jobs:
           }
           [ ! -f sealed/unsigned-apk.enc ] || sign apk apk "$DIRECT_APK" "$DIRECT_MAPPING"
           sign aab aab "$PLAY_AAB" "$PLAY_MAPPING"
-          sign rustore apk "$RUSTORE_APK"
+          sign rustore apk "$RUSTORE_APK" "$RUSTORE_MAPPING"
           rm -f "$RUNNER_TEMP/release.jks"
       - name: Seal the signed packages
         env:
@@ -453,7 +453,7 @@ jobs:
           }
           [ ! -d signed/apk ] || seal apk release.enc "$DIRECT_APK" "$DIRECT_MAPPING"
           seal aab play.enc "$PLAY_AAB" "$PLAY_MAPPING"
-          seal rustore rustore.enc "$RUSTORE_APK"
+          seal rustore rustore.enc "$RUSTORE_APK" "$RUSTORE_MAPPING"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: ${{ needs.release-apk.result == 'success' }}
         with:
@@ -613,7 +613,7 @@ jobs:
           if-no-files-found: ignore
 
   # После зелёных проверок versionName без релиза публикуется: тег v<versionName> здесь с APK из `release-apk`, update.json и
-  # заметками RELEASE_NOTES.md; mapping.txt - в релиз того же тега приватного ExileForge, на коммите клиента. Затем - пост о версии
+  # заметками RELEASE_NOTES.md; карты R8 всех трёх вариантов (с проверкой pg_map_id по dex сборки) - в релиз того же тега приватного ExileForge, на коммите клиента. Затем - пост о версии
   # в группу Telegram (telegram.yml).
   # Пропущенные по фильтру проверки (core без изменений) релиз не держат; упавшие или отменённые - держат.
   release:
@@ -659,6 +659,17 @@ jobs:
         with:
           name: exile-forge-release
           path: sealed
+      # Пакеты Play и RuStore нужны только ради их карт R8 (подписанные, как и опубликованные в магазины)
+      - if: steps.version.outputs.exists == 'false'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: exile-forge-play
+          path: sealed
+      - if: steps.version.outputs.exists == 'false'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: exile-forge-rustore
+          path: sealed
       - if: steps.version.outputs.exists == 'false'
         name: Release files
         id: files
@@ -671,25 +682,33 @@ jobs:
           export DIRECT_APK DIRECT_MAPPING
           bash ../ci/seal.sh -d ../sealed/release.enc .
           python3 ../ci/release-files.py "$TAG" ..
+          bash ../ci/seal.sh -d ../sealed/play.enc ../maps/play
+          bash ../ci/seal.sh -d ../sealed/rustore.enc ../maps/rustore
+          cp "../maps/play/$PLAY_MAPPING" ../mapping-play.txt
+          cp "../maps/rustore/$RUSTORE_MAPPING" ../mapping-rustore.txt
+          python3 ../ci/verify-map.py "$DIRECT_APK" ../mapping.txt
+          python3 ../ci/verify-map.py "../maps/play/$PLAY_AAB" ../mapping-play.txt
+          python3 ../ci/verify-map.py "../maps/rustore/$RUSTORE_APK" ../mapping-rustore.txt
           cat ../update.json
           echo "apk=ExileForge-$TAG.apk" >> "$GITHUB_OUTPUT"
       # Карта R8 - сначала и только в приватный ExileForge: тег на коммите клиента нужен и для диапазона «Closes #N» ниже.
       - if: steps.version.outputs.exists == 'false'
-        name: Private release with the R8 mapping
+        name: Private release with the R8 maps
         env:
           GH_TOKEN: ${{ secrets.EXILEFORGE_TOKEN }}
           TAG: ${{ steps.version.outputs.tag }}
         run: |
-          # Карта сжатой (в ~10 раз меньше): сервер читает mapping.txt.gz, у старых релизов - mapping.txt (ReleaseMappings)
-          gzip -9 -kf mapping.txt
+          # Карты сжатые (в ~10 раз меньше): сервер читает mapping.txt.gz (прямой APK), mapping-play.txt.gz и mapping-rustore.txt.gz
+          # (сборки магазинов; нужную выбирает по pg_map_id), у старых релизов - mapping.txt (ReleaseMappings)
+          gzip -9 -kf mapping.txt mapping-play.txt mapping-rustore.txt
           if gh release view "$TAG" -R "$CLIENT_REPO" >/dev/null 2>&1; then
-            gh release upload "$TAG" mapping.txt.gz -R "$CLIENT_REPO" --clobber
+            gh release upload "$TAG" mapping.txt.gz mapping-play.txt.gz mapping-rustore.txt.gz -R "$CLIENT_REPO" --clobber
           else
-            gh release create "$TAG" mapping.txt.gz -R "$CLIENT_REPO" --target "$SHA" --title "ExileForge ${TAG#v}" --notes "R8 mapping of ${TAG#v}"
+            gh release create "$TAG" mapping.txt.gz mapping-play.txt.gz mapping-rustore.txt.gz -R "$CLIENT_REPO" --target "$SHA" --title "ExileForge ${TAG#v}" --notes "R8 mapping of ${TAG#v}"
           fi
-          # Карты хранятся у 10 последних релизов v*: у старших ассеты mapping.txt* удаляются (сам релиз и тег остаются)
+          # Карты хранятся у 10 последних релизов v*: у старших ассеты mapping*.txt* удаляются (сам релиз и тег остаются)
           # Порядок - по дате выхода, не по номеру: среди тегов есть старая схема v4.x, старше нынешних v0.x
-          gh api --paginate "repos/$CLIENT_REPO/releases?per_page=100" --jq '.[] | select(.tag_name | test("^v[0-9]")) | [.created_at, .tag_name, ([.assets[] | select(.name | startswith("mapping.txt")) | .id] | join(" "))] | @tsv' \
+          gh api --paginate "repos/$CLIENT_REPO/releases?per_page=100" --jq '.[] | select(.tag_name | test("^v[0-9]")) | [.created_at, .tag_name, ([.assets[] | select(.name | startswith("mapping")) | .id] | join(" "))] | @tsv' \
             | sort -r | tail -n +11 | while IFS=$'\t' read -r _ old ids; do
                 for id in $ids; do gh api -X DELETE "repos/$CLIENT_REPO/releases/assets/$id" >/dev/null || echo "::warning::mapping of $old was not deleted"; done
               done

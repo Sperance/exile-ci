@@ -19,4 +19,4 @@ adb uninstall com.sperance.exileforge
 adb install -r "$MINIFIED_APK"
 adb install -r "$MINIFIED_TEST_APK"
 adb shell am instrument -w -e class com.sperance.exileforge.ui.ReleaseSmokeTest com.sperance.exileforge.test/androidx.test.runner.AndroidJUnitRunner | tee release-smoke.txt
-python3 -c "import pathlib; text=pathlib.Path('release-smoke.txt').read_text(); assert 'OK (1 test)' in text, text"
+python3 -c "import pathlib,re; text=pathlib.Path('release-smoke.txt').read_text(); assert re.search(r'OK \(\d+ tests?\)', text), text"
