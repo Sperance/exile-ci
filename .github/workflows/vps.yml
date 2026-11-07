@@ -344,7 +344,7 @@ jobs:
         with:
           name: db-export-log
 
-  # Восстановление базы: только вручную и только после подтверждения владельца (environment release); перед ним update.sh сам
+  # Восстановление базы: только ручным запуском владельца (environment release, без отдельного подтверждения); перед ним update.sh сам
   # снимает свежую копию в backups/pre. Источник - копия на VPS или недельный релиз db-<дата> (CI расшифровывает его ключом SEAL).
   restore:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.command == 'restore' }}
