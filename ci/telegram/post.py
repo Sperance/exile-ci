@@ -5,7 +5,7 @@
 снова. Сбой - предупреждение в журнале и код 0: релиз уже вышел, пост повторяет ручной запуск (Release → telegram).
 Окружение: TELEGRAM_BOT_TOKEN (секрет), TELEGRAM_CHAT (@группа), TELEGRAM_TOPIC (номер темы - последнее число ссылки t.me/группа/N),
 GITHUB_SERVER_URL и GITHUB_REPOSITORY (их ставит Actions).
-Использование: python3 post.py <тег> <файл заметок> <URL баннера> <файл состояния>
+Использование: python3 post.py <тег> <файл заметок> <URL баннера> <файл состояния> [номер поста в теме]
 """
 import html
 import json
@@ -68,9 +68,10 @@ class Bot:
         self._token = token
 
     def call(self, method, **params):
-        """Вызов Bot API; 429 и сбои сети или сервера Telegram - до трёх попыток, остальные ошибки - сразу."""
+        """Вызов Bot API. 429 - до пяти попыток с паузой, что просит Telegram; сбои сети и сервера Telegram - до трёх; прочее - сразу."""
         data = json.dumps(params).encode()
-        for attempt in range(3):
+        failures = 0
+        for attempt in range(5):
             request = urllib.request.Request(f"https://api.telegram.org/bot{self._token}/{method}", data,
                                              {"Content-Type": "application/json"})
             try:
@@ -78,15 +79,21 @@ class Bot:
                     return json.load(response)["result"]
             except urllib.error.HTTPError as e:
                 reply = json.loads(e.read() or b"{}")
-                description = reply.get("description", f"HTTP {e.code}")
+                error = TelegramError(f"{method}: {reply.get('description', f'HTTP {e.code}')}")
                 retry_after = reply.get("parameters", {}).get("retry_after")
-                if attempt == 2 or not (retry_after or e.code >= 500):
-                    raise TelegramError(f"{method}: {description}") from None
-                time.sleep(retry_after or 5 * (attempt + 1))
+                if retry_after:
+                    time.sleep(retry_after + 1)
+                    continue
+                failures += 1
+                if e.code < 500 or failures == 3:
+                    raise error from None
             except (urllib.error.URLError, TimeoutError) as e:
-                if attempt == 2:
-                    raise TelegramError(f"{method}: {getattr(e, 'reason', e)}") from None
-                time.sleep(5 * (attempt + 1))
+                error = TelegramError(f"{method}: {getattr(e, 'reason', e)}")
+                failures += 1
+                if failures == 3:
+                    raise error from None
+            time.sleep(5 * failures)
+        raise error
 
 
 def wait_for_image(url, timeout=180):
@@ -104,31 +111,35 @@ def wait_for_image(url, timeout=180):
         time.sleep(10)
 
 
-def publish(bot, chat, topic, text, banner_url, markup, known_id):
-    """Правит пост known_id, если он есть и не удалён; иначе отправляет новый и закрепляет его один в теме. Возвращает номер поста."""
-    content = {
-        "text": text,
-        "parse_mode": "HTML",
-        "link_preview_options": {"url": banner_url, "prefer_large_media": True, "show_above_text": True},
-        "reply_markup": markup,
-    }
+def publish(bot, chat, topic, content, known_id, remember):
+    """Правит пост known_id, если он есть и не удалён, иначе отправляет новый (номер сразу уходит в remember - сбой закрепа не
+    приведёт к дублю при повторе). Затем закрепляет пост; у нового прежние закрепы темы снимаются. Возвращает итог."""
+    result = None
     if known_id:
         try:
             bot.call("editMessageText", chat_id=chat, message_id=known_id, **content)
-            return known_id, "edited"
+            result = "edited"
         except TelegramError as e:
             if "message is not modified" in str(e):
-                return known_id, "unchanged"
-            if "message to edit not found" not in str(e):
+                result = "unchanged"
+            elif "message to edit not found" not in str(e):
                 raise
-    message_id = bot.call("sendMessage", chat_id=chat, message_thread_id=topic, **content)["message_id"]
-    bot.call("unpinAllForumTopicMessages", chat_id=chat, message_thread_id=topic)
-    # Пост уже прозвенел - закреп без второго уведомления
+    if result:
+        message_id = known_id
+    else:
+        message_id = bot.call("sendMessage", chat_id=chat, message_thread_id=topic, **content)["message_id"]
+        remember(message_id)
+        result = "posted"
+        try:
+            bot.call("unpinAllForumTopicMessages", chat_id=chat, message_thread_id=topic)
+        except TelegramError as e:
+            print(f"::warning::old pins of the topic stay: {e}")
+    # Пост уже прозвенел - закреп без второго уведомления; закреп уже закреплённого безвреден
     bot.call("pinChatMessage", chat_id=chat, message_id=message_id, disable_notification=True)
-    return message_id, "posted"
+    return result
 
 
-def main(tag, notes_file, banner_url, state_file):
+def main(tag, notes_file, banner_url, state_file, message_id=""):
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
     if not token:
         print("::warning::TELEGRAM_BOT_TOKEN is not set: no Telegram post")
@@ -136,19 +147,32 @@ def main(tag, notes_file, banner_url, state_file):
     releases = f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/releases"
     with open(notes_file, encoding="utf-8") as f:
         text = compose(f"Обновление {tag.removeprefix('v')}", f.read(), f"{releases}/tag/{tag}")
-    markup = keyboard(f"{releases}/download/{tag}/ExileForge-{tag}.apk")
-    state = json.loads(open(state_file).read()) if os.path.exists(state_file) else {}
+    content = {
+        "text": text,
+        "parse_mode": "HTML",
+        "link_preview_options": {"url": banner_url, "prefer_large_media": True, "show_above_text": True},
+        "reply_markup": keyboard(f"{releases}/download/{tag}/ExileForge-{tag}.apk"),
+    }
+
+    def remember(new_id):
+        with open(state_file, "w") as f:
+            json.dump({"message_id": new_id}, f)
+
+    # Номер, заданный вручную, - пост этой версии, что уже есть в теме: его правим и запоминаем
+    known_id = int(message_id) if message_id else None
+    if known_id:
+        remember(known_id)
+    elif os.path.exists(state_file):
+        with open(state_file) as f:
+            known_id = json.load(f)["message_id"]
     try:
         wait_for_image(banner_url)
-        message_id, result = publish(Bot(token), os.environ["TELEGRAM_CHAT"], int(os.environ["TELEGRAM_TOPIC"]), text, banner_url,
-                                     markup, state.get("message_id"))
+        result = publish(Bot(token), os.environ["TELEGRAM_CHAT"], int(os.environ["TELEGRAM_TOPIC"]), content, known_id, remember)
     except TelegramError as e:
         print(f"::warning::Telegram post of {tag} failed: {e}. Repeat: Release → telegram")
         return
-    with open(state_file, "w") as f:
-        json.dump({"message_id": message_id}, f)
     print(f"telegram: {result} {tag}, {text_length(text)} of {LIMIT} characters")
 
 
 if __name__ == "__main__":
-    main(*sys.argv[1:5])
+    main(*sys.argv[1:6])

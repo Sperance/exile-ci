@@ -6,7 +6,7 @@
 # Баннер - на GitHub Pages рядом с legal/ (ассеты релиза GitHub отдаёт как octet-stream, Telegram не покажет их картинкой). Превью
 # Telegram хранит у себя, поэтому следующий деплой pages.yml баннер убирает без вреда.
 # Повтор не дублирует пост: номер поста версии - в кэше Actions (ключ telegram-post-<тег>, живёт 7 дней без обращений), есть номер -
-# пост правится. Сбой Telegram - предупреждение, workflow зелёный.
+# пост правится; номер можно задать и вручную (вход message_id). Сбой Telegram - предупреждение, workflow зелёный.
 # Секрет TELEGRAM_BOT_TOKEN: бот - админ группы с правом «Закрепление сообщений».
 name: Telegram
 
@@ -15,6 +15,10 @@ on:
     inputs:
       tag:
         description: 'release tag, e.g. v0.24.0; empty - the latest release'
+        required: false
+        default: ''
+      message_id:
+        description: 'number of the post of this version already in the topic (last number of its link); empty - from the cache'
         required: false
         default: ''
 
@@ -80,7 +84,8 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TAG: ${{ steps.release.outputs.tag }}
           BANNER_URL: ${{ steps.pages.outputs.base_url }}/banner/${{ steps.release.outputs.tag }}.png?r=${{ github.run_id }}
-        run: python3 ci/telegram/post.py "$TAG" "$RUNNER_TEMP/notes.md" "$BANNER_URL" telegram-post.json
+          MESSAGE_ID: ${{ inputs.message_id }}
+        run: python3 ci/telegram/post.py "$TAG" "$RUNNER_TEMP/notes.md" "$BANNER_URL" telegram-post.json "$MESSAGE_ID"
       - if: steps.state.outputs.cache-hit != 'true' && hashFiles('telegram-post.json') != ''
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
