@@ -1,5 +1,5 @@
 """Пост об обновлении в тему группы Telegram: заметки релиза (RELEASE_NOTES.md из тела релиза) с баннером крупным превью над
-текстом и кнопками RuStore, Google Play и APK. Новый пост закрепляется в теме вместо прошлых.
+текстом и кнопками RuStore, Google Play и APK. Пост не закрепляется: тема и так только для обновлений.
 
 Повтор без дублей: номер поста версии хранится в файле состояния (кэш Actions по тегу) - есть номер, пост правится, а не выходит
 снова. Сбой - предупреждение в журнале и код 0: релиз уже вышел, пост повторяет ручной запуск (Release → telegram).
@@ -112,31 +112,18 @@ def wait_for_image(url, timeout=180):
 
 
 def publish(bot, chat, topic, content, known_id, remember):
-    """Правит пост known_id, если он есть и не удалён, иначе отправляет новый (номер сразу уходит в remember - сбой закрепа не
-    приведёт к дублю при повторе). Затем закрепляет пост; у нового прежние закрепы темы снимаются. Возвращает итог."""
-    result = None
+    """Правит пост known_id, если он есть и не удалён, иначе отправляет новый (его номер уходит в remember). Возвращает итог."""
     if known_id:
         try:
             bot.call("editMessageText", chat_id=chat, message_id=known_id, **content)
-            result = "edited"
+            return "edited"
         except TelegramError as e:
             if "message is not modified" in str(e):
-                result = "unchanged"
-            elif "message to edit not found" not in str(e):
+                return "unchanged"
+            if "message to edit not found" not in str(e):
                 raise
-    if result:
-        message_id = known_id
-    else:
-        message_id = bot.call("sendMessage", chat_id=chat, message_thread_id=topic, **content)["message_id"]
-        remember(message_id)
-        result = "posted"
-        try:
-            bot.call("unpinAllForumTopicMessages", chat_id=chat, message_thread_id=topic)
-        except TelegramError as e:
-            print(f"::warning::old pins of the topic stay: {e}")
-    # Пост уже прозвенел - закреп без второго уведомления; закреп уже закреплённого безвреден
-    bot.call("pinChatMessage", chat_id=chat, message_id=message_id, disable_notification=True)
-    return result
+    remember(bot.call("sendMessage", chat_id=chat, message_thread_id=topic, **content)["message_id"])
+    return "posted"
 
 
 def main(tag, notes_file, banner_url, state_file, message_id=""):
