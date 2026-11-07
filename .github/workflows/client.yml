@@ -613,7 +613,8 @@ jobs:
           if-no-files-found: ignore
 
   # После зелёных проверок versionName без релиза публикуется: тег v<versionName> здесь с APK из `release-apk`, update.json и
-  # заметками RELEASE_NOTES.md; mapping.txt - в релиз того же тега приватного ExileForge, на коммите клиента.
+  # заметками RELEASE_NOTES.md; mapping.txt - в релиз того же тега приватного ExileForge, на коммите клиента. Затем - пост о версии
+  # в канал Telegram (telegram.yml).
   # Пропущенные по фильтру проверки (core без изменений) релиз не держат; упавшие или отменённые - держат.
   release:
     # Пакеты магазинов собираются до публикации: сломанный вариант сборки не даёт выпустить версию в одном канале и не выпустить в другом
@@ -715,6 +716,14 @@ jobs:
         run: |
           sig=(); [ -s update.json.sig ] && sig=(update.json.sig)
           gh release create "$TAG" "$APK" update.json "${sig[@]}" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "ExileForge ${TAG#v}" --notes-file RELEASE_NOTES.md --latest
+      # Пост с заметками в канал Telegram (telegram.yml). Не запустился - релиз не держит: повторить можно через Release → telegram.
+      - if: steps.version.outputs.exists == 'false'
+        name: Announce in Telegram
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: gh workflow run telegram.yml -R "$GITHUB_REPOSITORY" --ref main -f tag="$TAG"
       # Issues, что чинит релиз: коммиты с прошлого релиза, что называют «Closes #N» (fixes, resolves), - Issue получает метку
       # версии и закрывается выполненным, без комментария; игра увидит это синхронизацией сервера.
       # Рабочая ветка - не основная, сам GitHub по таким словам Issues не закрывает.

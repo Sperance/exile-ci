@@ -1,5 +1,6 @@
 # Публикует legal/ (политика конфиденциальности и удаление аккаунта для Google Play) на GitHub Pages: https://sperance.github.io/exile-ci/.
 # Один раз включить: Settings → Pages → Source: GitHub Actions.
+# Pages выкладывает и telegram.yml - legal/ вместе с баннером поста; этот деплой баннер убирает, Telegram его уже сохранил у себя.
 name: Pages
 
 on:
