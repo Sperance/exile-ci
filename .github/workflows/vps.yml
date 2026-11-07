@@ -4,8 +4,8 @@
 # (простой игры - только в окне 01:00-03:00 UTC, вне окна update.sh ставит их таймером на ближайшее окно).
 # health (каждый час): только сообщает - Issue «[VPS] Сервер требует внимания» в ExileForge (ci/vps_health.py), ничего не чинит.
 # db-export (воскресенье): свежая суточная копия, зашифрованная age (ключ владельца и ключ SEAL для восстановления), - в prerelease
-# db-<дата> закрытого ExileForge, 4 последних. restore: копия с VPS или недельная - только с подтверждением владельца (environment
-# release), update.sh перед ним снимает свежую копию. repo-mirror (понедельник): git bundle трёх репозиториев - на VPS, 4 последних.
+# db-<дата> закрытого ExileForge, 4 последних. restore: копия с VPS или недельная - только ручным запуском владельца,
+# update.sh перед ним снимает свежую копию. repo-mirror (понедельник): git bundle трёх репозиториев - на VPS, 4 последних.
 # Журнал публичен: хост и весь вывод сервера - только в зашифрованном артефакте `vps-<команда>` (age, открытый ключ
 # vars.LOG_AGE_RECIPIENT, 7 дней; читать: age -d -i key.txt), в журнал - итог шага. SSH идёт через ci/vps-ssh.sh: ключ хоста
 # закреплён в vars.VPS_HOST_KEY, StrictHostKeyChecking=yes. Секреты: DEPLOY_HOST, DEPLOY_SSH_KEY; переменные: VPS_HOST_KEY,
@@ -344,13 +344,12 @@ jobs:
         with:
           name: db-export-log
 
-  # Восстановление базы: только ручным запуском владельца (environment release, без отдельного подтверждения); перед ним update.sh сам
+  # Восстановление базы: только ручным запуском владельца; перед ним update.sh сам
   # снимает свежую копию в backups/pre. Источник - копия на VPS или недельный релиз db-<дата> (CI расшифровывает его ключом SEAL).
   restore:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.command == 'restore' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    environment: release
     concurrency:
       group: vps-db
       cancel-in-progress: false
