@@ -1,11 +1,11 @@
 # Обслуживание CI: три независимые задачи, выбор - по расписанию, пушу или входу task при ручном запуске.
-#   store-status - раз в час ('17 * * * *') и вручную;
+#   store-status - раз в 6 часов ('17 */6 * * *': 03:17, 09:17, 15:17, 21:17 МСК), сразу после выкладки выпуска (client.yml) и вручную;
 #   cleanup      - раз в сутки ('43 2 * * *') и вручную;
 #   doctor       - вручную и на пуш в main, затронувший этот файл (только она).
 # Расписание задаёт задачу по github.event.schedule; inputs при нём и при пуше пусты.
 #
 # Задача store-status:
-# Состояние каналов выкладки клиента: раз в час (расписание ниже) опрашивает Google Play и RuStore и шлёт серверу по отчёту на каждый активный канал
+# Состояние каналов выкладки клиента: раз в 6 часов (расписание ниже) и один раз после выкладки выпуска опрашивает Google Play и RuStore и шлёт серверу по отчёту на каждый активный канал
 # (POST admin/release/channels, ChannelStatusReport; сервер сам поднимает минимальную ревизию, когда сборка у всех каналов раздана
 # целиком сутки). Прямой канал отчитывается по последнему релизу этого репозитория. Канал без ключей магазина пропускается, как будто
 # его нет; без SERVER_URL и RELEASE_STATUS_TOKEN прогон красный: экран «Версии» в игре остаётся без данных.
@@ -35,7 +35,7 @@ name: Maintenance
 
 on:
   schedule:
-    - cron: '17 * * * *'
+    - cron: '17 */6 * * *'
     - cron: '43 2 * * *'
   workflow_dispatch:
     inputs:
@@ -57,7 +57,7 @@ env:
 
 jobs:
   store-status:
-    if: ${{ (github.event_name == 'schedule' && github.event.schedule == '17 * * * *') || (github.event_name == 'workflow_dispatch' && inputs.task == 'store-status') }}
+    if: ${{ (github.event_name == 'schedule' && github.event.schedule == '17 */6 * * *') || (github.event_name == 'workflow_dispatch' && inputs.task == 'store-status') }}
     runs-on: ubuntu-latest
     permissions:
       contents: read

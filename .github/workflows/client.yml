@@ -733,7 +733,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: gh workflow run server.yml -R "$GITHUB_REPOSITORY" --ref main -f mode=deploy
       # Прямой канал сервер узнаёт отчётом: релиз GitHub вышел, доля 1.0. Новый деплой сервера (шаг выше) ещё идёт, поэтому отчёт
-      # может не дойти (маршрута нет у прежнего сервера) - это предупреждение, отчёт повторит почасовая задача store-status в maintenance.yml.
+      # может не дойти (маршрута нет у прежнего сервера) - это предупреждение, отчёт повторит задача store-status (после выкладки и раз в 6 часов) в maintenance.yml.
       - if: steps.version.outputs.exists == 'false'
         name: Report the direct channel to the server
         continue-on-error: true
@@ -893,6 +893,21 @@ jobs:
         uses: ./.github/actions/upload-log
         with:
           name: publish-rustore-log
+
+  # Состояние каналов сразу после выкладки выпуска (решение владельца): store-status maintenance.yml запускается один раз, дальше -
+  # по его расписанию раз в 6 часов. Только после выпуска версии (не в режиме stores: его запускает сама store-status).
+  store-status:
+    needs: [ changes, release, publish-play, publish-rustore ]
+    if: ${{ !cancelled() && needs.release.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Run the store status task
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run maintenance.yml -R "$GITHUB_REPOSITORY" --ref main -f task=store-status
 
   # Архивы для облачных сессий агента - prerelease `gradle-cache` приватного ExileForge (не latest: игра, update.json и релизы
   # версий его не видят); сессия распаковывает их хуками .claude/hooks/gradle-cache.sh и toolchain.sh клиента:

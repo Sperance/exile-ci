@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Отчёты CI серверу о каналах выкладки клиента (ChannelStatusReport, POST admin/release/channels) и доводка выкладки Play до 100%.
 
-    python3 ci/store-status.py all                  - раз в час (maintenance.yml, задача store-status): DIRECT по последнему релизу exile-ci, PLAY и RUSTORE
+    python3 ci/store-status.py all                  - раз в 6 часов и после выкладки выпуска (maintenance.yml, задача store-status): DIRECT по последнему релизу exile-ci, PLAY и RUSTORE
                                                       по состоянию магазинов; канал без ключей пропускается, как будто его нет;
     python3 ci/store-status.py direct <update.json> - сразу после публикации релиза (client.yml): прямой канал, долей 1.0; сервер ещё
                                                       может не знать маршрута (его выкатывает следующий деплой) - тогда лишь
@@ -153,7 +153,7 @@ def main():
             update["publishedAt"] = int(time.time() * 1000)
             report_direct(update, attempts=3)
         except RuntimeError as error:
-            say(f"::warning::DIRECT report not delivered ({error}); the hourly store-status run repeats it")
+            say(f"::warning::DIRECT report not delivered ({error}); the next store-status run repeats it")
     elif mode == "all":
         sys.exit(1 if run_all() else 0)
     else:
