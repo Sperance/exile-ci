@@ -1,0 +1,52 @@
+# Пост об обновлении сервера в тему «Обновления» группы Telegram (TELEGRAM_TOPIC ниже): новые пункты с меткой «[сервер]» из раздела
+# `## Следующая версия` RELEASE_NOTES.md рабочей ветки клиента, которых в постах ещё не было; без кнопок магазинов (ci/telegram/server_notes.py).
+# Запуск: job `deploy` в server.yml после выкладки сервера без выпуска клиента (Release → server); вручную - Release → server-notes.
+# При выпуске клиента пункты «[сервер]» идут блоком «Уже в игре» поста версии (telegram.yml), отдельного поста нет: раздел к тому времени
+# переименован в номер версии.
+# Один пункт - один пост: после поста в этом репозитории ставится тег server-note-<12 знаков sha256 пункта>; есть тег - пункт уже вышел.
+# Сбой Telegram - предупреждение, теги не ставятся, повтор - Release → server-notes.
+# Секреты: TELEGRAM_BOT_TOKEN, SOURCE_TOKEN (чтение RELEASE_NOTES.md приватного клиента).
+name: Telegram server notes
+
+on:
+  workflow_dispatch:
+
+permissions:
+  # Теги вышедших пунктов
+  contents: write
+
+concurrency:
+  group: telegram-server-notes
+  cancel-in-progress: false
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      CLIENT_REPO: Sperance/ExileForge
+      TELEGRAM_CHAT: '@exileforge'
+      # Тема «Обновления»: t.me/exileforge/3
+      TELEGRAM_TOPIC: '3'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Notes and posted items
+        env:
+          SOURCE_TOKEN: ${{ secrets.SOURCE_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          . ci/branches.env
+          GH_TOKEN=$SOURCE_TOKEN gh api -H "Accept: application/vnd.github.raw" "repos/$CLIENT_REPO/contents/RELEASE_NOTES.md?ref=$CLIENT_BRANCH" > RELEASE_NOTES.md
+          gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/server-note-" --paginate --jq '.[].ref' > posted.txt
+      - name: Post
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 ci/telegram/server_notes.py RELEASE_NOTES.md posted.txt new-tags.txt || true
+          if [ -s new-tags.txt ]; then
+            while read -r tag; do
+              gh api -X POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$tag" -f sha="$GITHUB_SHA" >/dev/null
+            done < new-tags.txt
+            echo "tagged $(wc -l < new-tags.txt) server notes"
+          fi
