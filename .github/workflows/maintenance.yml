@@ -1,6 +1,7 @@
-# Обслуживание CI: четыре независимые задачи, выбор - по расписанию, пушу или входу task при ручном запуске.
+# Обслуживание CI: пять независимых задач, выбор - по расписанию, пушу или входу task при ручном запуске.
 #   store-status - раз в 6 часов ('17 */6 * * *': 03:17, 09:17, 15:17, 21:17 МСК), сразу после выкладки выпуска (client.yml) и вручную;
 #   cleanup      - раз в сутки ('43 2 * * *') и вручную;
+#   outdated     - раз в неделю ('29 4 * * 1', понедельник) и вручную;
 #   scan         - раз в неделю ('31 3 * * 1', понедельник) и вручную; вместе с ним идёт полный обход панели (job `panel-full`);
 #   doctor       - вручную и на пуш в main, затронувший этот файл (только она).
 # Единственный источник запуска store-status по часам - это расписание (раз в 6 часов): других диспетчеров нет (часовой таймер VPS `exileforge-tick` снят).
@@ -30,6 +31,13 @@
 # предупреждением). Переменная LOG_AGE_RECIPIENT. Образы удаляет GITHUB_TOKEN: пакету выдана роль Admin этого репозитория
 # (Package settings - Manage Actions access).
 #
+# Задача outdated:
+# Какие зависимости клиента и сервера устарели: раз в неделю и вручную читает каталоги версий gradle/libs.versions.toml ExileForge и
+# ktor-bestgame (скачивается только этот файл) и сверяет версии с последним стабильным выпуском в Maven Central, Google Maven и Gradle
+# Plugin Portal (ci/outdated.py). Ничего не меняет; прогон зелёный при любом числе устаревших, красный - если каталог не прочитан.
+# Список «группа:артефакт текущая -> последняя» (имена зависимостей приватного кода) - в зашифрованном артефакте `outdated`, в журнал -
+# только счётчики. Секрет SOURCE_TOKEN (чтение ExileForge и ktor-bestgame).
+#
 # Задача scan:
 # Уязвимости сервера раз в неделю (на пушах сервера Trivy не идёт): зависимости головы рабочей ветки сервера (Gradle) и её проверенный
 # образ (ci/checked-image.sh; нет образа - только зависимости, предупреждением). Находки HIGH - предупреждение со счётчиком, находка
@@ -48,12 +56,13 @@ on:
     - cron: '17 */6 * * *'
     - cron: '43 2 * * *'
     - cron: '31 3 * * 1'
+    - cron: '29 4 * * 1'
   workflow_dispatch:
     inputs:
       task:
-        description: 'store-status - report the store channels to the server; cleanup - free the paid GitHub storage; scan - Trivy over the server head and its checked image (fails on CRITICAL) and the full browser crawl of the panel, every bestiary page (job panel-full); doctor - check secrets, tokens and access'
+        description: 'store-status - report the store channels to the server; cleanup - free the paid GitHub storage; scan - Trivy over the server head and its checked image (fails on CRITICAL) and the full browser crawl of the panel, every bestiary page (job panel-full); outdated - list the outdated dependencies of client and server (sealed artifact); doctor - check secrets, tokens and access'
         type: choice
-        options: [ store-status, cleanup, scan, doctor ]
+        options: [ store-status, cleanup, scan, outdated, doctor ]
         default: store-status
   push:
     branches: [ main ]
@@ -234,6 +243,63 @@ jobs:
           name: vuln-scan
           path: |
             sealed/vuln-scan.enc
+            logs
+          retention-days: 7
+          if-no-files-found: ignore
+
+  outdated:
+    if: ${{ (github.event_name == 'schedule' && github.event.schedule == '29 4 * * 1') || (github.event_name == 'workflow_dispatch' && inputs.task == 'outdated') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 15
+    concurrency:
+      group: outdated
+      cancel-in-progress: false
+    env:
+      SOURCE_TOKEN: ${{ secrets.SOURCE_TOKEN }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - id: branches
+        run: |
+          [ -n "$SOURCE_TOKEN" ] || { echo "::error::SOURCE_TOKEN is not set: the version catalogs cannot be read"; exit 1; }
+          . ci/branches.env
+          { echo "client=$CLIENT_BRANCH"; echo "server=$SERVER_BRANCH"; } >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: Sperance/ExileForge
+          ref: ${{ steps.branches.outputs.client }}
+          token: ${{ secrets.SOURCE_TOKEN }}
+          path: src-client
+          sparse-checkout: gradle/libs.versions.toml
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: Sperance/ktor-bestgame
+          ref: ${{ steps.branches.outputs.server }}
+          token: ${{ secrets.SOURCE_TOKEN }}
+          path: src-server
+          sparse-checkout: gradle/libs.versions.toml
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - name: Outdated dependencies
+        env:
+          OUTDATED_REPORT: outdated/outdated.txt
+        run: |
+          mkdir -p outdated
+          python3 ci/outdated.py client=src-client/gradle/libs.versions.toml server=src-server/gradle/libs.versions.toml
+      - name: Seal the list
+        if: always()
+        run: bash ci/seal.sh sealed/outdated.enc outdated
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: outdated
+          path: |
+            sealed/outdated.enc
             logs
           retention-days: 7
           if-no-files-found: ignore
