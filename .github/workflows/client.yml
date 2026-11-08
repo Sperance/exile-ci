@@ -17,7 +17,9 @@
 #                                     коммита (его запускает Release → client после коммита номера версии, руками не запускать);
 #                                     shots - UI-тесты на эмуляторе и картинки магазина (StoreShotsTest), без релиза;
 #                                     stores - заново выложить выпущенную версию в магазины; cache - только архивы для облачных
-#                                     сессий агента (job `gradle-cache`).
+#                                     сессий агента (job `gradle-cache`); check-wip - все проверки как у пуша кода (core, app, R8-сборки,
+#                                     эмулятор, контракт с сервером), не по разнице, без релиза: его зовёт check-wip.yml как вызываемый
+#                                     workflow на текущем wip клиента (см. там).
 # Релиз (только режим release): versionName без релиза в exile-ci после зелёных проверок - тег v<версия> здесь с APK, update.json и заметками
 # RELEASE_NOTES.md (их читает игра, Updates.kt); карты R8 (mapping.txt прямого APK, mapping-play.txt и mapping-rustore.txt магазинов) - только в релиз того же тега приватного ExileForge
 # (её качает сервер, ReleaseMappings). Затем Issues, что называют коммиты с прошлого релиза трейлером `Issue: #N`, получают метку версии, теряют
@@ -43,12 +45,26 @@ name: Client
 on:
   repository_dispatch:
     types: [ client-push ]
+  workflow_call:
+    inputs:
+      mode:
+        type: string
+        default: check-wip
+      sha:
+        type: string
+        default: ''
+      server_head:
+        type: boolean
+        default: false
+      force_breaking:
+        type: boolean
+        default: false
   workflow_dispatch:
     inputs:
       mode:
-        description: 'push - checks of the changed parts, no release; release - all checks (except the gates already green on the same code) and release of the commit (started by Release -> client after the version commit); shots - emulator UI tests and the store images (StoreShotsTest), no release; stores - publish the already released version to Google Play and RuStore again; cache - rebuild the agent session archives, build cache included (gradle-cache release of ExileForge)'
+        description: 'push - checks of the changed parts, no release; release - all checks (except the gates already green on the same code) and release of the commit (started by Release -> client after the version commit); shots - emulator UI tests and the store images (StoreShotsTest), no release; stores - publish the already released version to Google Play and RuStore again; cache - rebuild the agent session archives, build cache included (gradle-cache release of ExileForge); check-wip - all gates of a code push, no release (check-wip.yml calls it)'
         type: choice
-        options: [ push, release, shots, stores, cache ]
+        options: [ push, release, shots, stores, cache, check-wip ]
         default: push
       sha:
         description: 'Client commit (empty - head of the working branch)'
@@ -96,10 +112,11 @@ jobs:
       release: ${{ steps.release.outputs.pending }}
       shots: ${{ steps.target.outputs.mode == 'shots' }}
       # R8-сборки и эмулятор: выпуск, снимки и каждый пуш, что задел core, app или сервер - зелёный пуш значит, что выпуск пройдёт
-      ui: ${{ (steps.target.outputs.mode == 'release' || steps.target.outputs.mode == 'shots' || (steps.target.outputs.mode == 'push' && (steps.diff.outputs.core == 'true' || steps.diff.outputs.app == 'true'))) && steps.green.outputs.skip_ui != 'true' }}
+      ui: ${{ (steps.target.outputs.mode == 'release' || steps.target.outputs.mode == 'shots' || steps.target.outputs.mode == 'check-wip' || (steps.target.outputs.mode == 'push' && (steps.diff.outputs.core == 'true' || steps.diff.outputs.app == 'true'))) && steps.green.outputs.skip_ui != 'true' }}
       stores: ${{ steps.release.outputs.stores }}
       cache: ${{ steps.target.outputs.mode == 'cache' }}
       tag: ${{ steps.release.outputs.tag }}
+      suffix: ${{ steps.release.outputs.pending == 'true' && '-release' || steps.target.outputs.mode == 'check-wip' && '-wip' || '' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -113,7 +130,7 @@ jobs:
           INPUT_MODE: ${{ inputs.mode }}
           INPUT_SHA: ${{ inputs.sha }}
           TOKEN: ${{ secrets.SOURCE_TOKEN }}
-        run: . ci/branches.env && bash ci/resolve.sh "$CLIENT_REPO" "$CLIENT_BRANCH" client push release shots stores cache
+        run: . ci/branches.env && bash ci/resolve.sh "$CLIENT_REPO" "$CLIENT_BRANCH" client push release shots stores cache check-wip
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: ${{ env.CLIENT_REPO }}
@@ -197,8 +214,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     concurrency:
-      group: client-core${{ needs.changes.outputs.release == 'true' && '-release' || '' }}
-      cancel-in-progress: ${{ needs.changes.outputs.release != 'true' }}
+      group: client-core${{ needs.changes.outputs.suffix }}
+      cancel-in-progress: ${{ needs.changes.outputs.suffix == '' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: ./.github/actions/source
@@ -222,8 +239,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     concurrency:
-      group: client-app-fast${{ needs.changes.outputs.release == 'true' && '-release' || '' }}
-      cancel-in-progress: ${{ needs.changes.outputs.release != 'true' }}
+      group: client-app-fast${{ needs.changes.outputs.suffix }}
+      cancel-in-progress: ${{ needs.changes.outputs.suffix == '' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: ./.github/actions/source
@@ -244,8 +261,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     concurrency:
-      group: client-app${{ needs.changes.outputs.release == 'true' && '-release' || '' }}
-      cancel-in-progress: ${{ needs.changes.outputs.release != 'true' }}
+      group: client-app${{ needs.changes.outputs.suffix }}
+      cancel-in-progress: ${{ needs.changes.outputs.suffix == '' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: ./.github/actions/source
@@ -271,8 +288,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     concurrency:
-      group: client-${{ matrix.name }}${{ needs.changes.outputs.release == 'true' && '-release' || '' }}
-      cancel-in-progress: ${{ needs.changes.outputs.release != 'true' }}
+      group: client-${{ matrix.name }}${{ needs.changes.outputs.suffix }}
+      cancel-in-progress: ${{ needs.changes.outputs.suffix == '' }}
     strategy:
       fail-fast: false
       matrix:
@@ -337,8 +354,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     concurrency:
-      group: client-release-apk${{ needs.changes.outputs.release == 'true' && '-release' || '' }}
-      cancel-in-progress: ${{ needs.changes.outputs.release != 'true' }}
+      group: client-release-apk${{ needs.changes.outputs.suffix }}
+      cancel-in-progress: ${{ needs.changes.outputs.suffix == '' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: ./.github/actions/source
@@ -379,8 +396,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     concurrency:
-      group: client-release-aab${{ needs.changes.outputs.release == 'true' && '-release' || '' }}
-      cancel-in-progress: ${{ needs.changes.outputs.release != 'true' }}
+      group: client-release-aab${{ needs.changes.outputs.suffix }}
+      cancel-in-progress: ${{ needs.changes.outputs.suffix == '' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: ./.github/actions/source
@@ -418,8 +435,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     concurrency:
-      group: client-release-rustore${{ needs.changes.outputs.release == 'true' && '-release' || '' }}
-      cancel-in-progress: ${{ needs.changes.outputs.release != 'true' }}
+      group: client-release-rustore${{ needs.changes.outputs.suffix }}
+      cancel-in-progress: ${{ needs.changes.outputs.suffix == '' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: ./.github/actions/source
@@ -552,8 +569,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     concurrency:
-      group: client-emulator${{ needs.changes.outputs.release == 'true' && '-release' || '' }}
-      cancel-in-progress: ${{ needs.changes.outputs.release != 'true' }}
+      group: client-emulator${{ needs.changes.outputs.suffix }}
+      cancel-in-progress: ${{ needs.changes.outputs.suffix == '' }}
     env:
       API_LEVEL: 35
       SHOTS: ${{ needs.changes.outputs.shots }}
@@ -642,8 +659,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     concurrency:
-      group: client-client-server${{ needs.changes.outputs.release == 'true' && '-release' || '' }}
-      cancel-in-progress: ${{ needs.changes.outputs.release != 'true' }}
+      group: client-client-server${{ needs.changes.outputs.suffix }}
+      cancel-in-progress: ${{ needs.changes.outputs.suffix == '' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       # Сервер под проверкой - закреплённый сабмодуль backend/: его HEAD - сгенерированный SERVER_COMMIT

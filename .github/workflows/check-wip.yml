@@ -1,0 +1,123 @@
+# Проверка черновиков wip перед финальным пушем в рабочие ветки: сервер (ktor-bestgame) и клиент (ExileForge) по их ТЕКУЩИМ wip вместе.
+# Запуск: вручную (Actions -> Check wip -> Run workflow, или `gh workflow run check-wip.yml --ref main`), агентом или кнопкой.
+#   1. resolve: головы wip обоих репозиториев; сервер, закреплённый в клиенте (backend/), обязан быть головой wip сервера - иначе красное
+#      с понятным сообщением (клиент пока закрепляет не тот сервер, что проверяется);
+#   2. server.yml и client.yml как вызываемые workflow в режиме check-wip: те же ворота, что у пуша кода, но все, а не по разнице
+#      (клиент: core, app, R8-сборки и эмулятор, контракт с сервером; сервер: проверки, панель в браузере, совместимость со старейшим
+#      клиентом). Образ в ghcr не собирается и не метится, выпуска и деплоя нет;
+#   3. record: оба зелёные - на sha клиента и sha сервера кладётся commit status «check-wip» = success (ci/check-wip-status.sh); упал любой
+#      - failure. Отметку читает хук pre-push репозиториев: пуш в рабочую ветку без зелёного check-wip на этом sha отклоняется.
+# Журналы шифруются так же, как в client.yml и server.yml (ci/quiet.sh, age). Ворота client.yml, прошедшие здесь, ставят метки
+# зелёного дерева: релиз потом их не повторяет.
+# Секреты: SOURCE_TOKEN (чтение), CHECK_WIP_TOKEN либо EXILEFORGE_TOKEN с правом «Commit statuses: write» на ExileForge и ktor-bestgame.
+name: Check wip
+
+on:
+  workflow_dispatch:
+    inputs:
+      client_sha:
+        description: 'Client commit (empty - head of wip)'
+        required: false
+      server_sha:
+        description: 'Server commit (empty - head of wip)'
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: check-wip
+  cancel-in-progress: false
+
+env:
+  CLIENT_REPO: Sperance/ExileForge
+  SERVER_REPO: Sperance/ktor-bestgame
+  LOG_AGE_RECIPIENT: ${{ vars.LOG_AGE_RECIPIENT }}
+  SEAL_AGE_RECIPIENT: ${{ vars.SEAL_AGE_RECIPIENT }}
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      client: ${{ steps.heads.outputs.client }}
+      server: ${{ steps.heads.outputs.server }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Heads of wip and the pin
+        id: heads
+        env:
+          TOKEN: ${{ secrets.SOURCE_TOKEN }}
+          INPUT_CLIENT: ${{ inputs.client_sha }}
+          INPUT_SERVER: ${{ inputs.server_sha }}
+        run: |
+          . ci/branches.env
+          . ci/retry.sh
+          fetch_head() { sha=$(git ls-remote "https://x-access-token:$TOKEN@github.com/$1.git" "refs/heads/$WIP_BRANCH" | cut -f1) && [[ -n $sha ]]; }
+          client=${INPUT_CLIENT:-}
+          server=${INPUT_SERVER:-}
+          if [ -z "$client" ]; then sha=""; retry fetch_head "$CLIENT_REPO" || true; client=$sha; fi
+          if [ -z "$server" ]; then sha=""; retry fetch_head "$SERVER_REPO" || true; server=$sha; fi
+          [[ $client =~ ^[0-9a-f]{40}$ ]] || { echo "::error::no wip head of the client: push the client wip first"; exit 1; }
+          [[ $server =~ ^[0-9a-f]{40}$ ]] || { echo "::error::no wip head of the server: push the server wip first"; exit 1; }
+          bash ci/quiet.sh clone-client git clone -q --no-checkout --branch "$WIP_BRANCH" "https://x-access-token:$TOKEN@github.com/$CLIENT_REPO.git" cli
+          git -C cli cat-file -e "$client^{commit}" 2>/dev/null || { echo "::error::client commit ${client:0:12} is not in wip"; exit 1; }
+          pin=$(git -C cli ls-tree "$client" backend | awk '{print $3}')
+          [[ $pin =~ ^[0-9a-f]{40}$ ]] || { echo "::error::the client ${client:0:12} pins no server in backend/"; exit 1; }
+          if [ "$pin" != "$server" ]; then
+            echo "::error::the client wip pins the server ${pin:0:12}, but the server wip head is ${server:0:12}: pin the server wip head in the client (git add backend, API_REVISION by its rules), push the client wip and run Check wip again"
+            exit 1
+          fi
+          echo "client $client, server $server (pinned)"
+          { echo "client=$client"; echo "server=$server"; } >> "$GITHUB_OUTPUT"
+
+  server:
+    needs: resolve
+    uses: ./.github/workflows/server.yml
+    with:
+      mode: check-wip
+      sha: ${{ needs.resolve.outputs.server }}
+    secrets: inherit
+    # Права вызываемого workflow не выше вызывающего: server.yml просит packages и actions: write у job'ов образа и деплоя (в check-wip они пропущены)
+    permissions:
+      contents: read
+      packages: write
+      actions: write
+
+  client:
+    needs: resolve
+    uses: ./.github/workflows/client.yml
+    with:
+      mode: check-wip
+      sha: ${{ needs.resolve.outputs.client }}
+    secrets: inherit
+    permissions:
+      contents: write
+      actions: write
+
+  record:
+    needs: [ resolve, server, client ]
+    if: ${{ !cancelled() && needs.resolve.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Record check-wip on both commits
+        env:
+          TOKEN: ${{ secrets.CHECK_WIP_TOKEN || secrets.EXILEFORGE_TOKEN }}
+          CLIENT: ${{ needs.resolve.outputs.client }}
+          SERVER: ${{ needs.resolve.outputs.server }}
+          GREEN: ${{ needs.server.result == 'success' && needs.client.result == 'success' }}
+          URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          . ci/branches.env
+          if [ "$GREEN" = true ]; then state=success; text="client and server wip checked together"; else state=failure; text="check-wip failed or was cancelled"; fi
+          bash ci/check-wip-status.sh "$CLIENT_REPO" "$CLIENT" "$state" "$text (server ${SERVER:0:12})" "$URL"
+          bash ci/check-wip-status.sh "$SERVER_REPO" "$SERVER" "$state" "$text (client ${CLIENT:0:12})" "$URL"
+          [ "$state" = success ]
