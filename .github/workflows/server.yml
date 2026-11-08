@@ -21,10 +21,9 @@
 # публичного манифеста SERVER_URL/static/index.json). Разрыв, одобренный владельцем, - ручной запуск с force_breaking.
 # Деплой: по SSH идёт ci/vps-ssh.sh - ключ хоста закреплён в vars.VPS_HOST_KEY, StrictHostKeyChecking=yes; на VPS уходит команда
 # `deploy <sha> <sha256:дайджест>`: update.sh тянет образ по неизменяемому дайджесту, а не по тегу, и сверяет метку sha образа.
-# Журналы шифруются age (открытый ключ vars.LOG_AGE_RECIPIENT, ci/crypt.sh); запасной openssl с LOG_KEY - только пока он не задан.
+# Журналы шифруются age (открытый ключ vars.LOG_AGE_RECIPIENT, ci/crypt.sh).
 # Job `scan` (Trivy: зависимости сервера и образ) пока не блокирует: только предупреждение, отчёт - в зашифрованном артефакте.
-# Секреты: SOURCE_TOKEN, DEPLOY_HOST, DEPLOY_SSH_KEY, GH_ISSUES_TOKEN. Переменные: DEPLOY_ENABLED=true включает образ и деплой,
-# VPS_HOST_KEY, LOG_AGE_RECIPIENT.
+# Секреты: SOURCE_TOKEN, DEPLOY_HOST, DEPLOY_SSH_KEY, GH_ISSUES_TOKEN. Переменные: VPS_HOST_KEY, LOG_AGE_RECIPIENT.
 # Пакету в GHCR выдан доступ этого репозитория (Package settings - Manage Actions access - Write).
 name: Server
 
@@ -53,7 +52,7 @@ permissions:
 env:
   IMAGE: ghcr.io/sperance/ktor-bestgame
   SERVER_REPO: Sperance/ktor-bestgame
-  # Открытые ключи age (ci/crypt.sh): на раннере только они; LOG_KEY выдаётся лишь job'ам и шагам без кода сервера
+  # Открытые ключи age (ci/crypt.sh): на раннере только они
   LOG_AGE_RECIPIENT: ${{ vars.LOG_AGE_RECIPIENT }}
   SEAL_AGE_RECIPIENT: ${{ vars.SEAL_AGE_RECIPIENT }}
 
@@ -221,8 +220,6 @@ jobs:
       - name: Seal reports
         if: ${{ always() && steps.oldest.outputs.tag != '' }}
         working-directory: src
-        env:
-          LOG_KEY: ${{ secrets.LOG_KEY }}
         run: bash ../ci/seal.sh ../sealed/compat.enc core/build/reports/tests core/build/test-results build/client-server.log
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
@@ -235,7 +232,7 @@ jobs:
 
   image:
     needs: resolve
-    if: ${{ (needs.resolve.outputs.mode == 'push' || needs.resolve.outputs.mode == 'rebuild') && vars.DEPLOY_ENABLED == 'true' }}
+    if: ${{ (needs.resolve.outputs.mode == 'push' || needs.resolve.outputs.mode == 'rebuild') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     concurrency:
@@ -341,8 +338,6 @@ jobs:
           done
       - name: Seal the scan report
         if: always()
-        env:
-          LOG_KEY: ${{ secrets.LOG_KEY }}
         run: bash ci/seal.sh sealed/vuln-scan.enc scan
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
@@ -358,7 +353,7 @@ jobs:
   # заканчивается (деплой - с выпуском клиента); деплой по голове ветки берёт только помеченный образ.
   mark:
     needs: [ resolve, checks, panel, compat, image ]
-    if: ${{ !cancelled() && vars.DEPLOY_ENABLED == 'true' && (needs.resolve.outputs.mode == 'push' || needs.resolve.outputs.mode == 'rebuild') && needs.checks.result == 'success' && needs.panel.result == 'success' && needs.compat.result == 'success' && needs.image.result == 'success' }}
+    if: ${{ !cancelled() && (needs.resolve.outputs.mode == 'push' || needs.resolve.outputs.mode == 'rebuild') && needs.checks.result == 'success' && needs.panel.result == 'success' && needs.compat.result == 'success' && needs.image.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     concurrency:
@@ -391,7 +386,7 @@ jobs:
   # Пуш (режим push) не выкатывает.
   deploy:
     needs: [ resolve, image, mark ]
-    if: ${{ !cancelled() && needs.resolve.result == 'success' && vars.DEPLOY_ENABLED == 'true' && (needs.resolve.outputs.mode == 'deploy' || (needs.resolve.outputs.mode == 'rebuild' && needs.mark.result == 'success')) }}
+    if: ${{ !cancelled() && needs.resolve.result == 'success' && (needs.resolve.outputs.mode == 'deploy' || (needs.resolve.outputs.mode == 'rebuild' && needs.mark.result == 'success')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     concurrency:
@@ -501,7 +496,6 @@ jobs:
           SERVER_URL: ${{ vars.SERVER_URL }}
           FORCE_BREAKING: ${{ inputs.force_breaking }}
           GITHUB_TOKEN: ${{ github.token }}
-          LOG_KEY: ${{ secrets.LOG_KEY }}
           PUBLIC_NOTES: ${{ runner.temp }}/guard.txt
         run: |
           code=0
@@ -518,7 +512,6 @@ jobs:
           DIGEST: ${{ steps.image.outputs.digest }}
           IMAGE_SHA: ${{ steps.image.outputs.sha }}
           VPS_HOST_KEY: ${{ vars.VPS_HOST_KEY }}
-          LOG_KEY: ${{ secrets.LOG_KEY }}
         run: |
           [[ $DIGEST =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::no image digest to deploy"; exit 1; }
           [[ $IMAGE_SHA =~ ^[0-9a-f]{40}$ ]] || { echo "::error::no commit of the image to deploy"; exit 1; }

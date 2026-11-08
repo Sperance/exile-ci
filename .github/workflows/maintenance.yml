@@ -52,7 +52,7 @@ permissions:
   contents: read
 
 env:
-  # Открытый ключ age для журналов (ci/crypt.sh); переходный запасной LOG_KEY выдаётся job'ам ниже, а не всему workflow
+  # Открытый ключ age для журналов (ci/crypt.sh)
   LOG_AGE_RECIPIENT: ${{ vars.LOG_AGE_RECIPIENT }}
 
 jobs:
@@ -67,7 +67,6 @@ jobs:
       group: store-status
       cancel-in-progress: false
     env:
-      LOG_KEY: ${{ secrets.LOG_KEY }}
       SERVER_URL: ${{ vars.SERVER_URL }}
       RELEASE_STATUS_TOKEN: ${{ secrets.RELEASE_STATUS_TOKEN }}
       PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
@@ -119,8 +118,6 @@ jobs:
     concurrency:
       group: cleanup
       cancel-in-progress: false
-    env:
-      LOG_KEY: ${{ secrets.LOG_KEY }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -170,7 +167,6 @@ jobs:
       SOURCE_TOKEN: ${{ secrets.SOURCE_TOKEN }}
       EXILEFORGE_TOKEN: ${{ secrets.EXILEFORGE_TOKEN }}
       GH_ISSUES_TOKEN: ${{ secrets.GH_ISSUES_TOKEN }}
-      LOG_KEY: ${{ secrets.LOG_KEY }}
       LOG_AGE_RECIPIENT: ${{ vars.LOG_AGE_RECIPIENT }}
       SEAL_AGE_RECIPIENT: ${{ vars.SEAL_AGE_RECIPIENT }}
       SEAL_AGE_IDENTITY: ${{ secrets.SEAL_AGE_IDENTITY }}
@@ -183,7 +179,6 @@ jobs:
       RELEASE_KEYSTORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
       RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
       RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
-      DEPLOY_ENABLED: ${{ vars.DEPLOY_ENABLED }}
       PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
       RUSTORE_KEY_ID: ${{ secrets.RUSTORE_KEY_ID }}
       RUSTORE_PRIVATE_KEY: ${{ secrets.RUSTORE_PRIVATE_KEY }}
@@ -204,15 +199,13 @@ jobs:
           for name in SOURCE_TOKEN EXILEFORGE_TOKEN GH_ISSUES_TOKEN DEPLOY_HOST DEPLOY_SSH_KEY; do
             [ -n "${!name}" ] && ok "secret $name is set" || bad "secret $name is missing"
           done
-          [ "$DEPLOY_ENABLED" = true ] && ok "variable DEPLOY_ENABLED=true" || bad "variable DEPLOY_ENABLED is '$DEPLOY_ENABLED', need true"
-          # Шифрование журналов и артефактов (ci/crypt.sh): age с открытыми ключами; LOG_KEY - только переходный запасной способ
+          # Шифрование журналов и артефактов (ci/crypt.sh): age с открытыми ключами
           . ci/crypt.sh; ensure_age
           if [[ $LOG_AGE_RECIPIENT =~ ^age1[a-z0-9]{50,}$ ]]; then ok "variable LOG_AGE_RECIPIENT is an age public key"; else bad "variable LOG_AGE_RECIPIENT is missing or not an age public key (age-keygen)"; fi
           if [[ $SEAL_AGE_RECIPIENT =~ ^age1[a-z0-9]{50,}$ && -n $SEAL_AGE_IDENTITY ]]; then
             [ "$(printf '%s\n' "$SEAL_AGE_IDENTITY" | age-keygen -y 2>/dev/null)" = "$SEAL_AGE_RECIPIENT" ] \
               && ok "SEAL_AGE_RECIPIENT matches the secret SEAL_AGE_IDENTITY" || bad "SEAL_AGE_RECIPIENT does not match the secret SEAL_AGE_IDENTITY"
           else bad "variable SEAL_AGE_RECIPIENT or secret SEAL_AGE_IDENTITY is missing (artifacts between jobs)"; fi
-          [ -z "$LOG_KEY" ] || echo "WAIT  secret LOG_KEY is still set: the deprecated openssl fallback; delete it once the age keys work"
           [[ $VPS_HOST_KEY =~ ^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp[0-9]+)[[:space:]]+[A-Za-z0-9+/]+=*([[:space:]].*)?$ ]] \
             && ok "variable VPS_HOST_KEY looks like a host key" || bad "variable VPS_HOST_KEY is missing: SSH to the VPS is refused (ssh-keyscan -t ed25519 <host>)"
           if [ -n "$UPDATE_SIGNING_KEY" ]; then

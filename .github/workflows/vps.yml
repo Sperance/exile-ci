@@ -9,7 +9,7 @@
 # Журнал публичен: хост и весь вывод сервера - только в зашифрованном артефакте `vps-<команда>` (age, открытый ключ
 # vars.LOG_AGE_RECIPIENT, 7 дней; читать: age -d -i key.txt), в журнал - итог шага. SSH идёт через ci/vps-ssh.sh: ключ хоста
 # закреплён в vars.VPS_HOST_KEY, StrictHostKeyChecking=yes. Секреты: DEPLOY_HOST, DEPLOY_SSH_KEY; переменные: VPS_HOST_KEY,
-# LOG_AGE_RECIPIENT (переходный запасной LOG_KEY - пока LOG_AGE_RECIPIENT не задан).
+# LOG_AGE_RECIPIENT.
 #
 # art (job `art`) - архив картинок игры:
 # Архив картинок игры - свой prerelease `art-<дата UTC>` на каждый архив: релизы репозитория неизменяемы (immutable), в
@@ -30,7 +30,7 @@
 # `art-<дата UTC>` (релизы неизменяемы, файл кладётся при создании) - тот же вид, что у команды art, поэтому `update.sh art`
 # восстанавливает из самой новой копии. Хранятся пять последних релизов art-<дата> (общий счёт с командой art).
 # Журнал публичен: хост и вывод сервера идут через ci/quiet.sh; картинки и так видит каждый игрок.
-# Секреты: DEPLOY_HOST, DEPLOY_SSH_KEY; переменные VPS_HOST_KEY, LOG_AGE_RECIPIENT. Переменная DEPLOY_ENABLED=true включает копию.
+# Секреты: DEPLOY_HOST, DEPLOY_SSH_KEY; переменные VPS_HOST_KEY, LOG_AGE_RECIPIENT.
 name: VPS
 
 on:
@@ -91,11 +91,10 @@ jobs:
           KEY: ${{ secrets.DEPLOY_SSH_KEY }}
           VPS_HOST_KEY: ${{ vars.VPS_HOST_KEY }}
           LOG_AGE_RECIPIENT: ${{ vars.LOG_AGE_RECIPIENT }}
-          LOG_KEY: ${{ secrets.LOG_KEY }}
           COMMAND: ${{ inputs.command || 'backup' }}
           LINES: ${{ inputs.lines }}
         run: |
-          [[ -n $HOST && -n $KEY && ( -n $LOG_AGE_RECIPIENT || -n $LOG_KEY ) ]] || { echo '::error::DEPLOY_HOST, DEPLOY_SSH_KEY or LOG_AGE_RECIPIENT is not set'; exit 1; }
+          [[ -n $HOST && -n $KEY && -n $LOG_AGE_RECIPIENT ]] || { echo '::error::DEPLOY_HOST, DEPLOY_SSH_KEY or LOG_AGE_RECIPIENT is not set'; exit 1; }
           case $COMMAND in
             status|restart|backup|prune|upgrade|reboot) line=$COMMAND ;;
             logs) [[ $LINES =~ ^[0-9]{1,4}$ ]] && ((LINES >= 1)) || { echo '::error::lines must be 1-5000'; exit 1; }; line="logs $LINES" ;;
@@ -178,7 +177,6 @@ jobs:
           KEY: ${{ secrets.DEPLOY_SSH_KEY }}
           VPS_HOST_KEY: ${{ vars.VPS_HOST_KEY }}
           LOG_AGE_RECIPIENT: ${{ vars.LOG_AGE_RECIPIENT }}
-          LOG_KEY: ${{ secrets.LOG_KEY }}
         run: |
           [[ -n $HOST && -n $KEY ]] || { echo '::error::DEPLOY_HOST or DEPLOY_SSH_KEY is not set: install the archive with update.sh art by hand'; exit 1; }
           install -m 600 /dev/null "$RUNNER_TEMP/key" && printf '%s\n' "$KEY" > "$RUNNER_TEMP/key"
@@ -195,7 +193,7 @@ jobs:
           name: art-log
 
   art-backup:
-    if: ${{ (github.event.schedule == '27 3 * * *' || inputs.command == 'art-backup') && vars.DEPLOY_ENABLED == 'true' }}
+    if: ${{ (github.event.schedule == '27 3 * * *' || inputs.command == 'art-backup') }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -215,7 +213,6 @@ jobs:
           KEY: ${{ secrets.DEPLOY_SSH_KEY }}
           VPS_HOST_KEY: ${{ vars.VPS_HOST_KEY }}
           LOG_AGE_RECIPIENT: ${{ vars.LOG_AGE_RECIPIENT }}
-          LOG_KEY: ${{ secrets.LOG_KEY }}
         run: |
           [[ -n $HOST && -n $KEY ]] || { echo '::error::DEPLOY_HOST or DEPLOY_SSH_KEY is not set'; exit 1; }
           install -m 600 /dev/null "$RUNNER_TEMP/key" && printf '%s\n' "$KEY" > "$RUNNER_TEMP/key"
@@ -255,7 +252,7 @@ jobs:
 
   # Часовой присмотр: только сообщает (Issue «[VPS] Сервер требует внимания» в ExileForge, ci/vps_health.py), ничего не чинит
   health:
-    if: ${{ (github.event.schedule == '17 * * * *' || inputs.command == 'health') && vars.DEPLOY_ENABLED == 'true' }}
+    if: ${{ (github.event.schedule == '17 * * * *' || inputs.command == 'health') }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     concurrency:
@@ -272,7 +269,6 @@ jobs:
           KEY: ${{ secrets.DEPLOY_SSH_KEY }}
           VPS_HOST_KEY: ${{ vars.VPS_HOST_KEY }}
           LOG_AGE_RECIPIENT: ${{ vars.LOG_AGE_RECIPIENT }}
-          LOG_KEY: ${{ secrets.LOG_KEY }}
           EXILEFORGE_TOKEN: ${{ secrets.EXILEFORGE_TOKEN }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
@@ -296,7 +292,7 @@ jobs:
   # Недельная копия базы вне VPS: самая свежая суточная копия, зашифрованная age на ключ владельца (LOG_AGE_RECIPIENT) и ключ
   # CI для восстановления (SEAL_AGE_RECIPIENT), - в prerelease db-<дата UTC> закрытого ExileForge; хранятся 4 последних
   db-export:
-    if: ${{ (github.event.schedule == '50 0 * * 0' || inputs.command == 'db-export') && vars.DEPLOY_ENABLED == 'true' }}
+    if: ${{ (github.event.schedule == '50 0 * * 0' || inputs.command == 'db-export') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     concurrency:
@@ -314,7 +310,6 @@ jobs:
           VPS_HOST_KEY: ${{ vars.VPS_HOST_KEY }}
           LOG_AGE_RECIPIENT: ${{ vars.LOG_AGE_RECIPIENT }}
           SEAL_AGE_RECIPIENT: ${{ vars.SEAL_AGE_RECIPIENT }}
-          LOG_KEY: ${{ secrets.LOG_KEY }}
           GH_TOKEN: ${{ secrets.EXILEFORGE_TOKEN }}
         run: |
           [[ -n $HOST && -n $KEY && -n $GH_TOKEN ]] || { echo '::error::DEPLOY_HOST, DEPLOY_SSH_KEY or EXILEFORGE_TOKEN is not set'; exit 1; }
@@ -364,7 +359,6 @@ jobs:
           KEY: ${{ secrets.DEPLOY_SSH_KEY }}
           VPS_HOST_KEY: ${{ vars.VPS_HOST_KEY }}
           LOG_AGE_RECIPIENT: ${{ vars.LOG_AGE_RECIPIENT }}
-          LOG_KEY: ${{ secrets.LOG_KEY }}
           SEAL_AGE_IDENTITY: ${{ secrets.SEAL_AGE_IDENTITY }}
           GH_TOKEN: ${{ secrets.EXILEFORGE_TOKEN }}
           FROM: ${{ inputs.restore_from }}
@@ -405,7 +399,7 @@ jobs:
 
   # Зеркало кода вне GitHub: полные копии трёх репозиториев (все ветки и теги) git bundle'ами - на VPS, 4 последних
   repo-mirror:
-    if: ${{ (github.event.schedule == '10 1 * * 1' || inputs.command == 'repo-mirror') && vars.DEPLOY_ENABLED == 'true' }}
+    if: ${{ (github.event.schedule == '10 1 * * 1' || inputs.command == 'repo-mirror') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -419,7 +413,6 @@ jobs:
           KEY: ${{ secrets.DEPLOY_SSH_KEY }}
           VPS_HOST_KEY: ${{ vars.VPS_HOST_KEY }}
           LOG_AGE_RECIPIENT: ${{ vars.LOG_AGE_RECIPIENT }}
-          LOG_KEY: ${{ secrets.LOG_KEY }}
           SOURCE_TOKEN: ${{ secrets.SOURCE_TOKEN }}
         run: |
           [[ -n $HOST && -n $KEY && -n $SOURCE_TOKEN ]] || { echo '::error::DEPLOY_HOST, DEPLOY_SSH_KEY or SOURCE_TOKEN is not set'; exit 1; }

@@ -1,4 +1,4 @@
-# Зашифрованный журнал упавшего шага (его пишет ci/quiet.sh в logs/*.log.enc) - артефактом, читает только владелец LOG_KEY.
+# Зашифрованный журнал упавшего шага (его пишет ci/quiet.sh в logs/*.log.enc) - артефактом, читает только владелец закрытого ключа age.
 # Вызывать с `if: failure()` у шага: внутри композитного действия статус job'а не виден.
 name: Upload encrypted log
 description: Uploads the logs/ directory (encrypted by ci/quiet.sh) as an artifact for 7 days

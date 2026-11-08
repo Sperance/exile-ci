@@ -6,8 +6,6 @@
 #     LOG_AGE_RECIPIENT - ключ владельца (журналы и отчёты; создаётся `age-keygen -o key.txt`, открытая часть - строка `age1...`).
 #     SEAL_AGE_RECIPIENT - второй получатель для артефактов, что передаются между job'ами (сборка -> подпись -> публикация):
 #     закрытая часть лежит секретом SEAL_AGE_IDENTITY и выдаётся только шагам, которые распаковывают артефакт.
-#   openssl с общим паролем LOG_KEY (AES-256-CBC, PBKDF2) - переходный запасной способ, пока LOG_AGE_RECIPIENT не задан;
-#     каждый раз предупреждает. Читать старые файлы: openssl enc -d -aes-256-cbc -pbkdf2 -pass env:LOG_KEY -in <файл>
 # Читать файл age владельцу: age -d -i key.txt <файл> (артефакты-архивы: age -d -i key.txt <файл> | tar -xf -).
 
 AGE_RECIPIENT_RE='^age1[a-z0-9]{50,}$'
@@ -42,19 +40,9 @@ encrypt() {
             fi
         fi
     fi
-    if ((${#args[@]})); then
-        ensure_age || return 1
-        age "${args[@]}" -o "$out" "${src[@]}"
-        return
-    fi
-    if [[ -n ${LOG_KEY:-} ]]; then
-        echo "::warning::LOG_AGE_RECIPIENT (and SEAL_AGE_RECIPIENT for artifacts passed between jobs) is not set: falling back to the deprecated openssl LOG_KEY encryption"
-        local -a input=()
-        [[ $in == - ]] || input=(-in "$in")
-        openssl enc -aes-256-cbc -pbkdf2 -salt -pass env:LOG_KEY -out "$out" "${input[@]}"
-        return
-    fi
-    return 1
+    ((${#args[@]})) || return 1
+    ensure_age || return 1
+    age "${args[@]}" -o "$out" "${src[@]}"
 }
 
 # decrypt <файл> -> расшифрованный поток в stdout. Формат определяется по заголовку файла.
@@ -71,9 +59,6 @@ decrypt() {
             local code=$?
             rm -f "$identity"
             return $code ;;
-        Salted__*)
-            [[ -n ${LOG_KEY:-} ]] || { echo "::error::LOG_KEY is not set: cannot unpack an openssl artifact" >&2; return 1; }
-            openssl enc -d -aes-256-cbc -pbkdf2 -pass env:LOG_KEY -in "$file" ;;
         *) echo "::error::unknown encrypted file format: $file" >&2; return 1 ;;
     esac
 }

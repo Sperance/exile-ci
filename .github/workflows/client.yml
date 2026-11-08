@@ -28,7 +28,7 @@
 # отчётом серверу объявляет сам `release` (переменная SERVER_URL, секрет RELEASE_STATUS_TOKEN).
 # Секреты: SOURCE_TOKEN, EXILEFORGE_TOKEN (Contents и Issues: write на ExileForge), SEAL_AGE_IDENTITY (закрытый ключ age для
 # распаковки артефактов между job'ами; только шагам, что их распаковывают), RELEASE_KEYSTORE, RELEASE_KEYSTORE_PASSWORD,
-# RELEASE_KEY_ALIAS, RELEASE_KEY_PASSWORD (только job `sign`); переходный LOG_KEY - пока не заданы ключи age; магазины: PLAY_SERVICE_ACCOUNT_JSON, RUSTORE_KEY_ID,
+# RELEASE_KEY_ALIAS, RELEASE_KEY_PASSWORD (только job `sign`); магазины: PLAY_SERVICE_ACCOUNT_JSON, RUSTORE_KEY_ID,
 # RUSTORE_PRIVATE_KEY; RELEASE_STATUS_TOKEN. Переменные: RUSTORE_CONTACT_EMAIL, RUSTORE_CONTACT_WEBSITE, RUSTORE_CONTACT_VK -
 # контакты разработчика карточки RuStore (без email магазин может отказать в черновике); LOG_AGE_RECIPIENT, SEAL_AGE_RECIPIENT.
 # Ручной режим stores - заново собрать и выложить в Google Play и RuStore уже выпущенную версию (без проверок и релиза здесь).
@@ -64,8 +64,7 @@ permissions:
 
 env:
   CLIENT_REPO: Sperance/ExileForge
-  # Открытые ключи age (ci/crypt.sh) для журналов и артефактов: общие для всех job'ов. Пароль LOG_KEY (переходный запасной способ)
-  # на уровне workflow не выдаётся: его получают только job'ы без кода игры и шаги шифрования артефактов.
+  # Открытые ключи age (ci/crypt.sh) для журналов и артефактов: общие для всех job'ов.
   LOG_AGE_RECIPIENT: ${{ vars.LOG_AGE_RECIPIENT }}
   SEAL_AGE_RECIPIENT: ${{ vars.SEAL_AGE_RECIPIENT }}
 
@@ -256,7 +255,6 @@ jobs:
         env:
           SEALED: ../sealed/${{ matrix.artifact }}.enc
           STAGE: ${{ matrix.stage }}
-          LOG_KEY: ${{ secrets.LOG_KEY }}
         run: |
           . ../ci/build-tasks.env
           if [ "$STAGE" = true ]; then paths=ui-apks; else paths="$MINIFIED_APK_DIR $MINIFIED_TEST_APK_DIR"; fi
@@ -301,8 +299,6 @@ jobs:
           bash ../ci/quiet.sh release-apk bash gradlew "$DIRECT_APK_TASK"
       - name: Seal the unsigned package
         working-directory: src
-        env:
-          LOG_KEY: ${{ secrets.LOG_KEY }}
         run: |
           . ../ci/build-tasks.env
           bash ../ci/seal.sh --transit ../sealed/unsigned-apk.enc "$DIRECT_APK" "$DIRECT_MAPPING"
@@ -342,8 +338,6 @@ jobs:
           bash ../ci/quiet.sh release-aab bash gradlew "$PLAY_AAB_TASK"
       - name: Seal the unsigned package
         working-directory: src
-        env:
-          LOG_KEY: ${{ secrets.LOG_KEY }}
         run: |
           . ../ci/build-tasks.env
           bash ../ci/seal.sh --transit ../sealed/unsigned-aab.enc "$PLAY_AAB" "$PLAY_MAPPING"
@@ -383,8 +377,6 @@ jobs:
           bash ../ci/quiet.sh release-rustore bash gradlew "$RUSTORE_APK_TASK"
       - name: Seal the unsigned package
         working-directory: src
-        env:
-          LOG_KEY: ${{ secrets.LOG_KEY }}
         run: |
           . ../ci/build-tasks.env
           bash ../ci/seal.sh --transit ../sealed/unsigned-rustore.enc "$RUSTORE_APK" "$RUSTORE_MAPPING"
@@ -414,8 +406,6 @@ jobs:
     concurrency:
       group: client-sign
       cancel-in-progress: false
-    env:
-      LOG_KEY: ${{ secrets.LOG_KEY }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -459,8 +449,6 @@ jobs:
           sign rustore apk "$RUSTORE_APK" "$RUSTORE_MAPPING"
           rm -f "$RUNNER_TEMP/release.jks"
       - name: Seal the signed packages
-        env:
-          LOG_KEY: ${{ secrets.LOG_KEY }}
         run: |
           . ci/build-tasks.env
           mkdir -p out
@@ -525,7 +513,6 @@ jobs:
       - name: Unpack APKs
         env:
           SEAL_AGE_IDENTITY: ${{ secrets.SEAL_AGE_IDENTITY }}
-          LOG_KEY: ${{ secrets.LOG_KEY }}
         run: |
           bash ci/seal.sh -d sealed/ui-apks.enc .
           bash ci/seal.sh -d sealed/ui-apks-minified.enc .
@@ -575,8 +562,6 @@ jobs:
       # Отчёты UI-тестов, превью и снимки ключевых экранов (design-preview/shots при shots) - одним зашифрованным артефактом
       - name: Seal UI reports and preview
         if: always()
-        env:
-          LOG_KEY: ${{ secrets.LOG_KEY }}
         run: bash ci/seal.sh sealed/ui.enc ui-results.txt release-smoke.txt design-preview
       - name: Upload UI reports and preview
         if: always()
@@ -618,8 +603,6 @@ jobs:
       - name: Seal reports
         if: always()
         working-directory: src
-        env:
-          LOG_KEY: ${{ secrets.LOG_KEY }}
         run: bash ../ci/seal.sh ../sealed/client-server.enc core/build/reports/tests core/build/test-results build/client-server.log
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
@@ -651,7 +634,6 @@ jobs:
       cancel-in-progress: false
     env:
       SHA: ${{ needs.changes.outputs.sha }}
-      LOG_KEY: ${{ secrets.LOG_KEY }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       # Публикации нужны заметки, версии и ревизии из исходников, а закрытию Issues - история с тегами
@@ -815,7 +797,6 @@ jobs:
       group: publish-play
       cancel-in-progress: false
     env:
-      LOG_KEY: ${{ secrets.LOG_KEY }}
       PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
       PLAY_TRACK: ${{ vars.PLAY_TRACK }}
       TAG: ${{ needs.release.outputs.tag || needs.changes.outputs.tag }}
@@ -871,7 +852,6 @@ jobs:
       group: publish-rustore
       cancel-in-progress: false
     env:
-      LOG_KEY: ${{ secrets.LOG_KEY }}
       RUSTORE_KEY_ID: ${{ secrets.RUSTORE_KEY_ID }}
       RUSTORE_PRIVATE_KEY: ${{ secrets.RUSTORE_PRIVATE_KEY }}
       TAG: ${{ needs.release.outputs.tag || needs.changes.outputs.tag }}
