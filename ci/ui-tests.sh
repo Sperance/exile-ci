@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # UI-тесты и строгий смоук R8 на запущенном эмуляторе (job `emulator` в client.yml); вывод - через ci/quiet.sh.
-# В текущем каталоге: ui-apks/ (APK UI-тестов) и каталоги строгой R8-сборки (ci/build-tasks.env); SHOTS=true - снимки ключевых экранов.
+# В текущем каталоге: ui-apks/ (APK UI-тестов) и каталоги строгой R8-сборки (ci/build-tasks.env); SHOTS=true - картинки магазина (StoreShotsTest).
 set -euo pipefail
 
 # Пути строгой R8-сборки - в ci/build-tasks.env
@@ -8,11 +8,11 @@ set -euo pipefail
 
 adb install -r ui-apks/app.apk
 adb install -r ui-apks/app-androidTest.apk
-# Снимки ключевых экранов и картинки магазина - только по запуску с shots: релиз их не делает
-if [[ ${SHOTS:-false} == true ]]; then only=(); else only=(-e notClass com.sperance.exileforge.ui.KeyScreensShotTest,com.sperance.exileforge.ui.StoreShotsTest); fi
+# Картинки магазина - только по запуску с shots: пуш и релиз их не делают
+if [[ ${SHOTS:-false} == true ]]; then only=(); else only=(-e notClass com.sperance.exileforge.ui.StoreShotsTest); fi
 adb shell am instrument -w "${only[@]}" com.sperance.exileforge.test/androidx.test.runner.AndroidJUnitRunner | tee ui-results.txt
 python3 -c "import pathlib,re; text=pathlib.Path('ui-results.txt').read_text(); assert re.search(r'OK \(\d+ tests?\)', text), text"
-adb pull /sdcard/Android/data/com.sperance.exileforge/files/design design-preview
+[[ ${SHOTS:-false} != true ]] || adb pull /sdcard/Android/data/com.sperance.exileforge/files/design design-preview
 # Сборка UI-тестов и строгая R8 - разные APK одного пакета: ставим начисто
 adb uninstall com.sperance.exileforge.test
 adb uninstall com.sperance.exileforge

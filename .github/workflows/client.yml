@@ -11,15 +11,16 @@
 #   repository_dispatch client-push - пуш в рабочую ветку клиента (job `forward` в android.yml ExileForge): sha и before. ТОЛЬКО
 #                                     проверки затронутого (с R8-сборками и эмулятором, если задет код), без релиза: выпуски накопительные (заметки копятся в RELEASE_NOTES.md
 #                                     под `## Следующая версия`, номер версии в работах не трогается). Коммит выпуска `feat: release
-#                                     <версия>` (его делает release.yml) проверки пуша пропускает: те же проверки идут в режиме release;
+#                                     <версия>` (его делает release.yml) проверки пуша пропускает: те же проверки идут в режиме release,
+#                                     кроме тех, что уже были зелёными на том же коде (метка «зелёное дерево», ci/green-tree.sh);
 #   workflow_dispatch               - вручную: push - как пуш (проверки затронутого, без релиза); release - все проверки и релиз
 #                                     коммита (его запускает Release → client после коммита номера версии, руками не запускать);
-#                                     shots - UI-тесты на эмуляторе и снимки ключевых экранов (KeyScreensShotTest), без релиза;
+#                                     shots - UI-тесты на эмуляторе и картинки магазина (StoreShotsTest), без релиза;
 #                                     stores - заново выложить выпущенную версию в магазины; cache - только архивы для облачных
 #                                     сессий агента (job `gradle-cache`).
 # Релиз (только режим release): versionName без релиза в exile-ci после зелёных проверок - тег v<версия> здесь с APK, update.json и заметками
 # RELEASE_NOTES.md (их читает игра, Updates.kt); карты R8 (mapping.txt прямого APK, mapping-play.txt и mapping-rustore.txt магазинов) - только в релиз того же тега приватного ExileForge
-# (её качает сервер, ReleaseMappings). Затем Issues, что называют коммиты с прошлого релиза «Closes #N», получают метку версии, теряют
+# (её качает сервер, ReleaseMappings). Затем Issues, что называют коммиты с прошлого релиза трейлером `Issue: #N`, получают метку версии, теряют
 # метки `ready` и `in-progress` и закрываются, и запускается деплой сервера (server.yml, режим deploy).
 # Каналы: прямой APK (релиз здесь), Google Play (AAB на дорожку переменной PLAY_TRACK: alpha - закрытый тест, beta - ранний доступ,
 # production - долей 20%; job `publish-play`) и RuStore (APK с автопубликацией, job
@@ -32,8 +33,11 @@
 # RUSTORE_PRIVATE_KEY; RELEASE_STATUS_TOKEN. Переменные: RUSTORE_CONTACT_EMAIL, RUSTORE_CONTACT_WEBSITE, RUSTORE_CONTACT_VK -
 # контакты разработчика карточки RuStore (без email магазин может отказать в черновике); LOG_AGE_RECIPIENT, SEAL_AGE_RECIPIENT.
 # Ручной режим stores - заново собрать и выложить в Google Play и RuStore уже выпущенную версию (без проверок и релиза здесь).
-# Архивы для облачных сессий агента (job'ы `gradle-cache` и `gradle-toolchain`, в конце файла) пересобираются после релиза версии
-# в этом прогоне (режим release) и вручную (режим cache).
+# Архивы для облачных сессий агента (job'ы `gradle-cache` и `gradle-toolchain`, в конце файла) пересобираются, только когда меняется
+# ключ (хэш файлов сборки) или кнопкой (режим cache).
+# Зелёные деревья: пуш (и ручной push) после успешных ворот кладёт в кэш Actions пустую метку `client-green-<дерево>-<ворота>` (дерево -
+# ci/green-tree.sh: код без RELEASE_NOTES.md и номера версии). Режим release ищет метки и пропускает ворота, чей код уже был зелёным;
+# метки нет - ворота идут как обычно. Метка живёт в кэше Actions (до 7 суток без обращений).
 name: Client
 
 on:
@@ -42,7 +46,7 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'push - checks of the changed parts, no release; release - all checks and release of the commit (started by Release -> client after the version commit); shots - emulator UI tests and key screen shots, no release; stores - publish the already released version to Google Play and RuStore again; cache - only rebuild the agent session archives (gradle-cache release of ExileForge)'
+        description: 'push - checks of the changed parts, no release; release - all checks (except the gates already green on the same code) and release of the commit (started by Release -> client after the version commit); shots - emulator UI tests and the store images (StoreShotsTest), no release; stores - publish the already released version to Google Play and RuStore again; cache - rebuild the agent session archives, build cache included (gradle-cache release of ExileForge)'
         type: choice
         options: [ push, release, shots, stores, cache ]
         default: push
@@ -74,6 +78,10 @@ jobs:
   changes:
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
+      # Поиск меток зелёных деревьев в кэше Actions (release)
+      actions: read
     concurrency:
       group: client-changes-${{ github.event_name == 'workflow_dispatch' && inputs.mode || 'push' }}
       cancel-in-progress: true
@@ -81,10 +89,14 @@ jobs:
       sha: ${{ steps.target.outputs.sha }}
       core: ${{ steps.diff.outputs.core }}
       app: ${{ steps.diff.outputs.app }}
+      tree: ${{ steps.green.outputs.tree }}
+      skip_core: ${{ steps.green.outputs.skip_core }}
+      skip_app: ${{ steps.green.outputs.skip_app }}
+      skip_server: ${{ steps.green.outputs.skip_server }}
       release: ${{ steps.release.outputs.pending }}
       shots: ${{ steps.target.outputs.mode == 'shots' }}
       # R8-сборки и эмулятор: выпуск, снимки и каждый пуш, что задел core, app или сервер - зелёный пуш значит, что выпуск пройдёт
-      ui: ${{ steps.target.outputs.mode == 'release' || steps.target.outputs.mode == 'shots' || (steps.target.outputs.mode == 'push' && (steps.diff.outputs.core == 'true' || steps.diff.outputs.app == 'true')) }}
+      ui: ${{ steps.target.outputs.mode == 'release' || steps.target.outputs.mode == 'shots' || (steps.target.outputs.mode == 'push' && (steps.diff.outputs.core == 'true' || steps.diff.outputs.app == 'true')) && steps.green.outputs.skip_ui != 'true' }}
       stores: ${{ steps.release.outputs.stores }}
       cache: ${{ steps.target.outputs.mode == 'cache' }}
       tag: ${{ steps.release.outputs.tag }}
@@ -128,11 +140,33 @@ jobs:
             core=true; app=true
           else
             files=$(git diff --name-only "$BEFORE" "$SHA")
-            grep -qE '^app/' <<<"$files" && app=true || app=false
+            # app: оболочка и Android-модули (platform, ui-kit, feature/*) и сборочные файлы любого модуля
+            grep -qE '^(app|platform|ui-kit|feature)/|(^|/)build\.gradle\.kts$' <<<"$files" && app=true || app=false
             grep -qE '^(core/|backend$|scripts/client_server_test\.py$|gradle/|[^/]+\.gradle\.kts$|gradle\.properties$)' <<<"$files" && core=true || core=false
           fi
           echo "core=$core app=$app"
           { echo "core=$core"; echo "app=$app"; } >> "$GITHUB_OUTPUT"
+      # Зелёное дерево: в режиме release ворота, чей код уже прошёл на пуше, пропускаются (метки кладёт job `mark-green`). Не нашли
+      # метку или поиск не удался - ворота идут как обычно.
+      - name: Green trees
+        id: green
+        working-directory: src
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MODE: ${{ steps.target.outputs.mode }}
+        run: |
+          tree=$(bash ../ci/green-tree.sh .)
+          echo "tree=$tree" >> "$GITHUB_OUTPUT"
+          echo "code tree $tree"
+          if [ "$MODE" = release ]; then
+            keys=$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/caches?key=client-green-$tree-&per_page=100" --jq '.actions_caches[].key' 2>/dev/null || true)
+            for gate in core app ui server; do
+              if grep -qx "client-green-$tree-$gate" <<<"$keys"; then
+                echo "skip_$gate=true" >> "$GITHUB_OUTPUT"
+                echo "gate $gate: this code was green on a push, the gate is skipped"
+              fi
+            done
+          fi
       # Релиз только в режиме release (пуш не выпускает); R8-сборки и эмулятор идут и на пуш (выход ui). У versionName уже есть релиз
       # здесь - ошибка, номер версии занят.
       - id: release
@@ -159,7 +193,7 @@ jobs:
   core:
     needs: changes
     # Перед релизом - всегда (TEST-01): релиз не выходит без словарей и тестов core
-    if: ${{ needs.changes.outputs.stores != 'true' && needs.changes.outputs.cache != 'true' && (needs.changes.outputs.core == 'true' || needs.changes.outputs.app == 'true' || needs.changes.outputs.release == 'true') }}
+    if: ${{ needs.changes.outputs.stores != 'true' && needs.changes.outputs.cache != 'true' && needs.changes.outputs.skip_core != 'true' && (needs.changes.outputs.core == 'true' || needs.changes.outputs.app == 'true' || needs.changes.outputs.release == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     concurrency:
@@ -180,10 +214,33 @@ jobs:
         with:
           name: core-log
 
+  # Быстрая часть app: ktlint и сторожа Android-модулей - ранний красный, пока Lint ещё идёт
+  app-fast:
+    needs: changes
+    # При правке app (Android-модули), перед релизом и по ручному запуску; правка только core или сервера сторожей app не трогает
+    if: ${{ needs.changes.outputs.stores != 'true' && needs.changes.outputs.cache != 'true' && needs.changes.outputs.skip_app != 'true' && (needs.changes.outputs.app == 'true' || needs.changes.outputs.release == 'true') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    concurrency:
+      group: client-app-fast${{ needs.changes.outputs.release == 'true' && '-release' || '' }}
+      cancel-in-progress: ${{ needs.changes.outputs.release != 'true' }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: ./.github/actions/source
+        with:
+          sha: ${{ needs.changes.outputs.sha }}
+          token: ${{ secrets.SOURCE_TOKEN }}
+      - working-directory: src
+        run: bash ../ci/quiet.sh app-fast bash scripts/check.sh app-fast
+      - name: Encrypted log
+        if: failure()
+        uses: ./.github/actions/upload-log
+        with:
+          name: app-fast-log
+
   app:
     needs: changes
-    # При правке app, перед релизом и по ручному запуску; правка только core или сервера сторожей app не трогает
-    if: ${{ needs.changes.outputs.stores != 'true' && needs.changes.outputs.cache != 'true' && (needs.changes.outputs.app == 'true' || needs.changes.outputs.release == 'true') }}
+    if: ${{ needs.changes.outputs.stores != 'true' && needs.changes.outputs.cache != 'true' && needs.changes.outputs.skip_app != 'true' && (needs.changes.outputs.app == 'true' || needs.changes.outputs.release == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     concurrency:
@@ -197,7 +254,7 @@ jobs:
           token: ${{ secrets.SOURCE_TOKEN }}
       # Отладочной сборки нет нигде: lint - по релизному варианту, APK - только R8-сборки ниже
       - working-directory: src
-        run: bash ../ci/quiet.sh app bash scripts/check.sh app --no-compile
+        run: bash ../ci/quiet.sh app bash scripts/check.sh app-lint
       - name: Encrypted log
         if: failure()
         uses: ./.github/actions/upload-log
@@ -559,24 +616,29 @@ jobs:
           emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           disable-animations: true
           script: bash ci/quiet.sh ui bash ci/ui-tests.sh
-      # Отчёты UI-тестов, превью и снимки ключевых экранов (design-preview/shots при shots) - одним зашифрованным артефактом
-      - name: Seal UI reports and preview
-        if: always()
-        run: bash ci/seal.sh sealed/ui.enc ui-results.txt release-smoke.txt design-preview
-      - name: Upload UI reports and preview
-        if: always()
+      # Картинки магазина (design-preview/store при shots) - зашифрованным артефактом; отчётов UI-тестов в артефактах нет, упавший шаг
+      # пишет зашифрованный журнал
+      - name: Seal the store images
+        if: ${{ always() && needs.changes.outputs.shots == 'true' }}
+        run: bash ci/seal.sh sealed/store-shots.enc design-preview
+      - name: Upload the store images
+        if: ${{ always() && needs.changes.outputs.shots == 'true' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: exile-forge-ui
-          path: |
-            sealed/ui.enc
-            logs
+          name: store-shots
+          path: sealed/store-shots.enc
+          retention-days: 7
           if-no-files-found: ignore
+      - name: Encrypted log
+        if: failure()
+        uses: ./.github/actions/upload-log
+        with:
+          name: emulator-log
 
   client-server:
     needs: changes
     # Контракт зависит от core и закреплённого сервера; перед релизом - всегда
-    if: ${{ needs.changes.outputs.stores != 'true' && needs.changes.outputs.cache != 'true' && (needs.changes.outputs.core == 'true' || needs.changes.outputs.release == 'true') }}
+    if: ${{ needs.changes.outputs.stores != 'true' && needs.changes.outputs.cache != 'true' && needs.changes.outputs.skip_server != 'true' && (needs.changes.outputs.core == 'true' || needs.changes.outputs.release == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
     concurrency:
@@ -613,13 +675,46 @@ jobs:
             logs
           if-no-files-found: ignore
 
+  # Метки зелёных деревьев: ворота, что прошли на этом коде (дерево без номера версии и заметок, ci/green-tree.sh), кладутся в кэш Actions
+  # пустым файлом под ключом client-green-<дерево>-<ворота>. Выпуск (release) такие ворота пропускает. Ворота `app` - обе части (app-fast
+  # и Lint), `ui` - R8-сборки и эмулятор, `server` - client-server. Режимы shots, stores и cache меток не ставят.
+  mark-green:
+    needs: [ changes, core, app-fast, app, emulator, client-server ]
+    if: ${{ !cancelled() && needs.changes.outputs.shots != 'true' && needs.changes.outputs.stores != 'true' && needs.changes.outputs.cache != 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      TREE: ${{ needs.changes.outputs.tree }}
+    steps:
+      - run: mkdir -p green && echo "$TREE" > green/tree
+      - if: ${{ needs.core.result == 'success' }}
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: green
+          key: client-green-${{ env.TREE }}-core
+      - if: ${{ needs.app-fast.result == 'success' && needs.app.result == 'success' }}
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: green
+          key: client-green-${{ env.TREE }}-app
+      - if: ${{ needs.emulator.result == 'success' }}
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: green
+          key: client-green-${{ env.TREE }}-ui
+      - if: ${{ needs.client-server.result == 'success' }}
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: green
+          key: client-green-${{ env.TREE }}-server
+
   # После зелёных проверок versionName без релиза публикуется: тег v<versionName> здесь с APK из `release-apk`, update.json и
   # заметками RELEASE_NOTES.md; карты R8 всех трёх вариантов (с проверкой pg_map_id по dex сборки) - в релиз того же тега приватного ExileForge, на коммите клиента. Затем - пост о версии
   # в группу Telegram (telegram.yml).
   # Пропущенные по фильтру проверки (core без изменений) релиз не держат; упавшие или отменённые - держат.
   release:
     # Пакеты магазинов собираются до публикации: сломанный вариант сборки не даёт выпустить версию в одном канале и не выпустить в другом
-    needs: [ changes, core, app, minified, release-apk, release-aab, release-rustore, sign, emulator, client-server ]
+    needs: [ changes, core, app-fast, app, minified, release-apk, release-aab, release-rustore, sign, emulator, client-server ]
     if: ${{ !cancelled() && needs.changes.outputs.release == 'true' && needs.sign.result == 'success' && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -691,7 +786,7 @@ jobs:
           python3 ../ci/verify-map.py "../maps/rustore/$RUSTORE_APK" ../mapping-rustore.txt
           cat ../update.json
           echo "apk=ExileForge-$TAG.apk" >> "$GITHUB_OUTPUT"
-      # Карта R8 - сначала и только в приватный ExileForge: тег на коммите клиента нужен и для диапазона «Closes #N» ниже.
+      # Карта R8 - сначала и только в приватный ExileForge: тег на коммите клиента нужен и для диапазона коммитов с трейлером `Issue: #N` ниже.
       - if: steps.version.outputs.exists == 'false'
         name: Private release with the R8 maps
         env:
@@ -743,7 +838,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.version.outputs.tag }}
         run: gh workflow run telegram.yml -R "$GITHUB_REPOSITORY" --ref main -f tag="$TAG"
-      # Issues, что чинит релиз: коммиты с прошлого релиза, что называют «Closes #N» (fixes, resolves), - Issue получает метку
+      # Issues, что чинит релиз: коммиты с прошлого релиза, что называют трейлером `Issue: #N`, - Issue получает метку
       # версии и закрывается выполненным, без комментария; игра увидит это синхронизацией сервера.
       # Рабочая ветка - не основная, сам GitHub по таким словам Issues не закрывает.
       - if: steps.version.outputs.exists == 'false'
@@ -941,14 +1036,15 @@ jobs:
   #   gradle-cache-<ключ>  зависимости (caches/modules-2) и дистрибутивы (wrapper/dists) клиента и закреплённого в нём сервера;
   #                        пересобирается, только когда меняется ключ - хэш файлов сборки клиента и сервера (имя файла архива);
   #   build-cache-<ключ>   кэш сборки Gradle (caches/build-cache-1): результаты задач, чтобы неизменные модули не компилировались
-  #                        заново; обновляется после каждого релиза версии и в ручном режиме cache, только из запусков на main;
+  #                        заново; обновляется только в ручном режиме cache (кнопка) вместе со сменой ключа, только из запусков на main;
   #   toolchain-<ключ>     JDK, Android SDK и kotlin-language-server (job gradle-toolchain); ключ - хэш toolchain.env клиента,
   #                        пересобирается, только когда меняется файл; версии и раскладку задаёт .claude/hooks/toolchain.sh.
   # Старые архивы своего вида удаляются после загрузки нового. Проверки здесь лишь наполняют кэш: их падение архив не
   # останавливает (ворота - core, app и client-server). Секреты: SOURCE_TOKEN (чтение кода), EXILEFORGE_TOKEN (релиз ExileForge).
   gradle-cache:
     needs: [ changes, release ]
-    # Только после релиза версии в этом прогоне и по ручному режиму cache (тогда release пропущен)
+    # После релиза версии в этом прогоне и по ручному режиму cache (тогда release пропущен); работает только при смене ключа или в режиме cache,
+    # иначе проверяет ключ и завершается
     if: ${{ !cancelled() && (needs.release.result == 'success' || needs.changes.outputs.cache == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 90
@@ -979,12 +1075,14 @@ jobs:
         id: key
         env:
           GH_TOKEN: ${{ secrets.EXILEFORGE_TOKEN }}
+          CACHE_MODE: ${{ needs.changes.outputs.cache }}
         run: |
           key=$(for d in src src/backend; do git -C "$d" ls-files -z -- '*.gradle.kts' 'gradle.properties' 'gradle/*' | (cd "$d" && xargs -0 sha256sum); done | sha256sum | cut -c1-16)
           asset="gradle-cache-$key.tar.gz"
           have=$(gh release view "$TAG" -R "$CLIENT_REPO" --json assets -q '.assets[].name' 2>/dev/null || true)
           if grep -qx "$asset" <<<"$have"; then fresh=true; else fresh=false; fi
-          if [ "$GITHUB_REF" = refs/heads/main ]; then
+          # Кэш сборки обновляется только кнопкой (режим cache) на main; после обычного выпуска ключ тот же - ничего не пересобирается
+          if [ "$CACHE_MODE" = true ] && [ "$GITHUB_REF" = refs/heads/main ]; then
             build=true
           else
             build=false
@@ -1013,7 +1111,7 @@ jobs:
         working-directory: src/backend
         run: |
           bash ../../ci/quiet.sh gradle-cache-server bash gradlew --continue :rules:rules-lab:labWasmBundle ktlintCheck commentStyle \
-            testClasses :rules:ktlintCheck :rules:jvmTestClasses :rules:rules-check:ktlintCheck :rules:rules-check:jvmTestClasses || true
+            testClasses :rules:ktlintCheck :rules:jvmTestClasses :rules:rules-check:ktlintCheck :rules:rules-check:jvmTestClasses :rules:rules-lab:ktlintCheck :rules:rules-lab:jvmTestClasses || true
           bash ../../ci/quiet.sh gradle-cache-server-deps bash gradlew --no-configuration-cache --init-script ../../ci/resolve-all.gradle \
             --continue resolveAllDependencies || true
       - name: Stop Gradle
@@ -1059,6 +1157,7 @@ jobs:
           done
       # Контрольные суммы архивов: хуки сессии сверяют их до распаковки (ci/cache-sums.sh, файл SHA256SUMS релиза)
       - name: Checksums of the archives
+        if: steps.key.outputs.fill == 'true'
         env:
           GH_TOKEN: ${{ secrets.EXILEFORGE_TOKEN }}
         run: |

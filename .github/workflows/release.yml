@@ -10,9 +10,9 @@
 #                     `## Следующая версия` в RELEASE_NOTES.md (нет раздела или он пуст - ошибка), затем запускает client.yml mode=release
 #                     на этом коммите (до коммита - стоп, если голова сервера по коду не закреплена в клиенте, её образ не
 #                     проверен или сторож деплоя ci/deploy-guard.py --candidate против выката: новый клиент не играл бы на сервере
-#                     после выката, или выкат отрезал бы сборки каналов без force_breaking): все проверки, релиз, закрытие Issues «Closes #N», выкат сервера (деплой после релиза запускает
+#                     после выката, или выкат отрезал бы сборки каналов без force_breaking): все проверки (кроме уже зелёных на том же коде), релиз, закрытие Issues по трейлеру `Issue: #N`, выкат сервера (деплой после релиза запускает
 #                     client.yml сам), выкладка в магазины. Коммит делает EXILEFORGE_TOKEN (Contents: write на ExileForge);
-#   client-shots    - UI-тесты и снимки ключевых экранов, без релиза (client.yml mode=shots);
+#   client-shots    - UI-тесты и картинки магазина (StoreShotsTest), без релиза (client.yml mode=shots);
 #   telegram        - пост о последнем релизе в тему «Обновления» группы Telegram заново (telegram.yml): пост той же версии правится;
 #   important       - пост IMPORTANT.md головы сервера в тему «Важное» (telegram-important.yml), если этот текст ещё не выходил.
 name: Release
@@ -21,7 +21,7 @@ on:
   workflow_dispatch:
     inputs:
       what:
-        description: 'server - deploy checked head; server-rebuild - checks, image and deploy; client - cumulative release: version commit, checks, release, server deploy (bump below); client-shots - UI tests only; telegram - post the latest release to the Telegram group again; important - post the new IMPORTANT.md of the server'
+        description: 'server - deploy checked head; server-rebuild - checks, image and deploy; client - cumulative release: version commit, checks, release, server deploy (bump below); client-shots - UI tests and store images only; telegram - post the latest release to the Telegram group again; important - post the new IMPORTANT.md of the server'
         type: choice
         options: [ server, server-rebuild, client, client-shots, telegram, important ]
         default: server
