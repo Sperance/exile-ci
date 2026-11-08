@@ -96,7 +96,7 @@ jobs:
       release: ${{ steps.release.outputs.pending }}
       shots: ${{ steps.target.outputs.mode == 'shots' }}
       # R8-сборки и эмулятор: выпуск, снимки и каждый пуш, что задел core, app или сервер - зелёный пуш значит, что выпуск пройдёт
-      ui: ${{ steps.target.outputs.mode == 'release' || steps.target.outputs.mode == 'shots' || (steps.target.outputs.mode == 'push' && (steps.diff.outputs.core == 'true' || steps.diff.outputs.app == 'true')) && steps.green.outputs.skip_ui != 'true' }}
+      ui: ${{ (steps.target.outputs.mode == 'release' || steps.target.outputs.mode == 'shots' || (steps.target.outputs.mode == 'push' && (steps.diff.outputs.core == 'true' || steps.diff.outputs.app == 'true'))) && steps.green.outputs.skip_ui != 'true' }}
       stores: ${{ steps.release.outputs.stores }}
       cache: ${{ steps.target.outputs.mode == 'cache' }}
       tag: ${{ steps.release.outputs.tag }}
