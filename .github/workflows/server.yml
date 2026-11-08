@@ -17,6 +17,10 @@
 #                                       выкат только сервера: Release → server); rebuild - проверки, образ и деплой (Release →
 #                                       server-rebuild);
 #   workflow_call (check-wip.yml)     - режим check-wip: проверки, панель и совместимость на текущем wip сервера, БЕЗ образа и деплоя.
+# После выката (job `deploy`): коммит отмечается тегом server-deployed/<sha> в этом репозитории (от него считаются «с прошлого выката»:
+# вайпы игровых коллекций в check-wip, Issues серверных коммитов); пост «Важное» (вход version - номер выпуска клиента для заголовка);
+# без выпуска клиента (Release → server, вход version пуст) - ещё пост новых пунктов «[сервер]» заметок в «Обновления»
+# (telegram-server-notes.yml) и закрытие Issues серверных коммитов с прошлого выката меткой «сервер <дата>» (ci/close-server-issues.sh).
 # Образ уходит в приватный пакет ghcr.io/sperance/ktor-bestgame черновым тегом :build-<sha>, после зелёных проверок получает
 # :<sha> и :<ветка>; на VPS по SSH запускается deploy/update.sh сервера с этим sha.
 # Перед деплоем (job `deploy`) - защита ci/deploy-guard.py: сервер не выкатывается, если отрежет самую старую сборку, ещё лежащую в
@@ -44,6 +48,9 @@ on:
       force_breaking:
         type: boolean
         default: false
+      version:
+        type: string
+        default: ''
   workflow_dispatch:
     inputs:
       mode:
@@ -58,6 +65,10 @@ on:
         description: 'Owner-approved break: deploy even if the server cuts a build still held by a store channel'
         type: boolean
         default: false
+      version:
+        description: 'Client release version when the deploy follows a release (heading of the important post); empty - server alone'
+        required: false
+        default: ''
 
 # Чужой код здесь не исполняется: триггеров pull_request нет, токен job'ов по умолчанию только читает.
 permissions:
@@ -396,12 +407,14 @@ jobs:
       group: deploy
       cancel-in-progress: false
     permissions:
-      contents: read
+      # Тег server-deployed/<sha>
+      contents: write
       packages: write
-      # Запуск поста «Важное» (telegram-important.yml)
+      # Запуск постов (telegram-important.yml, telegram-server-notes.yml)
       actions: write
     env:
       SHA: ${{ needs.resolve.outputs.sha }}
+      VERSION: ${{ inputs.version }}
       # Дайджест, который собрал job `image` этого прогона (режим push); в режиме deploy пуст - берётся у проверенного тега ниже
       PUSHED_DIGEST: ${{ needs.image.outputs.digest }}
     steps:
@@ -500,13 +513,31 @@ jobs:
           # Токен GitHub Issues (0.14.1, GH-ISSUES) - первой строкой stdin: в строку команды и журналы он не попадает.
           printf '%s\n' "$GH_ISSUES_TOKEN" | VPS_HOST=$HOST VPS_KEY_FILE="$RUNNER_TEMP/key" bash ci/quiet.sh deploy \
             bash ci/vps-ssh.sh "deploy $IMAGE_SHA $DIGEST"
-      # Новый текст IMPORTANT.md выложенного сервера - пост в тему «Важное» группы Telegram (telegram-important.yml)
+      # Отметка выката и Issues серверных коммитов: диапазон - от ближайшего выкаченного предка (тег server-deployed/<sha>) до этого
+      # коммита. Прошлый выкат считается до новой отметки. Issues закрывает только выкат сервера без клиента: при выпуске клиента их
+      # закрывает job `release` client.yml (метка версии). Нет отметки прошлого выката - Issues не закрываются, отметка ставится.
+      - name: Mark the deploy and close the server issues
+        if: ${{ steps.client.outputs.ready == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUES_TOKEN: ${{ secrets.EXILEFORGE_TOKEN }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/server-deployed/" --paginate --jq '.[].ref' > "$RUNNER_TEMP/deployed.txt"
+          base=$(python3 -I ci/release_state.py baseline --srv server --head "$SHA" --deployed "$RUNNER_TEMP/deployed.txt")
+          if [ -z "$VERSION" ] && [ -n "$ISSUES_TOKEN" ]; then
+            GH_TOKEN=$ISSUES_TOKEN bash ci/close-server-issues.sh Sperance/ExileForge server "$base" "$SHA" || echo "::warning::server issues were not closed"
+          fi
+          gh api -X POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/server-deployed/$SHA" -f sha="$GITHUB_SHA" >/dev/null || echo "::notice::deploy mark already exists"
+      # Новый текст IMPORTANT.md выложенного сервера - пост в тему «Важное» группы Telegram (telegram-important.yml); после выпуска клиента
+      # заголовок несёт его версию. Выкат сервера без клиента - ещё и пост новых пунктов «[сервер]» заметок (telegram-server-notes.yml).
       - name: Announce the important news
         if: ${{ steps.client.outputs.ready == 'true' }}
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh workflow run telegram-important.yml -R "$GITHUB_REPOSITORY" --ref main -f sha="$SHA"
+        run: |
+          gh workflow run telegram-important.yml -R "$GITHUB_REPOSITORY" --ref main -f sha="$SHA" -f version="$VERSION"
+          [ -n "$VERSION" ] || gh workflow run telegram-server-notes.yml -R "$GITHUB_REPOSITORY" --ref main
       - name: Encrypted log
         if: failure()
         uses: ./.github/actions/upload-log

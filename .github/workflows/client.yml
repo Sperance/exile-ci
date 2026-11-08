@@ -879,7 +879,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           FORCE: ${{ inputs.force_breaking || false }}
-        run: gh workflow run server.yml -R "$GITHUB_REPOSITORY" --ref main -f mode=deploy -f force_breaking="$FORCE"
+          TAG: ${{ steps.version.outputs.tag }}
+        run: gh workflow run server.yml -R "$GITHUB_REPOSITORY" --ref main -f mode=deploy -f force_breaking="$FORCE" -f version="${TAG#v}"
       # Пост с заметками в группу Telegram (telegram.yml). Не запустился - релиз не держит: повторить можно через Release → telegram.
       - if: steps.version.outputs.exists == 'false'
         name: Announce in Telegram
@@ -888,8 +889,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.version.outputs.tag }}
         run: gh workflow run telegram.yml -R "$GITHUB_REPOSITORY" --ref main -f tag="$TAG"
-      # Issues, что чинит релиз: коммиты с прошлого релиза, что называют трейлером `Issue: #N`, - Issue получает метку
-      # версии и закрывается выполненным, без комментария; игра увидит это синхронизацией сервера.
+      # Issues, что чинит релиз: коммиты клиента с прошлого релиза, что называют трейлером `Issue: #N`, и коммиты сервера между
+      # закреплёнными в клиенте серверами прошлого и этого релиза с трейлером `Refs <репо клиента>#N` (история backend/ нужна целиком) -
+      # Issue получает метку версии и закрывается выполненным, без комментария; игра увидит это синхронизацией сервера.
       # Рабочая ветка - не основная, сам GitHub по таким словам Issues не закрывает.
       - if: steps.version.outputs.exists == 'false'
         name: Close the issues this release fixes
@@ -897,7 +899,9 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.EXILEFORGE_TOKEN }}
           TAG: ${{ steps.version.outputs.tag }}
-        run: bash ../ci/close-issues.sh "$CLIENT_REPO" "$TAG" "$SHA"
+        run: |
+          git -C backend fetch --quiet --unshallow 2>/dev/null || true
+          bash ../ci/close-issues.sh "$CLIENT_REPO" "$TAG" "$SHA"
       # Прямой канал сервер узнаёт отчётом: релиз GitHub вышел, доля 1.0. Новый деплой сервера (шаг выше) ещё идёт, поэтому отчёт
       # может не дойти (маршрута нет у прежнего сервера) - это предупреждение, отчёт повторит задача store-status (после выкладки и раз в 6 часов) в maintenance.yml.
       - if: steps.version.outputs.exists == 'false'

@@ -10,20 +10,27 @@
 #                     `## Следующая версия` в RELEASE_NOTES.md (нет раздела или он пуст - ошибка), затем запускает client.yml mode=release
 #                     на этом коммите (до коммита - стоп, если голова сервера по коду не закреплена в клиенте, её образ не
 #                     проверен или сторож деплоя ci/deploy-guard.py --candidate против выката: новый клиент не играл бы на сервере
-#                     после выката, или выкат отрезал бы сборки каналов без force_breaking): все проверки (кроме уже зелёных на том же коде), релиз, закрытие Issues по трейлеру `Issue: #N`, выкат сервера (деплой после релиза запускает
+#                     после выката, или выкат отрезал бы сборки каналов без force_breaking): все проверки (кроме уже зелёных на том же коде), релиз, закрытие Issues по трейлерам `Issue: #N` (клиент) и `Refs Sperance/ExileForge#N` (сервер), выкат сервера (деплой после релиза запускает
 #                     client.yml сам), выкладка в магазины. Коммит делает EXILEFORGE_TOKEN (Contents: write на ExileForge);
 #   client-shots    - UI-тесты и картинки магазина (StoreShotsTest), без релиза (client.yml mode=shots);
 #   telegram        - пост о последнем релизе в тему «Обновления» группы Telegram заново (telegram.yml): пост той же версии правится;
-#   important       - пост IMPORTANT.md головы сервера в тему «Важное» (telegram-important.yml), если этот текст ещё не выходил.
+#   important       - пост IMPORTANT.md головы сервера в тему «Важное» (telegram-important.yml), если этот текст ещё не выходил;
+#   server-notes    - пост новых пунктов «[сервер]» заметок в тему «Обновления» заново (telegram-server-notes.yml): то, что не вышло при выкате сервера;
+#   preview         - ничего не выпускает: сводка накопленного в итоге прогона (заметки по разделам, текст «Важного», Issues к закрытию, вайпы,
+#                     обязательность, совет bump по трейлерам `Bump: minor`); нажимать перед client. Итог прогона публичен: в нём заметки и «Важное».
+#
+# Накопление: заметки клиента (RELEASE_NOTES.md, подразделы «Новое / Изменения / Исправления / Техническое») и «Важное» сервера
+# (IMPORTANT.md, темы `### …`) копятся до выпуска; Issues и обязательность читаются по коммитам клиента и сервера с прошлого выпуска.
+# Release → server сам выкладывает новые пункты «[сервер]» в «Обновления» и закрывает Issues серверных коммитов (метка «сервер <дата>»).
 name: Release
 
 on:
   workflow_dispatch:
     inputs:
       what:
-        description: 'server - deploy checked head; server-rebuild - checks, image and deploy; client - cumulative release: version commit, checks, release, server deploy (bump below); client-shots - UI tests and store images only; telegram - post the latest release to the Telegram group again; important - post the new IMPORTANT.md of the server'
+        description: 'server - deploy checked head; server-rebuild - checks, image and deploy; client - cumulative release: version commit, checks, release, server deploy (bump below); client-shots - UI tests and store images only; telegram - post the latest release to the Telegram group again; important - post the new IMPORTANT.md of the server; server-notes - post the new server note lines again; preview - summary of what the release would contain, nothing is released'
         type: choice
-        options: [ server, server-rebuild, client, client-shots, telegram, important ]
+        options: [ server, server-rebuild, client, client-shots, telegram, important, server-notes, preview ]
         default: server
       bump:
         description: 'client only: patch - next patch version, minor - next minor version (x.y+1.0)'
@@ -41,7 +48,7 @@ permissions:
 
 jobs:
   dispatch:
-    if: ${{ inputs.what != 'client' }}
+    if: ${{ inputs.what != 'client' && inputs.what != 'preview' }}
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:
@@ -56,6 +63,7 @@ jobs:
             client-shots)   gh workflow run client.yml -R "$GITHUB_REPOSITORY" --ref main -f mode=shots ;;
             telegram)       gh workflow run telegram.yml -R "$GITHUB_REPOSITORY" --ref main ;;
             important)      gh workflow run telegram-important.yml -R "$GITHUB_REPOSITORY" --ref main ;;
+            server-notes)   gh workflow run telegram-server-notes.yml -R "$GITHUB_REPOSITORY" --ref main ;;
             *) echo "::error::unknown choice '$WHAT'"; exit 1 ;;
           esac
           echo "started: $WHAT"
@@ -136,19 +144,17 @@ jobs:
           echo "last release: $last, bump: $BUMP"
           python3 -I ci/bump-release.py src "$BUMP" "$last" "$GITHUB_OUTPUT"
       # Обязательность релиза читает ci/release-files.py из последнего коммита, а им станет коммит выпуска: трейлер «Update-Mandatory: yes»
-      # любой работы с прошлого выпуска переносится в него. Начало диапазона - тег прошлого выпуска в ExileForge; нет тега - коммит
-      # `feat: release <прошлая версия>`, иначе последние 100 коммитов. Метка «<!-- quiet -->» лежит внутри раздела заметок и
-      # переименование заголовка её сохраняет.
+      # любой работы с прошлого выпуска переносится в него - и коммитов клиента, и коммитов сервера между серверами, закреплёнными
+      # на прошлом и этом выпуске (ci/release_state.py). Начало диапазона - ci/release-base.sh. Метка «<!-- quiet -->» лежит внутри
+      # раздела заметок и переименование заголовка её сохраняет.
       - name: Mandatory update from the accumulated work
         id: mandatory
         env:
           PREV: ${{ steps.version.outputs.last }}
         run: |
-          if git -C src rev-parse -q --verify "refs/tags/$PREV" >/dev/null; then range="$PREV..HEAD"
-          elif base=$(git -C src log --format=%H -1 --grep="^feat: release ${PREV#v}$"); [ -n "$base" ]; then range="$base..HEAD"
-          else range="HEAD~100..HEAD"; fi
-          if git -C src log --format=%B "$range" 2>/dev/null | grep -qiE '^Update-Mandatory: yes'; then
-            echo "mandatory update found in $range"
+          base=$(bash ci/release-base.sh src "$PREV")
+          if python3 -I ci/release_state.py trailer Update-Mandatory --cli src --srv srv --base "$base" --head HEAD | grep -qiE '^yes'; then
+            echo "mandatory update found since $base"
             echo "mandatory=yes" >> "$GITHUB_OUTPUT"
           else
             echo "mandatory=no" >> "$GITHUB_OUTPUT"
@@ -179,3 +185,53 @@ jobs:
         uses: ./.github/actions/upload-log
         with:
           name: release-start-log
+
+  # Предпросмотр накопленного без выпуска: те же исходники и диапазоны, что у выпуска (голова рабочей ветки клиента, коммиты клиента и
+  # закреплённых серверов с прошлого тега), итог - markdown в сводке прогона (ci/release_state.py preview): совет bump, обязательность,
+  # Issues к закрытию, вайпы игровых коллекций, текст «Важного», заметки по подразделам. Сводка публична: заметки и «Важное» в ней
+  # уже в том виде, в каком выйдут к игрокам; кода, данных игроков и секретов в ней нет.
+  preview:
+    if: ${{ inputs.what == 'preview' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      LOG_AGE_RECIPIENT: ${{ vars.LOG_AGE_RECIPIENT }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Heads of both working branches
+        env:
+          TOKEN: ${{ secrets.EXILEFORGE_TOKEN }}
+          SOURCE: ${{ secrets.SOURCE_TOKEN }}
+        run: |
+          . ci/branches.env
+          bash ci/quiet.sh clone-client git clone -q --branch "$CLIENT_BRANCH" "https://x-access-token:$TOKEN@github.com/Sperance/ExileForge.git" src
+          bash ci/quiet.sh clone-server git clone -q --filter=blob:none --no-checkout --branch "$SERVER_BRANCH" "https://x-access-token:$SOURCE@github.com/Sperance/ktor-bestgame.git" srv
+      - name: Preview
+        env:
+          GH_TOKEN: ${{ secrets.EXILEFORGE_TOKEN }}
+          REPO_TOKEN: ${{ github.token }}
+          PUBLIC_NOTES: ${{ runner.temp }}/preview-public.txt
+        run: |
+          last=$(GH_TOKEN=$REPO_TOKEN gh release list -R "$GITHUB_REPOSITORY" --limit 300 --json tagName --jq '.[].tagName' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1 || true)
+          [ -n "$last" ] || { echo "::error::no released v<x.y.z> tag in $GITHUB_REPOSITORY"; exit 1; }
+          tags() { GH_TOKEN=$REPO_TOKEN gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/$1" --paginate --jq '.[].ref' > "$RUNNER_TEMP/$2"; }
+          tags important- tags-important.txt
+          tags server-note- tags-notes.txt
+          tags server-deployed/ tags-deployed.txt
+          base=$(bash ci/release-base.sh src "$last")
+          code=0
+          bash ci/quiet.sh preview python3 -I ci/release_state.py preview --cli src --srv srv --base "$base" --head HEAD --srv-head HEAD \
+            --last "$last" --repo Sperance/ExileForge --out "$RUNNER_TEMP/preview.md" --posted-important "$RUNNER_TEMP/tags-important.txt" \
+            --posted-server "$RUNNER_TEMP/tags-notes.txt" --deployed "$RUNNER_TEMP/tags-deployed.txt" || code=$?
+          cat "$PUBLIC_NOTES" 2>/dev/null || true
+          [ "$code" -eq 0 ] && cat "$RUNNER_TEMP/preview.md" >> "$GITHUB_STEP_SUMMARY"
+          exit $code
+      - name: Encrypted log
+        if: failure()
+        uses: ./.github/actions/upload-log
+        with:
+          name: preview-log
