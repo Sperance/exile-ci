@@ -28,6 +28,9 @@ inputs:
   fetch-depth:
     description: History depth (0 - all, with tags)
     default: '1'
+  cache-writer:
+    description: "'true' - the job saves the Gradle cache (build cache included); the writers are core, minified (client) and checks (server), all other jobs only read it"
+    default: 'false'
 runs:
   using: composite
   steps:
@@ -50,11 +53,13 @@ runs:
       with:
         distribution: temurin
         java-version: ${{ inputs.java }}
-    # Кэш сборки Gradle (caches/build-cache-1) входит в кэш setup-gradle; пишут его только запуски на main (по умолчанию
-    # cache-read-only для остальных веток), ручной запуск с другой ветки лишь читает
+    # Кэш Gradle (зависимости и кэш сборки caches/build-cache-1) сохраняют только job'ы-писатели (cache-writer: core и minified клиента,
+    # checks сервера: вместе они проходят код клиента, R8-сборку и сервер), остальные его только читают: сохранение в каждом job'е стоило
+    # 15-24 с и не добавляло записей. Писать кэш может лишь запуск на main (в других ветках setup-gradle читает всегда)
     - uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4.4.3
       with:
-        # Неиспользуемые файлы кэша удаляются перед сохранением: кэш не копится до лимита GitHub
-        cache-cleanup: on-success
+        cache-read-only: ${{ inputs.cache-writer != 'true' }}
+        # Неиспользуемые файлы кэша удаляются перед сохранением: кэш не копится до лимита GitHub (читателю чистить нечего)
+        cache-cleanup: ${{ inputs.cache-writer == 'true' && 'on-success' || 'never' }}
         # Сводка job'а перечисляла бы задачи Gradle в публичном журнале
         add-job-summary: never

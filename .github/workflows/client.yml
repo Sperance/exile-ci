@@ -22,8 +22,8 @@
 #                                     workflow на текущем wip клиента (см. там).
 # Релиз (только режим release): versionName без релиза в exile-ci после зелёных проверок - тег v<версия> здесь с APK, update.json и заметками
 # RELEASE_NOTES.md (их читает игра, Updates.kt); карты R8 (mapping.txt прямого APK, mapping-play.txt и mapping-rustore.txt магазинов) - только в релиз того же тега приватного ExileForge
-# (её качает сервер, ReleaseMappings). Затем Issues, что называют коммиты с прошлого релиза трейлером `Issue: #N`, получают метку версии, теряют
-# метки `ready` и `in-progress` и закрываются, и запускается деплой сервера (server.yml, режим deploy).
+# (её качает сервер, ReleaseMappings). Сразу после публикации запускается деплой сервера (server.yml, режим deploy), затем Issues, что называют
+# коммиты с прошлого релиза трейлером `Issue: #N`, получают метку версии, теряют метки `ready` и `in-progress` и закрываются.
 # Каналы: прямой APK (релиз здесь), Google Play (AAB на дорожку переменной PLAY_TRACK: alpha - закрытый тест, beta - ранний доступ,
 # production - долей 20%; job `publish-play`) и RuStore (APK с автопубликацией, job
 # `publish-rustore`); задачи сборки и пути результатов - ci/build-tasks.env. Загрузка в магазин идёт после релиза, дождавшись сервера на
@@ -37,6 +37,8 @@
 # Ручной режим stores - заново собрать и выложить в Google Play и RuStore уже выпущенную версию (без проверок и релиза здесь).
 # Архивы для облачных сессий агента (job'ы `gradle-cache` и `gradle-toolchain`, в конце файла) пересобираются, только когда меняется
 # ключ (хэш файлов сборки) или кнопкой (режим cache).
+# Пуш после Check wip: commit status `check-wip` = success на том же sha (его кладёт check-wip.yml, пуш в рабочую ветку - fast-forward из wip)
+# пропускает все ворота пуша (core, app, R8-сборки и эмулятор, контракт с сервером); метки зелёного дерева при этом ставятся. Нет статуса - ворота идут.
 # Зелёные деревья: пуш (и ручной push) после успешных ворот кладёт в кэш Actions пустую метку `client-green-<дерево>-<ворота>` (дерево -
 # ci/green-tree.sh: код без RELEASE_NOTES.md и номера версии). Режим release ищет метки и пропускает ворота, чей код уже был зелёным;
 # метки нет - ворота идут как обычно. Метка живёт в кэше Actions (до 7 суток без обращений).
@@ -109,6 +111,7 @@ jobs:
       skip_core: ${{ steps.green.outputs.skip_core }}
       skip_app: ${{ steps.green.outputs.skip_app }}
       skip_server: ${{ steps.green.outputs.skip_server }}
+      trusted: ${{ steps.green.outputs.trusted }}
       release: ${{ steps.release.outputs.pending }}
       shots: ${{ steps.target.outputs.mode == 'shots' }}
       # R8-сборки и эмулятор: выпуск, снимки и каждый пуш, что задел core, app или сервер - зелёный пуш значит, что выпуск пройдёт
@@ -170,11 +173,26 @@ jobs:
         working-directory: src
         env:
           GH_TOKEN: ${{ github.token }}
+          STATUS_TOKEN: ${{ secrets.SOURCE_TOKEN }}
           MODE: ${{ steps.target.outputs.mode }}
+          SHA: ${{ steps.target.outputs.sha }}
         run: |
           tree=$(bash ../ci/green-tree.sh .)
           echo "tree=$tree" >> "$GITHUB_OUTPUT"
           echo "code tree $tree"
+          trusted=false
+          if [ "$MODE" = push ]; then
+            # Пуш в рабочую ветку - fast-forward из wip, sha тот же, что прошёл Check wip: commit status `check-wip` = success на этом sha
+            # значит, все ворота уже зелёные на этом коде, и они пропускаются. Статуса нет, он не success или не прочитался - ворота идут как обычно.
+            state=$(GH_TOKEN="$STATUS_TOKEN" gh api "repos/$CLIENT_REPO/commits/$SHA/statuses?per_page=100" --jq '[.[] | select(.context == "check-wip")] | first | .state' 2>/dev/null || true)
+            echo "check-wip status of ${SHA:0:12}: ${state:-none}"
+            if [ "$state" = success ]; then
+              trusted=true
+              for gate in core app ui server; do echo "skip_$gate=true" >> "$GITHUB_OUTPUT"; done
+              echo "all gates are skipped: this commit was checked by Check wip"
+            fi
+          fi
+          echo "trusted=$trusted" >> "$GITHUB_OUTPUT"
           if [ "$MODE" = release ]; then
             keys=$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/caches?key=client-green-$tree-&per_page=100" --jq '.actions_caches[].key' 2>/dev/null || true)
             for gate in core app ui server; do
@@ -222,6 +240,7 @@ jobs:
         with:
           sha: ${{ needs.changes.outputs.sha }}
           token: ${{ secrets.SOURCE_TOKEN }}
+          cache-writer: 'true'
       # Задачи job - в scripts/check.sh клиента: та же проверка перед пушем
       - working-directory: src
         run: bash ../ci/quiet.sh core bash scripts/check.sh core
@@ -298,16 +317,19 @@ jobs:
             artifact: ui-apks
             flags: -PuiTests
             stage: true
+            writer: 'true'
           - name: minified-strict
             artifact: ui-apks-minified
             flags: ''
             stage: false
+            writer: 'false'
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: ./.github/actions/source
         with:
           sha: ${{ needs.changes.outputs.sha }}
           token: ${{ secrets.SOURCE_TOKEN }}
+          cache-writer: ${{ matrix.writer }}
       - name: Build UI test APKs
         working-directory: src
         env:
@@ -704,22 +726,22 @@ jobs:
       TREE: ${{ needs.changes.outputs.tree }}
     steps:
       - run: mkdir -p green && echo "$TREE" > green/tree
-      - if: ${{ needs.core.result == 'success' }}
+      - if: ${{ needs.core.result == 'success' || needs.changes.outputs.trusted == 'true' }}
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: green
           key: client-green-${{ env.TREE }}-core
-      - if: ${{ needs.app-fast.result == 'success' && needs.app.result == 'success' }}
+      - if: ${{ (needs.app-fast.result == 'success' && needs.app.result == 'success') || needs.changes.outputs.trusted == 'true' }}
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: green
           key: client-green-${{ env.TREE }}-app
-      - if: ${{ needs.emulator.result == 'success' }}
+      - if: ${{ needs.emulator.result == 'success' || needs.changes.outputs.trusted == 'true' }}
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: green
           key: client-green-${{ env.TREE }}-ui
-      - if: ${{ needs.client-server.result == 'success' }}
+      - if: ${{ needs.client-server.result == 'success' || needs.changes.outputs.trusted == 'true' }}
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: green
@@ -847,6 +869,14 @@ jobs:
         run: |
           sig=(); [ -s update.json.sig ] && sig=(update.json.sig)
           gh release create "$TAG" "$APK" update.json "${sig[@]}" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "ExileForge ${TAG#v}" --notes-file RELEASE_NOTES.md --latest
+      # Сервер с новым API ждёт этот релиз: опубликовали - сразу запускаем его деплой (магазины ждут сервер, job'ы publish-* стартуют
+      # после этого job'а), он выкатит проверенный образ головы рабочей ветки сервера. Закрытие Issues и пост идут уже после запуска.
+      - if: steps.version.outputs.exists == 'false'
+        name: Trigger the server deploy
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORCE: ${{ inputs.force_breaking || false }}
+        run: gh workflow run server.yml -R "$GITHUB_REPOSITORY" --ref main -f mode=deploy -f force_breaking="$FORCE"
       # Пост с заметками в группу Telegram (telegram.yml). Не запустился - релиз не держит: повторить можно через Release → telegram.
       - if: steps.version.outputs.exists == 'false'
         name: Announce in Telegram
@@ -865,14 +895,6 @@ jobs:
           GH_TOKEN: ${{ secrets.EXILEFORGE_TOKEN }}
           TAG: ${{ steps.version.outputs.tag }}
         run: bash ../ci/close-issues.sh "$CLIENT_REPO" "$TAG" "$SHA"
-      # Сервер с новым API ждёт этот релиз: опубликовали - запускаем его деплой, он выкатит проверенный образ головы
-      # рабочей ветки сервера.
-      - if: steps.version.outputs.exists == 'false'
-        name: Trigger the server deploy
-        env:
-          GH_TOKEN: ${{ github.token }}
-          FORCE: ${{ inputs.force_breaking || false }}
-        run: gh workflow run server.yml -R "$GITHUB_REPOSITORY" --ref main -f mode=deploy -f force_breaking="$FORCE"
       # Прямой канал сервер узнаёт отчётом: релиз GitHub вышел, доля 1.0. Новый деплой сервера (шаг выше) ещё идёт, поэтому отчёт
       # может не дойти (маршрута нет у прежнего сервера) - это предупреждение, отчёт повторит задача store-status (после выкладки и раз в 6 часов) в maintenance.yml.
       - if: steps.version.outputs.exists == 'false'

@@ -4,7 +4,9 @@
 # шага, полный вывод падения - в зашифрованном артефакте (age, открытый ключ LOG_AGE_RECIPIENT).
 #
 # Запуск:
-#   repository_dispatch server-push   - пуш в рабочую ветку сервера (job `forward` в deploy.yml сервера): проверки, браузерная
+#   repository_dispatch server-push   - пуш в рабочую ветку сервера (job `forward` в deploy.yml сервера); если на этом sha уже стоит commit status
+#                                       `check-wip` = success (пуш - fast-forward из wip, прошедшего Check wip), проверки, панель и совместимость
+#                                       пропускаются, остаются образ и метка. Иначе: проверки, браузерная
 #                                       проверка графиков панели, совместимость со старейшим клиентом окна ревизий (job `compat`)
 #                                       и сборка образа параллельно, затем метка «проверен» на образ (job `mark`). БЕЗ деплоя:
 #                                       выпуски накопительные, сервер выкатывается вместе с выпуском клиента;
@@ -75,6 +77,7 @@ jobs:
     outputs:
       sha: ${{ steps.target.outputs.sha }}
       mode: ${{ steps.target.outputs.mode }}
+      trusted: ${{ steps.wip.outputs.trusted }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -89,10 +92,27 @@ jobs:
           INPUT_SHA: ${{ inputs.sha }}
           TOKEN: ${{ secrets.SOURCE_TOKEN }}
         run: . ci/branches.env && bash ci/resolve.sh "$SERVER_REPO" "$SERVER_BRANCH" server push deploy rebuild check-wip
+      # Пуш в рабочую ветку - fast-forward из wip, sha тот же, что прошёл Check wip: commit status `check-wip` = success на этом sha значит, что
+      # проверки, панель и совместимость уже зелёные на этом коде, и они пропускаются; остаются образ и метка «проверен». Режим rebuild
+      # (Release → server-rebuild) проверки идёт заново всегда. Статуса нет, он не success или не прочитался - всё как обычно.
+      - name: Check wip status
+        id: wip
+        env:
+          GH_TOKEN: ${{ secrets.SOURCE_TOKEN }}
+          MODE: ${{ steps.target.outputs.mode }}
+          SHA: ${{ steps.target.outputs.sha }}
+        run: |
+          trusted=false
+          if [ "$MODE" = push ]; then
+            state=$(gh api "repos/$SERVER_REPO/commits/$SHA/statuses?per_page=100" --jq '[.[] | select(.context == "check-wip")] | first | .state' 2>/dev/null || true)
+            echo "check-wip status of ${SHA:0:12}: ${state:-none}"
+            if [ "$state" = success ]; then trusted=true; echo "checks, panel and compat are skipped: this commit was checked by Check wip"; fi
+          fi
+          echo "trusted=$trusted" >> "$GITHUB_OUTPUT"
 
   checks:
     needs: resolve
-    if: ${{ needs.resolve.outputs.mode == 'push' || needs.resolve.outputs.mode == 'rebuild' || needs.resolve.outputs.mode == 'check-wip' }}
+    if: ${{ needs.resolve.outputs.trusted != 'true' && (needs.resolve.outputs.mode == 'push' || needs.resolve.outputs.mode == 'rebuild' || needs.resolve.outputs.mode == 'check-wip') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     # Новый пуш отменяет проверки устаревшего: выкатывать всё равно будут его
@@ -112,6 +132,7 @@ jobs:
           persist-credentials: 'false'
           fetch-depth: 0
           java: '21'
+          cache-writer: 'true'
       # Тесты чистой логики редактора формул панели идут на Node (scripts/check.sh js)
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
@@ -135,7 +156,7 @@ jobs:
   # Отчёт проверки не выкладывается: в нём страницы панели.
   panel:
     needs: resolve
-    if: ${{ needs.resolve.outputs.mode == 'push' || needs.resolve.outputs.mode == 'rebuild' || needs.resolve.outputs.mode == 'check-wip' }}
+    if: ${{ needs.resolve.outputs.trusted != 'true' && (needs.resolve.outputs.mode == 'push' || needs.resolve.outputs.mode == 'rebuild' || needs.resolve.outputs.mode == 'check-wip') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     concurrency:
@@ -193,7 +214,7 @@ jobs:
   # Нет релиза в окне - прогон зелёный без дела (старее нового клиента поддерживать нечего).
   compat:
     needs: resolve
-    if: ${{ needs.resolve.outputs.mode == 'push' || needs.resolve.outputs.mode == 'rebuild' || needs.resolve.outputs.mode == 'check-wip' }}
+    if: ${{ needs.resolve.outputs.trusted != 'true' && (needs.resolve.outputs.mode == 'push' || needs.resolve.outputs.mode == 'rebuild' || needs.resolve.outputs.mode == 'check-wip') }}
     runs-on: ubuntu-latest
     timeout-minutes: 40
     concurrency:
@@ -335,7 +356,7 @@ jobs:
   # заканчивается (деплой - с выпуском клиента); деплой по голове ветки берёт только помеченный образ.
   mark:
     needs: [ resolve, checks, panel, compat, image ]
-    if: ${{ !cancelled() && (needs.resolve.outputs.mode == 'push' || needs.resolve.outputs.mode == 'rebuild') && needs.checks.result == 'success' && needs.panel.result == 'success' && needs.compat.result == 'success' && needs.image.result == 'success' }}
+    if: ${{ !cancelled() && (needs.resolve.outputs.mode == 'push' || needs.resolve.outputs.mode == 'rebuild') && (needs.resolve.outputs.trusted == 'true' || (needs.checks.result == 'success' && needs.panel.result == 'success' && needs.compat.result == 'success')) && needs.image.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     concurrency:

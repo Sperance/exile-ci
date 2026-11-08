@@ -1,7 +1,7 @@
 # Обслуживание CI: четыре независимые задачи, выбор - по расписанию, пушу или входу task при ручном запуске.
 #   store-status - раз в 6 часов ('17 */6 * * *': 03:17, 09:17, 15:17, 21:17 МСК), сразу после выкладки выпуска (client.yml) и вручную;
 #   cleanup      - раз в сутки ('43 2 * * *') и вручную;
-#   scan         - раз в неделю ('31 3 * * 1', понедельник) и вручную;
+#   scan         - раз в неделю ('31 3 * * 1', понедельник) и вручную; вместе с ним идёт полный обход панели (job `panel-full`);
 #   doctor       - вручную и на пуш в main, затронувший этот файл (только она).
 # Единственный источник запуска store-status по часам - это расписание (раз в 6 часов): других диспетчеров нет (часовой таймер VPS `exileforge-tick` снят).
 # Расписание задаёт задачу по github.event.schedule; inputs при нём и при пуше пусты.
@@ -35,6 +35,8 @@
 # образ (ci/checked-image.sh; нет образа - только зависимости, предупреждением). Находки HIGH - предупреждение со счётчиком, находка
 # CRITICAL - красный прогон. Отчёт (имена и версии зависимостей приватного кода) - в зашифрованном артефакте `vuln-scan`, в журнал - только счётчики.
 # Секреты: SOURCE_TOKEN (чтение сервера); образ читает GITHUB_TOKEN (пакету выдан доступ этого репозитория).
+# Там же, по тому же расписанию и кнопке (task scan), идёт job `panel-full`: браузерная проверка панели по ВСЕМ страницам бестиария
+# (scripts/check.sh panel full сервера). На пушах и в Check wip панель проверяет выборку бестиария и все остальные разделы.
 #
 # Задача doctor:
 # Проверка секретов, токенов и доступов CI без вывода значений: только «есть / работает / нет». Запуск - вручную
@@ -49,7 +51,7 @@ on:
   workflow_dispatch:
     inputs:
       task:
-        description: 'store-status - report the store channels to the server; cleanup - free the paid GitHub storage; scan - Trivy over the server head and its checked image (fails on CRITICAL); doctor - check secrets, tokens and access'
+        description: 'store-status - report the store channels to the server; cleanup - free the paid GitHub storage; scan - Trivy over the server head and its checked image (fails on CRITICAL) and the full browser crawl of the panel, every bestiary page (job panel-full); doctor - check secrets, tokens and access'
         type: choice
         options: [ store-status, cleanup, scan, doctor ]
         default: store-status
@@ -235,6 +237,74 @@ jobs:
             logs
           retention-days: 7
           if-no-files-found: ignore
+
+  # Полный обход панели раз в неделю вместе с scan: все 270 страниц бестиария (на пушах и в Check wip идёт выборка - по странице на вид босса).
+  # Та же проверка, что job `panel` server.yml, на голове рабочей ветки сервера; отчёт не выкладывается: в нём страницы панели.
+  panel-full:
+    if: ${{ (github.event_name == 'schedule' && github.event.schedule == '31 3 * * 1') || (github.event_name == 'workflow_dispatch' && inputs.task == 'scan') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    concurrency:
+      group: panel-full
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Server head
+        id: head
+        env:
+          TOKEN: ${{ secrets.SOURCE_TOKEN }}
+        run: |
+          . ci/branches.env
+          . ci/retry.sh
+          fetch_head() { sha=$(git ls-remote "https://x-access-token:$TOKEN@github.com/Sperance/ktor-bestgame.git" "refs/heads/$SERVER_BRANCH" | cut -f1) && [[ -n $sha ]]; }
+          sha=""; retry fetch_head || true
+          [[ $sha =~ ^[0-9a-f]{40}$ ]] || { echo "::error::no head of the server working branch"; exit 1; }
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      - uses: ./.github/actions/source
+        with:
+          repo: Sperance/ktor-bestgame
+          sha: ${{ steps.head.outputs.sha }}
+          token: ${{ secrets.SOURCE_TOKEN }}
+          path: server
+          submodules: 'false'
+          persist-credentials: 'false'
+          fetch-depth: 0
+          java: '21'
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        id: playwright
+        with:
+          path: |
+            server/build/panel-check/node_modules
+            ~/.cache/ms-playwright
+          key: playwright-1.55.0-ubuntu-24.04
+      - name: Playwright and Chromium
+        working-directory: server
+        env:
+          CACHE_HIT: ${{ steps.playwright.outputs.cache-hit }}
+        run: |
+          dir=build/panel-check
+          if [ "$CACHE_HIT" != true ]; then
+            mkdir -p "$dir"
+            npm install --no-save --no-audit --no-fund --prefix "$dir" playwright@1.55.0
+            node "$dir/node_modules/playwright/cli.js" install chromium
+          fi
+          node "$dir/node_modules/playwright/cli.js" install-deps chromium
+          echo "PANEL_CHECK_PLAYWRIGHT=$PWD/$dir/node_modules/playwright" >> "$GITHUB_ENV"
+      - name: Browser check of the whole panel
+        working-directory: server
+        run: bash ../ci/quiet.sh panel-full bash scripts/check.sh panel full
+      - name: Encrypted log
+        if: failure()
+        uses: ./.github/actions/upload-log
+        with:
+          name: panel-full-log
 
   doctor:
     if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.task == 'doctor') }}
