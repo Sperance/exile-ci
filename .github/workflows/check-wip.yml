@@ -5,7 +5,12 @@
 #   2. server.yml и client.yml как вызываемые workflow в режиме check-wip: те же ворота, что у пуша кода, но все, а не по разнице
 #      (клиент: core, app, R8-сборки и эмулятор, контракт с сервером; сервер: проверки, панель в браузере, совместимость со старейшим
 #      клиентом). Образ в ghcr не собирается и не метится, выпуска и деплоя нет;
-#   3. record: оба зелёные - на sha клиента и sha сервера кладётся commit status «check-wip» = success (ci/check-wip-status.sh); упал любой
+#   3. guards: накопление не потеряно (ci/release_state.py check): (а) строки невыпущенной «Следующей версии» RELEASE_NOTES.md и
+#      неопубликованного IMPORTANT.md рабочей ветки есть на wip (перенос между подразделами - не удаление), иначе нужен трейлер
+#      `Notes-Edit: <причина>` в коммите wip; (б) поднятая с прошлого выката сервера версия игровой коллекции (ci/game-collections.txt)
+#      сопровождена новым текстом IMPORTANT.md или трейлером `Wipe-Silent: <причина>`; (в) к вышедшему тексту IMPORTANT.md (тег
+#      important-* есть) не дописано - файл начинают заново; подразделы заметок в порядке, «Важное» влезает в пост;
+#   4. record: оба зелёные - на sha клиента и sha сервера кладётся commit status «check-wip» = success (ci/check-wip-status.sh); упал любой
 #      - failure. Отметку читает хук pre-push репозиториев: пуш в рабочую ветку без зелёного check-wip на этом sha отклоняется.
 # Журналы шифруются так же, как в client.yml и server.yml (ci/quiet.sh, age). Ворота client.yml, прошедшие здесь, ставят метки
 # зелёного дерева: релиз потом их не повторяет.
@@ -82,7 +87,7 @@ jobs:
     secrets: inherit
     # Права вызываемого workflow не выше вызывающего: server.yml просит packages и actions: write у job'ов образа и деплоя (в check-wip они пропущены)
     permissions:
-      contents: read
+      contents: write
       packages: write
       actions: write
 
@@ -97,8 +102,49 @@ jobs:
       contents: write
       actions: write
 
+  guards:
+    needs: resolve
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Both repositories with the working branches
+        env:
+          TOKEN: ${{ secrets.SOURCE_TOKEN }}
+        run: |
+          . ci/branches.env
+          bash ci/quiet.sh clone-client git clone -q --filter=blob:none --no-checkout "https://x-access-token:$TOKEN@github.com/$CLIENT_REPO.git" cli
+          bash ci/quiet.sh clone-server git clone -q --filter=blob:none --no-checkout "https://x-access-token:$TOKEN@github.com/$SERVER_REPO.git" srv
+      - name: Accumulated notes, important text and wipes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CLIENT: ${{ needs.resolve.outputs.client }}
+          SERVER: ${{ needs.resolve.outputs.server }}
+          PUBLIC_NOTES: ${{ runner.temp }}/guards.txt
+          LOG_AGE_RECIPIENT: ${{ vars.LOG_AGE_RECIPIENT }}
+        run: |
+          . ci/branches.env
+          tags() { gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/$1" --paginate --jq '.[].ref' > "$RUNNER_TEMP/$2"; }
+          tags important- tags-important.txt
+          tags server-deployed/ tags-deployed.txt
+          code=0
+          bash ci/quiet.sh release-guards python3 -I ci/release_state.py check --cli cli --srv srv \
+            --cli-wip "$CLIENT" --cli-work "origin/$CLIENT_BRANCH" --srv-wip "$SERVER" --srv-work "origin/$SERVER_BRANCH" \
+            --posted-important "$RUNNER_TEMP/tags-important.txt" --deployed "$RUNNER_TEMP/tags-deployed.txt" || code=$?
+          cat "$PUBLIC_NOTES" 2>/dev/null || true
+          exit $code
+      - name: Encrypted log
+        if: failure()
+        uses: ./.github/actions/upload-log
+        with:
+          name: guards-log
+
   record:
-    needs: [ resolve, server, client ]
+    needs: [ resolve, server, client, guards ]
     if: ${{ !cancelled() && needs.resolve.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -113,7 +159,7 @@ jobs:
           TOKEN: ${{ secrets.CHECK_WIP_TOKEN || secrets.EXILEFORGE_TOKEN }}
           CLIENT: ${{ needs.resolve.outputs.client }}
           SERVER: ${{ needs.resolve.outputs.server }}
-          GREEN: ${{ needs.server.result == 'success' && needs.client.result == 'success' }}
+          GREEN: ${{ needs.server.result == 'success' && needs.client.result == 'success' && needs.guards.result == 'success' }}
           URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           . ci/branches.env

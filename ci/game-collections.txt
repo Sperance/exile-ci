@@ -1,0 +1,15 @@
+# Игровые коллекции сервера: поднятая версия любой из них в CollectionSchemas вайпит данные игроков (герои, вещи, гильдии, почта) и требует текста
+# в IMPORTANT.md (или трейлера Wipe-Silent). Служебные коллекции (отчёты, модерация, баланс, контент, окна клиентов) в список не входят.
+# Проверка: ci/release_state.py check, правило - telegram.md сервера. Одно имя на строку.
+User
+Hero
+HeroRun
+HeroItem
+HeroUnique
+HeroStats
+Guild
+GuildEvent
+GuildWeek
+Mail
+MailSent
+AuctionLot
