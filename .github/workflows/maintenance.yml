@@ -1,7 +1,9 @@
-# Обслуживание CI: три независимые задачи, выбор - по расписанию, пушу или входу task при ручном запуске.
+# Обслуживание CI: четыре независимые задачи, выбор - по расписанию, пушу или входу task при ручном запуске.
 #   store-status - раз в 6 часов ('17 */6 * * *': 03:17, 09:17, 15:17, 21:17 МСК), сразу после выкладки выпуска (client.yml) и вручную;
 #   cleanup      - раз в сутки ('43 2 * * *') и вручную;
+#   scan         - раз в неделю ('31 3 * * 1', понедельник) и вручную;
 #   doctor       - вручную и на пуш в main, затронувший этот файл (только она).
+# Единственный источник запуска store-status по часам - это расписание (раз в 6 часов): отдельного внешнего диспетчера нет.
 # Расписание задаёт задачу по github.event.schedule; inputs при нём и при пуше пусты.
 #
 # Задача store-status:
@@ -28,6 +30,12 @@
 # предупреждением). Переменная LOG_AGE_RECIPIENT. Образы удаляет GITHUB_TOKEN: пакету выдана роль Admin этого репозитория
 # (Package settings - Manage Actions access).
 #
+# Задача scan:
+# Уязвимости сервера раз в неделю (на пушах сервера Trivy не идёт): зависимости головы рабочей ветки сервера (Gradle) и её проверенный
+# образ (ci/checked-image.sh; нет образа - только зависимости, предупреждением). Находки HIGH - предупреждение со счётчиком, находка
+# CRITICAL - красный прогон. Отчёт (имена и версии зависимостей приватного кода) - в зашифрованном артефакте `vuln-scan`, в журнал - только счётчики.
+# Секреты: SOURCE_TOKEN (чтение сервера); образ читает GITHUB_TOKEN (пакету выдан доступ этого репозитория).
+#
 # Задача doctor:
 # Проверка секретов, токенов и доступов CI без вывода значений: только «есть / работает / нет». Запуск - вручную
 # (workflow_dispatch) или правкой этого файла (на пуш в main запускается только эта задача). Ничего не меняет, кроме проверочных метки и черновика релиза в ExileForge (сразу удаляются).
@@ -37,12 +45,13 @@ on:
   schedule:
     - cron: '17 */6 * * *'
     - cron: '43 2 * * *'
+    - cron: '31 3 * * 1'
   workflow_dispatch:
     inputs:
       task:
-        description: 'store-status - report the store channels to the server; cleanup - free the paid GitHub storage; doctor - check secrets, tokens and access'
+        description: 'store-status - report the store channels to the server; cleanup - free the paid GitHub storage; scan - Trivy over the server head and its checked image (fails on CRITICAL); doctor - check secrets, tokens and access'
         type: choice
-        options: [ store-status, cleanup, doctor ]
+        options: [ store-status, cleanup, scan, doctor ]
         default: store-status
   push:
     branches: [ main ]
@@ -155,6 +164,77 @@ jobs:
       - name: Result
         if: steps.artifacts.outcome == 'failure' || steps.images.outcome == 'failure'
         run: exit 1
+
+  scan:
+    if: ${{ (github.event_name == 'schedule' && github.event.schedule == '31 3 * * 1') || (github.event_name == 'workflow_dispatch' && inputs.task == 'scan') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    timeout-minutes: 20
+    concurrency:
+      group: scan
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      # История нужна ci/checked-image.sh: проверенный образ головы или ближайшего предка с тем же кодом
+      - name: Server head and its checked image
+        id: head
+        env:
+          TOKEN: ${{ secrets.SOURCE_TOKEN }}
+          IMAGE: ghcr.io/sperance/ktor-bestgame
+        run: |
+          . ci/branches.env
+          bash ci/quiet.sh clone-server git clone -q --branch "$SERVER_BRANCH" "https://x-access-token:$TOKEN@github.com/Sperance/ktor-bestgame.git" server
+          sha=$(git -C server rev-parse HEAD)
+          if found=$(bash ci/checked-image.sh "$IMAGE" server "$sha"); then
+            read -r _ digest <<<"$found"
+            echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::the server head has no checked image: only the dependencies are scanned"
+          fi
+      - uses: aquasecurity/setup-trivy@81e514348e19b6112ce2a7e3ecbafe19c1e1f567 # v0.3.1
+        with:
+          version: v0.76.2
+      - name: Scan dependencies and the image
+        env:
+          DIGEST: ${{ steps.head.outputs.digest }}
+          IMAGE: ghcr.io/sperance/ktor-bestgame
+          TRIVY_USERNAME: ${{ github.actor }}
+          TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+          TRIVY_DISABLE_VEX_NOTICE: 'true'
+        run: |
+          mkdir -p scan
+          bash ci/quiet.sh scan-fs trivy fs --scanners vuln --severity HIGH,CRITICAL --exit-code 0 --format json --output scan/fs.json server
+          [ -z "$DIGEST" ] || bash ci/quiet.sh scan-image trivy image --scanners vuln --severity HIGH,CRITICAL --exit-code 0 --format json --output scan/image.json "$IMAGE@$DIGEST"
+          fail=0
+          for report in fs image; do
+            [ -f "scan/$report.json" ] || continue
+            read -r high critical < <(python3 -c 'import json, sys; f = [v.get("Severity") for r in json.load(open(sys.argv[1])).get("Results") or [] for v in r.get("Vulnerabilities") or []]; print(f.count("HIGH"), f.count("CRITICAL"))' "scan/$report.json")
+            echo "scan $report: $critical CRITICAL, $high HIGH"
+            [ "$high" -eq 0 ] || echo "::warning::scan $report found $high HIGH vulnerabilities: see the sealed artifact vuln-scan"
+            if [ "$critical" -gt 0 ]; then echo "::error::scan $report found $critical CRITICAL vulnerabilities: see the sealed artifact vuln-scan"; fail=1; fi
+          done
+          exit $fail
+      - name: Seal the scan report
+        if: always()
+        run: bash ci/seal.sh sealed/vuln-scan.enc scan
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: vuln-scan
+          path: |
+            sealed/vuln-scan.enc
+            logs
+          retention-days: 7
+          if-no-files-found: ignore
 
   doctor:
     if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.task == 'doctor') }}

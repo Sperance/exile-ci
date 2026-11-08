@@ -22,7 +22,7 @@
 # Деплой: по SSH идёт ci/vps-ssh.sh - ключ хоста закреплён в vars.VPS_HOST_KEY, StrictHostKeyChecking=yes; на VPS уходит команда
 # `deploy <sha> <sha256:дайджест>`: update.sh тянет образ по неизменяемому дайджесту, а не по тегу, и сверяет метку sha образа.
 # Журналы шифруются age (открытый ключ vars.LOG_AGE_RECIPIENT, ci/crypt.sh).
-# Job `scan` (Trivy: зависимости сервера и образ) пока не блокирует: только предупреждение, отчёт - в зашифрованном артефакте.
+# Trivy (зависимости и образ сервера) здесь не идёт: раз в неделю его гоняет задача `scan` maintenance.yml.
 # Секреты: SOURCE_TOKEN, DEPLOY_HOST, DEPLOY_SSH_KEY, GH_ISSUES_TOKEN. Переменные: VPS_HOST_KEY, LOG_AGE_RECIPIENT.
 # Пакету в GHCR выдан доступ этого репозитория (Package settings - Manage Actions access - Write).
 name: Server
@@ -144,6 +144,28 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
+      # Playwright и Chromium - из кэша по версии; системные библиотеки ставятся на каждом прогоне (на чистом раннере их нет).
+      # check.sh panel при заданном PANEL_CHECK_PLAYWRIGHT сам ничего не скачивает.
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        id: playwright
+        with:
+          path: |
+            server/build/panel-check/node_modules
+            ~/.cache/ms-playwright
+          key: playwright-1.55.0-ubuntu-24.04
+      - name: Playwright and Chromium
+        working-directory: server
+        env:
+          CACHE_HIT: ${{ steps.playwright.outputs.cache-hit }}
+        run: |
+          dir=build/panel-check
+          if [ "$CACHE_HIT" != true ]; then
+            mkdir -p "$dir"
+            npm install --no-save --no-audit --no-fund --prefix "$dir" playwright@1.55.0
+            node "$dir/node_modules/playwright/cli.js" install chromium
+          fi
+          node "$dir/node_modules/playwright/cli.js" install-deps chromium
+          echo "PANEL_CHECK_PLAYWRIGHT=$PWD/$dir/node_modules/playwright" >> "$GITHUB_ENV"
       - name: Browser check of the panel charts
         working-directory: server
         run: bash ../ci/quiet.sh panel bash scripts/check.sh panel
@@ -297,58 +319,6 @@ jobs:
         with:
           name: image-log
 
-  # Уязвимости: зависимости сервера (Gradle lockfile, если есть) и собранный образ. Пока не блокирует деплой: только предупреждение со
-  # счётчиком; сам отчёт (имена и версии зависимостей приватного кода) - в зашифрованном артефакте.
-  scan:
-    needs: [ resolve, image ]
-    if: ${{ !cancelled() && needs.image.result == 'success' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    permissions:
-      contents: read
-      packages: read
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      - uses: ./.github/actions/source
-        with:
-          repo: ${{ env.SERVER_REPO }}
-          sha: ${{ needs.resolve.outputs.sha }}
-          token: ${{ secrets.SOURCE_TOKEN }}
-          path: server
-          submodules: 'false'
-          persist-credentials: 'false'
-      - uses: aquasecurity/setup-trivy@81e514348e19b6112ce2a7e3ecbafe19c1e1f567 # v0.3.1
-        with:
-          version: v0.76.2
-      - name: Scan dependencies and the image
-        continue-on-error: true
-        env:
-          DIGEST: ${{ needs.image.outputs.digest }}
-          TRIVY_USERNAME: ${{ github.actor }}
-          TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
-          TRIVY_DISABLE_VEX_NOTICE: 'true'
-        run: |
-          mkdir -p scan
-          bash ci/quiet.sh scan-fs trivy fs --scanners vuln --severity HIGH,CRITICAL --exit-code 0 --format json --output scan/fs.json server || true
-          bash ci/quiet.sh scan-image trivy image --scanners vuln --severity HIGH,CRITICAL --exit-code 0 --format json --output scan/image.json "$IMAGE@$DIGEST" || true
-          for report in fs image; do
-            count=$(python3 -c 'import json, sys; print(sum(len(r.get("Vulnerabilities") or []) for r in json.load(open(sys.argv[1])).get("Results") or []))' "scan/$report.json" 2>/dev/null || echo 0)
-            echo "scan $report: $count HIGH/CRITICAL findings"
-            [[ $count -eq 0 ]] || echo "::warning::scan $report found $count HIGH/CRITICAL vulnerabilities: see the sealed artifact vuln-scan (this check does not block yet)"
-          done
-      - name: Seal the scan report
-        if: always()
-        run: bash ci/seal.sh sealed/vuln-scan.enc scan
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        if: always()
-        with:
-          name: vuln-scan
-          path: |
-            sealed/vuln-scan.enc
-            logs
-          retention-days: 7
-          if-no-files-found: ignore
-
   # Метка «проверен» на образ: после зелёных проверок, проверки панели, совместимости со старейшим клиентом окна и образа. Пуш на этом
   # заканчивается (деплой - с выпуском клиента); деплой по голове ветки берёт только помеченный образ.
   mark:
@@ -423,31 +393,6 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
-      # Токен GitHub Issues (0.14.1, GH-ISSUES) - на каждом прогоне, до деплоя, значение не печатается: пусто - предупреждение;
-      # иначе чтение репозитория, Issues и меток - 200, запись - созданием метки from-game, если её нет. Деплой не валит.
-      - name: GitHub Issues token
-        continue-on-error: true
-        env:
-          T: ${{ secrets.GH_ISSUES_TOKEN }}
-          REPO: Sperance/ExileForge
-        run: |
-          if [ -z "$T" ]; then echo "::warning::GH_ISSUES_TOKEN не задан: отчёты не уходят в GitHub, статусы не синхронизируются"; exit 0; fi
-          api() { curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $T" -H "Accept: application/vnd.github+json" "$@" 2>/dev/null || true; }
-          repo=$(api "https://api.github.com/repos/$REPO")
-          issues=$(api "https://api.github.com/repos/$REPO/issues?per_page=1")
-          labels=$(api "https://api.github.com/repos/$REPO/labels?per_page=1")
-          if [ "$repo" != 200 ] || [ "$issues" != 200 ] || [ "$labels" != 200 ]; then
-            echo "::warning::GH_ISSUES_TOKEN: нет чтения $REPO (репозиторий $repo, issues $issues, метки $labels) - токен истёк или без доступа к репозиторию"
-            exit 0
-          fi
-          echo "GH_ISSUES_TOKEN: ok (issues read)"
-          for label in from-game; do
-            code=$(api "https://api.github.com/repos/$REPO/labels/$label")
-            if [ "$code" = 200 ]; then continue; fi
-            made=$(api -X POST "https://api.github.com/repos/$REPO/labels" -d "{\"name\":\"$label\",\"color\":\"8FD3FF\"}")
-            if [ "$made" = 201 ]; then echo "GH_ISSUES_TOKEN: метка $label создана (issues write ok)"; else echo "::warning::GH_ISSUES_TOKEN: метку $label создать не удалось ($made) - нет права Issues: write"; fi
-          done
 
       # Запуск от релиза клиента: голова ветки выкатывается, только если её образ уже проверен. Пуш, где менялись только .md вне
       # образа, CI не проверяет: тогда выкатывается образ ближайшего проверенного предка - код тот же. Нет и его - пуш ещё в работе
