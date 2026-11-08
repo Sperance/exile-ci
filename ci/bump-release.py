@@ -3,13 +3,18 @@
 
 Следующая версия считается от последнего выпущенного тега v<x.y.z> в exile-ci: patch - x.y.z+1, minor - x.y+1.0.
 versionCode - текущий в app/build.gradle.kts плюс один. Раздел `## Следующая версия` переименовывается в `## <versionName>`;
-нет раздела или он пуст - ошибка. Содержимое заметок и кода в журнал не выводится: только номер версии и кода.
+нет раздела, он пуст или подразделы нарушают порядок «Новое, Изменения, Исправления, Техническое» (ci/notes.py) - ошибка; пустые
+подразделы при переименовании убираются. Содержимое заметок и кода в журнал не выводится: только номер версии и кода.
 Использование: ci/bump-release.py <каталог исходников клиента> <patch|minor> <последний тег, например v0.24.2> [файл для version= и code=]
 """
+import os
 import re
 import sys
 
-NEXT_HEADING = "## Следующая версия"
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import notes
+
+NEXT_HEADING = notes.NEXT_HEADING
 
 
 def next_version(tag: str, bump: str) -> str:
@@ -45,7 +50,11 @@ def rename_notes(path: str, version: str) -> None:
     end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith("## ")), len(lines))
     if not any(line.strip() for line in lines[start + 1:end]):
         sys.exit(f"::error::the '{NEXT_HEADING}' section of RELEASE_NOTES.md is empty")
+    broken = notes.problems("\n".join(lines[start + 1:end]))
+    if broken:
+        sys.exit(f"::error::the '{NEXT_HEADING}' section of RELEASE_NOTES.md: {'; '.join(broken)}")
     lines[start] = f"## {version}"
+    lines[start + 1:end] = notes.rewrite_without_empty("\n".join(lines[start + 1:end])).split("\n")
     open(path, "w", encoding="utf-8").write("\n".join(lines))
 
 
@@ -59,4 +68,5 @@ def main() -> None:
         out.write(f"version={version}\ncode={code}\n")
 
 
-main()
+if __name__ == "__main__":
+    main()

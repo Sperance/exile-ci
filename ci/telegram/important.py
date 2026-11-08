@@ -1,33 +1,39 @@
 """Пост в тему «Важное» группы Telegram из IMPORTANT.md сервера: вайп, обязательное обновление, потери игроков.
 
-Файл: первая непустая строка - заголовок (ведущие # срезаются), дальше - текст абзацами, строки «- » - пункты. Текст и решение
-публиковать согласует владелец (CLAUDE.md, versions-release.md сервера).
+Файл накопительный: заголовка в нём нет, работы добавляют темы `### <тема>` (дальше абзацы, строки «- » - пункты). Заголовок поста ставит
+CI: «Важное в обновлении <версия> · <дата>» при выпуске клиента, «Важное · <дата>» при Release → server без клиента. Прежний вид -
+первая строка `# заголовок` - читается как первая тема. Текст и решение публиковать согласует владелец (CLAUDE.md, telegram.md сервера).
 Окружение: TELEGRAM_BOT_TOKEN (секрет), TELEGRAM_CHAT (@группа), TELEGRAM_IMPORTANT_TOPIC (номер темы).
-Использование: python3 important.py <файл>; код 1 - пост не вышел.
+Использование: python3 important.py <файл> [версия выпуска клиента]; код 1 - пост не вышел.
 """
 import html
 import os
 import sys
 
-from post import LIMIT, Bot, TelegramError, text_length
+from post import LIMIT, Bot, TelegramError, russian_date, text_length
 
 
-def compose(source):
-    lines = [ln.rstrip() for ln in source.strip().splitlines()]
-    title, body = lines[0].lstrip("#").strip(), lines[1:]
+def heading(version=""):
+    return f"Важное в обновлении {version} · {russian_date()}" if version else f"Важное · {russian_date()}"
+
+
+def compose(source, version=""):
     paragraphs = []
-    for line in body:
-        if line.startswith("- "):
+    for raw in source.strip().splitlines():
+        line = raw.strip()
+        if line.startswith("#"):
+            paragraphs.append(f"<b>{html.escape(line.lstrip('#').strip())}</b>")
+        elif line.startswith("- "):
             paragraphs.append(f"▸ {html.escape(line[2:].strip())}")
-        elif line.strip():
-            paragraphs.append(html.escape(line.strip()))
-    text = "\n\n".join([f"❗ <b>{html.escape(title)}</b>"] + paragraphs)
+        elif line:
+            paragraphs.append(html.escape(line))
+    text = "\n\n".join([f"❗ <b>{html.escape(heading(version))}</b>"] + paragraphs)
     if text_length(text) > LIMIT:
         raise TelegramError(f"the text is longer than {LIMIT} characters")
     return text
 
 
-def main(path):
+def main(path, version=""):
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
     if not token:
         print("::warning::TELEGRAM_BOT_TOKEN is not set: no Telegram post")
@@ -36,7 +42,7 @@ def main(path):
         source = f.read()
     try:
         Bot(token).call("sendMessage", chat_id=os.environ["TELEGRAM_CHAT"],
-                        message_thread_id=int(os.environ["TELEGRAM_IMPORTANT_TOPIC"]), text=compose(source), parse_mode="HTML",
+                        message_thread_id=int(os.environ["TELEGRAM_IMPORTANT_TOPIC"]), text=compose(source, version), parse_mode="HTML",
                         link_preview_options={"is_disabled": True})
     except TelegramError as e:
         print(f"::warning::the important post failed: {e}. Repeat: Release → important")
@@ -46,4 +52,4 @@ def main(path):
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1]))
+    sys.exit(main(*sys.argv[1:3]))

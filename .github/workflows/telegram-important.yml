@@ -2,8 +2,11 @@
 # игроков (вайп, обязательное обновление, потери) и что одобрил владелец; формат файла - ci/telegram/important.py.
 # Запуск: job `deploy` в server.yml после выкладки сервера (в том числе после каждого релиза клиента); вручную - Release → important
 # (голова рабочей ветки сервера) или здесь с коммитом.
+# IMPORTANT.md накопительный: заголовка в файле нет, работы добавляют темы `### …`. Заголовок поста ставит этот workflow:
+# «Важное в обновлении <версия> · <дата>» (вход version - выпуск клиента) или «Важное · <дата>» (Release → server без клиента).
 # Один текст - один пост: после поста в этом репозитории ставится тег important-<12 знаков sha256 файла>; есть тег - текст уже
-# вышел. Нет файла или он пуст - поста нет. Сбой Telegram - предупреждение, тег не ставится, повтор - Release → important.
+# вышел, и следующая работа начинает файл заново (проверка check-wip красная при дописывании к вышедшему). Нет файла или он пуст -
+# поста нет. Сбой Telegram - предупреждение, тег не ставится, повтор - Release → important.
 # Секреты: TELEGRAM_BOT_TOKEN, SOURCE_TOKEN (чтение IMPORTANT.md приватного сервера).
 name: Telegram important
 
@@ -12,6 +15,10 @@ on:
     inputs:
       sha:
         description: 'server commit; empty - head of the working branch'
+        required: false
+        default: ''
+      version:
+        description: 'client release version for the heading (e.g. 0.26.0); empty - heading without a version'
         required: false
         default: ''
 
@@ -60,8 +67,9 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.text.outputs.tag }}
+          VERSION: ${{ inputs.version }}
         run: |
-          if python3 ci/telegram/important.py IMPORTANT.md; then
+          if python3 ci/telegram/important.py IMPORTANT.md "$VERSION"; then
             gh api -X POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$TAG" -f sha="$GITHUB_SHA" >/dev/null
             echo "tagged $TAG"
           fi

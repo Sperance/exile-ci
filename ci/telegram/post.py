@@ -1,6 +1,9 @@
 """Пост об обновлении в тему группы Telegram: заметки релиза (RELEASE_NOTES.md из тела релиза) с баннером крупным превью над
 текстом и кнопками RuStore, Google Play и APK. Пост не закрепляется: тема и так только для обновлений.
 
+Текст по подразделам заметок (ci/notes.py): «Новое», «Изменения», «Исправления», блок «Уже в игре» (пункты с меткой «[сервер]»: их
+сервер уже выложил) и «Техническое» последним. Не влезает в лимит - пункты уходят с конца, так что «Техническое» первым.
+
 Повтор без дублей: номер поста версии хранится в файле состояния (кэш Actions по тегу) - есть номер, пост правится, а не выходит
 снова. Сбой - предупреждение в журнале и код 0: релиз уже вышел, пост повторяет ручной запуск (Release → telegram).
 Окружение: TELEGRAM_BOT_TOKEN (секрет), TELEGRAM_CHAT (@группа), TELEGRAM_TOPIC (номер темы - последнее число ссылки t.me/группа/N),
@@ -15,9 +18,16 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+import notes as release_notes
 
 LIMIT = 4096
-MANDATORY = re.compile(r"^обновление обязательное\.?$", re.I)
+MANDATORY = release_notes.MANDATORY
+SERVER_BLOCK = "Уже в игре"
+MONTHS = ("января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря")
 LEAD = re.compile(r"^(?P<lead>[^:.!?]{2,40}):\s+(?P<rest>.+)$")
 PACKAGE = "com.sperance.exileforge"
 
@@ -32,7 +42,7 @@ def text_length(text):
 
 
 def bullet(item):
-    """Пункт: короткая шапка до двоеточия - жирным; «Техническое» - курсивом целиком, это строка не для всех."""
+    """Пункт: короткая шапка до двоеточия - жирным; пункт «Техническое» - курсивом целиком, это строка не для всех."""
     m = LEAD.match(item)
     if not m:
         return f"▸ {html.escape(item)}"
@@ -41,17 +51,57 @@ def bullet(item):
     return f"▸ <b>{html.escape(m['lead'])}</b>: {html.escape(m['rest'])}"
 
 
-def compose(header, notes, release_url):
-    """Текст поста. Обязательность - сразу под заголовком; не влезает в лимит - пункты с конца уходят, внизу ссылка на релиз."""
-    items = [ln.strip()[2:].strip() for ln in notes.splitlines() if ln.strip().startswith("- ")]
-    mandatory = any(MANDATORY.match(i) for i in items)
-    body = [bullet(i) for i in items if not MANDATORY.match(i)]
+def russian_date(now=None):
+    moment = now or datetime.now(ZoneInfo("Europe/Moscow"))
+    return f"{moment.day} {MONTHS[moment.month - 1]}"
+
+
+def blocks(parsed):
+    """Блоки поста по порядку: (заголовок, [готовые строки]). Пункты вне подразделов (прежний вид заметок) идут без заголовка."""
+    result = []
+    for title in release_notes.SECTIONS[:-1]:
+        shown = [bullet(i) for i in parsed.items(title) if not release_notes.is_server(i) and not MANDATORY.match(i)]
+        if shown:
+            result.append((title, shown))
+    already = [bullet(release_notes.strip_server(i)) for i in parsed.all_items() if release_notes.is_server(i)]
+    if already:
+        result.append((SERVER_BLOCK, already))
+    loose = [i for i in parsed.items("") if not MANDATORY.match(i)]
+    plain = [bullet(i) for i in loose if not release_notes.is_staff("", i)]
+    if plain:
+        result.insert(0, ("", plain))
+    staff = [f"<i>{html.escape(release_notes.strip_staff(i))}</i>" for i in parsed.items(release_notes.STAFF_SECTION)]
+    staff += [bullet(i) for i in loose if release_notes.is_staff("", i)]
+    if staff:
+        result.append((release_notes.STAFF_SECTION, staff))
+    return result
+
+
+def units(parsed):
+    """Плоский список абзацев поста: заголовок подраздела и его пункты по одному. Обрезка снимает абзацы с конца."""
+    flat = []
+    for title, shown in blocks(parsed):
+        if title:
+            flat.append(("title", f"<b>{html.escape(title)}</b>"))
+        flat.extend(("item", line) for line in shown)
+    return flat
+
+
+def compose(header, notes_text, release_url):
+    """Текст поста. Обязательность - сразу под заголовком; не влезает в лимит - абзацы с конца уходят (пустой заголовок подраздела тоже),
+    внизу ссылка на релиз."""
+    parsed = release_notes.parse(notes_text)
+    mandatory = any(MANDATORY.match(i) for i in parsed.all_items())
     head = [f"<b>{html.escape(header)}</b>"] + (["❗ <b>Обновление обязательное</b>"] if mandatory else [])
     more = f'<a href="{release_url}">Все изменения</a>'
-    text = "\n\n".join(head + body)
+    body = units(parsed)
+
+    text = "\n\n".join(head + [t for _, t in body])
     while text_length(text) > LIMIT and body:
-        body.pop()
-        text = "\n\n".join(head + body + [more])
+        body = body[:-1]
+        while body and body[-1][0] == "title":
+            body = body[:-1]
+        text = "\n\n".join(head + [t for _, t in body] + [more])
     return text
 
 

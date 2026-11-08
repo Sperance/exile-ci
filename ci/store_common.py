@@ -13,6 +13,9 @@ import urllib.error
 import urllib.request
 from datetime import datetime
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import notes
+
 REPORT_PATH = "/api/v1/admin/release/channels"
 CHANNELS = ("DIRECT", "PLAY", "RUSTORE")
 RELEASES_SCAN = 30
@@ -39,11 +42,15 @@ def load_update(path):
 
 
 def public_notes(text):
-    """Заметки для магазина: без служебного. HTML-комментарии (метка «<!-- quiet -->») и строки «Техническое: …» (их видит только
-    персонал игры) в Google Play и RuStore не уходят; в update.json для клиента заметки остаются целиком."""
-    text = re.sub(r"<!--.*?(-->|$)", "", text, flags=re.DOTALL)
-    lines = [line for line in text.splitlines() if not re.match(r"^\s*(?:[-*]\s+)?Техническое:", line)]
-    return "\n".join(lines).strip()
+    """Заметки для магазина (ci/notes.py): первые пункты «Нового» (нет их - остальные публичные), без «Техническое», обязательности
+    и пунктов сервера. Заметки без подразделов (прежний вид) - все пункты, кроме «Техническое: …». В update.json для клиента
+    заметки остаются целиком."""
+    parsed = notes.parse(text)
+    if parsed.items(""):
+        lines = [line for line in re.sub(r"<!--.*?(-->|$)", "", text, flags=re.DOTALL).splitlines()
+                 if not re.match(r"^\s*(?:[-*]\s+)?Техническое:", line)]
+        return "\n".join(lines).strip()
+    return "\n".join(f"- {item}" for item in notes.store_items(parsed))
 
 
 def short_notes(text, limit):
