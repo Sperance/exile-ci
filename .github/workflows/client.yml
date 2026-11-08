@@ -297,9 +297,10 @@ jobs:
         with:
           name: app-log
 
-  # Сжатые R8 сборки с инструментальным APK (единственные тестовые, отладочной нет): `minified` - с флагом `-PuiTests` для всех
-  # UI-тестов (код приложения не ужат - артефакт только зашифрованным), `minified-strict` - без флага, строгий смоук R8: код
-  # приложения ужат. Имя job'а, артефакта, журнала и группы concurrency берутся из matrix.name.
+  # Сборки с инструментальным APK для эмулятора: `ui-build` - БЕЗ R8 (тип uiTest, флаг -PuiTests): UI-тесты зовут экраны и модели
+  # приложения напрямую, на ужатом коде им пришлось бы держать весь пакет (артефакт только зашифрованным); `minified-strict` -
+  # единственная сборка с R8 и тестовым APK (без флага): код приложения ужат как в релизе, её проверяет смоук ReleaseSmokeTest.
+  # Имя job'а, артефакта, журнала и группы concurrency берутся из matrix.name; `ui-build` пишет кэш Gradle.
   minified:
     name: ${{ matrix.name }}
     needs: changes
@@ -313,14 +314,14 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: minified
+          - name: ui-build
             artifact: ui-apks
-            flags: -PuiTests
+            prefix: UI
             stage: true
             writer: 'true'
           - name: minified-strict
             artifact: ui-apks-minified
-            flags: ''
+            prefix: MINIFIED
             stage: false
             writer: 'false'
     steps:
@@ -330,22 +331,24 @@ jobs:
           sha: ${{ needs.changes.outputs.sha }}
           token: ${{ secrets.SOURCE_TOKEN }}
           cache-writer: ${{ matrix.writer }}
-      - name: Build UI test APKs
+      - name: Build the test APKs
         working-directory: src
         env:
           NAME: ${{ matrix.name }}
-          FLAGS: ${{ matrix.flags }}
+          PREFIX: ${{ matrix.prefix }}
         run: |
           . ../ci/build-tasks.env
-          bash ../ci/quiet.sh "$NAME" bash gradlew "$MINIFIED_APP_TASK" "$MINIFIED_TEST_TASK" $FLAGS
+          app_task=${PREFIX}_APP_TASK test_task=${PREFIX}_TEST_TASK flags=${PREFIX}_FLAGS
+          # shellcheck disable=SC2086
+          bash ../ci/quiet.sh "$NAME" bash gradlew "${!app_task}" "${!test_task}" ${!flags}
       - name: Stage UI test APKs
         if: ${{ matrix.stage }}
         working-directory: src
         run: |
           . ../ci/build-tasks.env
           mkdir -p ui-apks
-          cp "$MINIFIED_APK" ui-apks/app.apk
-          cp "$MINIFIED_TEST_APK" ui-apks/app-androidTest.apk
+          cp "$UI_APK" ui-apks/app.apk
+          cp "$UI_TEST_APK" ui-apks/app-androidTest.apk
       - name: Seal APKs
         working-directory: src
         env:
