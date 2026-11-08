@@ -13,7 +13,8 @@
 #                                       проверенного предка, ci/checked-image.sh);
 #   workflow_dispatch                 - вручную: push - как пуш (без деплоя); deploy - деплой проверенного образа головы (срочный
 #                                       выкат только сервера: Release → server); rebuild - проверки, образ и деплой (Release →
-#                                       server-rebuild).
+#                                       server-rebuild);
+#   workflow_call (check-wip.yml)     - режим check-wip: проверки, панель и совместимость на текущем wip сервера, БЕЗ образа и деплоя.
 # Образ уходит в приватный пакет ghcr.io/sperance/ktor-bestgame черновым тегом :build-<sha>, после зелёных проверок получает
 # :<sha> и :<ветка>; на VPS по SSH запускается deploy/update.sh сервера с этим sha.
 # Перед деплоем (job `deploy`) - защита ci/deploy-guard.py: сервер не выкатывается, если отрежет самую старую сборку, ещё лежащую в
@@ -30,12 +31,23 @@ name: Server
 on:
   repository_dispatch:
     types: [ server-push, server-deploy ]
+  workflow_call:
+    inputs:
+      mode:
+        type: string
+        default: check-wip
+      sha:
+        type: string
+        default: ''
+      force_breaking:
+        type: boolean
+        default: false
   workflow_dispatch:
     inputs:
       mode:
-        description: 'push - checks and image, no deploy; deploy - deploy the checked head image; rebuild - checks, image and deploy'
+        description: 'push - checks and image, no deploy; deploy - deploy the checked head image; rebuild - checks, image and deploy; check-wip - checks, panel and compat without image and deploy (check-wip.yml calls it)'
         type: choice
-        options: [ deploy, push, rebuild ]
+        options: [ deploy, push, rebuild, check-wip ]
         default: deploy
       sha:
         description: 'Server commit (empty - head of the working branch)'
@@ -76,17 +88,17 @@ jobs:
           INPUT_MODE: ${{ inputs.mode }}
           INPUT_SHA: ${{ inputs.sha }}
           TOKEN: ${{ secrets.SOURCE_TOKEN }}
-        run: . ci/branches.env && bash ci/resolve.sh "$SERVER_REPO" "$SERVER_BRANCH" server push deploy rebuild
+        run: . ci/branches.env && bash ci/resolve.sh "$SERVER_REPO" "$SERVER_BRANCH" server push deploy rebuild check-wip
 
   checks:
     needs: resolve
-    if: ${{ needs.resolve.outputs.mode == 'push' || needs.resolve.outputs.mode == 'rebuild' }}
+    if: ${{ needs.resolve.outputs.mode == 'push' || needs.resolve.outputs.mode == 'rebuild' || needs.resolve.outputs.mode == 'check-wip' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     # Новый пуш отменяет проверки устаревшего: выкатывать всё равно будут его
     concurrency:
-      group: server-checks
-      cancel-in-progress: true
+      group: server-checks${{ needs.resolve.outputs.mode == 'check-wip' && '-wip' || '' }}
+      cancel-in-progress: ${{ needs.resolve.outputs.mode != 'check-wip' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       # Версию сервера Gradle считает по истории (patch - число коммитов после правки server-version)
@@ -123,12 +135,12 @@ jobs:
   # Отчёт проверки не выкладывается: в нём страницы панели.
   panel:
     needs: resolve
-    if: ${{ needs.resolve.outputs.mode == 'push' || needs.resolve.outputs.mode == 'rebuild' }}
+    if: ${{ needs.resolve.outputs.mode == 'push' || needs.resolve.outputs.mode == 'rebuild' || needs.resolve.outputs.mode == 'check-wip' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     concurrency:
-      group: server-panel
-      cancel-in-progress: true
+      group: server-panel${{ needs.resolve.outputs.mode == 'check-wip' && '-wip' || '' }}
+      cancel-in-progress: ${{ needs.resolve.outputs.mode != 'check-wip' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: ./.github/actions/source
@@ -181,12 +193,12 @@ jobs:
   # Нет релиза в окне - прогон зелёный без дела (старее нового клиента поддерживать нечего).
   compat:
     needs: resolve
-    if: ${{ needs.resolve.outputs.mode == 'push' || needs.resolve.outputs.mode == 'rebuild' }}
+    if: ${{ needs.resolve.outputs.mode == 'push' || needs.resolve.outputs.mode == 'rebuild' || needs.resolve.outputs.mode == 'check-wip' }}
     runs-on: ubuntu-latest
     timeout-minutes: 40
     concurrency:
-      group: server-compat
-      cancel-in-progress: true
+      group: server-compat${{ needs.resolve.outputs.mode == 'check-wip' && '-wip' || '' }}
+      cancel-in-progress: ${{ needs.resolve.outputs.mode != 'check-wip' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       # Вся история: версию сервера Gradle считает по коммитам

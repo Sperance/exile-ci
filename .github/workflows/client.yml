@@ -1093,6 +1093,8 @@ jobs:
           echo "build=$build" >> "$GITHUB_OUTPUT"
           echo "fill=$([ "$fresh" = false ] || [ "$build" = true ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
           echo "fresh=$fresh build=$build"
+      # Задача resolveAllDependencies корня не заходит во включённую сборку rules: её конфигурации (в их числе jvmTestRuntimeClasspath
+      # с junit-jupiter-engine и junit-platform-launcher, без которых тесты правил офлайн не идут) разрешаются явно, по пути задачи.
       # Наполнение кэша - без запуска тестов: то, что делает сессия агента (ktlint, commentStyle, Lint, компиляция кода и тестов
       # одного варианта), плюс разрешение всех конфигураций (ci/resolve-all.gradle) - зависимости запуска тестов и прочих
       # вариантов попадают в архив без их сборки. Тесты и проверки идут в своих job'ах.
@@ -1105,7 +1107,8 @@ jobs:
           bash ../ci/quiet.sh gradle-cache-client bash gradlew --continue :core:ktlintCheck commentStyle :core:testClasses \
             "${lint[@]}" :app:lintDirectRelease :app:compileDirectReleaseKotlin || true
           bash ../ci/quiet.sh gradle-cache-client-deps bash gradlew --no-configuration-cache --init-script ../ci/resolve-all.gradle \
-            --continue resolveAllDependencies || true
+            --continue resolveAllDependencies :rules:resolveAllDependencies :rules:rules-check:resolveAllDependencies \
+            :rules:rules-lab:resolveAllDependencies || true
       - name: Fill the server cache
         if: steps.key.outputs.fill == 'true'
         working-directory: src/backend
@@ -1113,7 +1116,8 @@ jobs:
           bash ../../ci/quiet.sh gradle-cache-server bash gradlew --continue :rules:rules-lab:labWasmBundle ktlintCheck commentStyle \
             testClasses :rules:ktlintCheck :rules:jvmTestClasses :rules:rules-check:ktlintCheck :rules:rules-check:jvmTestClasses :rules:rules-lab:ktlintCheck :rules:rules-lab:jvmTestClasses || true
           bash ../../ci/quiet.sh gradle-cache-server-deps bash gradlew --no-configuration-cache --init-script ../../ci/resolve-all.gradle \
-            --continue resolveAllDependencies || true
+            --continue resolveAllDependencies :rules:resolveAllDependencies :rules:rules-check:resolveAllDependencies \
+            :rules:rules-lab:resolveAllDependencies || true
       - name: Stop Gradle
         if: steps.key.outputs.fill == 'true'
         run: (cd src && ./gradlew --stop >/dev/null 2>&1 || true)
