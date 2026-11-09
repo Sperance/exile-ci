@@ -33,8 +33,8 @@ import os
 import re
 import sys
 import urllib.error
-import urllib.request
 
+import net
 from store_common import Catalog, say
 
 PROTOCOL = "rules/src/main/kotlin/com/sperance/exileforge/rules/wire/Protocol.kt"
@@ -55,9 +55,7 @@ def constant(path, name):
 
 def live_state(base):
     """Живой манифест: окно сервера и самая старая отдаваемая сборка каждого канала. Исключение - манифест недоступен."""
-    request = urllib.request.Request(base + "/static/index.json", headers={"Accept": "application/json"})
-    with urllib.request.urlopen(request, timeout=30) as response:
-        manifest = json.load(response)
+    manifest = json.loads(net.fetch(base + "/static/index.json", headers={"Accept": "application/json"}, timeout=30).body)
     content = manifest.get("content", {})
     schema = int(content["schema"])
     server = Server(int(manifest["revision"]), int(manifest.get("minRevision", 0)), int(manifest["activeRules"]), schema, int(content.get("minSchema", schema)))

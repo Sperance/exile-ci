@@ -10,6 +10,8 @@
 #      `Notes-Edit: <причина>` в коммите wip; (б) поднятая с прошлого выката сервера версия игровой коллекции (любой, кроме служебных из ci/service-collections.txt)
 #      сопровождена новым текстом IMPORTANT.md или трейлером `Wipe-Silent: <причина>`; (в) к вышедшему тексту IMPORTANT.md (тег
 #      important-* есть) не дописано - файл начинают заново; подразделы заметок в порядке, «Важное» влезает в пост;
+#      Там же сторожа самого exile-ci (шаг «CI scripts guards»): ci/guard-network.py - голый gh, curl, git или urlopen вне ci/retry.sh и ci/net.py,
+#      ci/guard-parity.py - шаг CI без строки в ci/precheck-map.txt или шаг precheck из карты, которого нет в scripts/precheck.sh обоих репозиториев;
 #   4. record: оба зелёные - на sha клиента и sha сервера кладётся commit status «check-wip» = success (ci/check-wip-status.sh); упал любой
 #      - failure. Отметку читает хук pre-push репозиториев: пуш в рабочую ветку без зелёного check-wip на этом sha отклоняется.
 # Журналы шифруются так же, как в client.yml и server.yml (ci/quiet.sh, age). Ворота client.yml, прошедшие здесь, ставят метки
@@ -60,14 +62,14 @@ jobs:
         run: |
           . ci/branches.env
           . ci/retry.sh
-          fetch_head() { sha=$(git ls-remote "https://x-access-token:$TOKEN@github.com/$1.git" "refs/heads/$WIP_BRANCH" | cut -f1) && [[ -n $sha ]]; }
+          fetch_head() { sha=$(bash ci/retry.sh read git ls-remote "https://x-access-token:$TOKEN@github.com/$1.git" "refs/heads/$WIP_BRANCH" | cut -f1) && [[ -n $sha ]]; }
           client=${INPUT_CLIENT:-}
           server=${INPUT_SERVER:-}
           if [ -z "$client" ]; then sha=""; retry fetch_head "$CLIENT_REPO" || true; client=$sha; fi
           if [ -z "$server" ]; then sha=""; retry fetch_head "$SERVER_REPO" || true; server=$sha; fi
           [[ $client =~ ^[0-9a-f]{40}$ ]] || { echo "::error::no wip head of the client: push the client wip first"; exit 1; }
           [[ $server =~ ^[0-9a-f]{40}$ ]] || { echo "::error::no wip head of the server: push the server wip first"; exit 1; }
-          bash ci/quiet.sh clone-client git clone -q --no-checkout --branch "$WIP_BRANCH" "https://x-access-token:$TOKEN@github.com/$CLIENT_REPO.git" cli
+          bash ci/quiet.sh clone-client bash ci/retry.sh read git clone -q --no-checkout --branch "$WIP_BRANCH" "https://x-access-token:$TOKEN@github.com/$CLIENT_REPO.git" cli
           git -C cli cat-file -e "$client^{commit}" 2>/dev/null || { echo "::error::client commit ${client:0:12} is not in wip"; exit 1; }
           pin=$(git -C cli ls-tree "$client" backend | awk '{print $3}')
           [[ $pin =~ ^[0-9a-f]{40}$ ]] || { echo "::error::the client ${client:0:12} pins no server in backend/"; exit 1; }
@@ -117,8 +119,18 @@ jobs:
           TOKEN: ${{ secrets.SOURCE_TOKEN }}
         run: |
           . ci/branches.env
-          bash ci/quiet.sh clone-client git clone -q --filter=blob:none --no-checkout "https://x-access-token:$TOKEN@github.com/$CLIENT_REPO.git" cli
-          bash ci/quiet.sh clone-server git clone -q --filter=blob:none --no-checkout "https://x-access-token:$TOKEN@github.com/$SERVER_REPO.git" srv
+          bash ci/quiet.sh clone-client bash ci/retry.sh read git clone -q --filter=blob:none --no-checkout "https://x-access-token:$TOKEN@github.com/$CLIENT_REPO.git" cli
+          bash ci/quiet.sh clone-server bash ci/retry.sh read git clone -q --filter=blob:none --no-checkout "https://x-access-token:$TOKEN@github.com/$SERVER_REPO.git" srv
+      - name: CI scripts guards
+        env:
+          CLIENT: ${{ needs.resolve.outputs.client }}
+          SERVER: ${{ needs.resolve.outputs.server }}
+        run: |
+          python3 -c 'import yaml' 2>/dev/null || python3 -m pip install --quiet --disable-pip-version-check pyyaml
+          bash ci/retry.sh read git -C cli show "$CLIENT:scripts/precheck.sh" > "$RUNNER_TEMP/precheck-client.sh"
+          bash ci/retry.sh read git -C srv show "$SERVER:scripts/precheck.sh" > "$RUNNER_TEMP/precheck-server.sh"
+          python3 -I ci/guard-network.py
+          python3 -I ci/guard-parity.py --client-precheck "$RUNNER_TEMP/precheck-client.sh" --server-precheck "$RUNNER_TEMP/precheck-server.sh"
       - name: Accumulated notes, important text and wipes
         env:
           GH_TOKEN: ${{ github.token }}
@@ -128,7 +140,7 @@ jobs:
           LOG_AGE_RECIPIENT: ${{ vars.LOG_AGE_RECIPIENT }}
         run: |
           . ci/branches.env
-          tags() { gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/$1" --paginate --jq '.[].ref' > "$RUNNER_TEMP/$2"; }
+          tags() { bash ci/retry.sh read gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/$1" --paginate --jq '.[].ref' > "$RUNNER_TEMP/$2"; }
           tags important- tags-important.txt
           tags server-deployed/ tags-deployed.txt
           code=0

@@ -15,7 +15,7 @@ SHA=$3
 here=$(dirname "${BASH_SOURCE[0]}")
 . "$here/issues-lib.sh"
 
-git fetch --quiet --tags
+netcall read git fetch --quiet --tags
 prev=$(git for-each-ref --sort=-creatordate --format='%(refname:short)' 'refs/tags/v*' | while read -r t; do
   [ "$t" != "$TAG" ] && git merge-base --is-ancestor "$t" "$SHA" 2>/dev/null && { echo "$t"; break; }
 done)

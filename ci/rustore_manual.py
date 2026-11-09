@@ -15,8 +15,7 @@ import os
 import re
 import sys
 
-import requests
-
+import net
 from store_common import say
 
 CLIENT_REPO = "Sperance/ExileForge"
@@ -41,7 +40,7 @@ def _issue_token():
 
 
 def _open_issues(token):
-    response = requests.get(f"{API}/repos/{CLIENT_REPO}/issues", params={"state": "open", "per_page": 100}, headers=_headers(token), timeout=60)
+    response = net.send(None, "GET", f"{API}/repos/{CLIENT_REPO}/issues", params={"state": "open", "per_page": 100}, headers=_headers(token), timeout=60)
     response.raise_for_status()
     return [i for i in response.json() if "pull_request" not in i and TITLE_RE.match(i["title"])]
 
@@ -70,9 +69,9 @@ def note(version, url, state_path):
     title = TITLE.format(version)
     existing = next((i for i in _open_issues(token) if i["title"] == title), None)
     if existing:
-        requests.patch(f"{API}/repos/{CLIENT_REPO}/issues/{existing['number']}", json={"body": body}, headers=_headers(token), timeout=60).raise_for_status()
+        net.send(None, "PATCH", f"{API}/repos/{CLIENT_REPO}/issues/{existing['number']}", json={"body": body}, headers=_headers(token), timeout=60).raise_for_status()
     else:
-        requests.post(f"{API}/repos/{CLIENT_REPO}/issues", json={"title": title, "body": body}, headers=_headers(token), timeout=60).raise_for_status()
+        net.send(None, "POST", f"{API}/repos/{CLIENT_REPO}/issues", json={"title": title, "body": body}, headers=_headers(token), timeout=60).raise_for_status()
     line = (f"RuStore: {version} ждёт публикации прошлой версии - выкладка повторится сама" if state["waiting"]
             else f"RuStore: {version} нужна ручная загрузка в консоли (Issue «{title}»)")
     summary = os.environ.get("GITHUB_STEP_SUMMARY", "").strip()
@@ -85,7 +84,7 @@ def note(version, url, state_path):
 def _dispatch_stores():
     token = os.environ.get("GITHUB_TOKEN", "").strip()
     repo = os.environ.get("GITHUB_REPOSITORY", "").strip()
-    response = requests.post(f"{API}/repos/{repo}/actions/workflows/client.yml/dispatches", json={"ref": "main", "inputs": {"mode": "stores"}},
+    response = net.send(None, "POST", f"{API}/repos/{repo}/actions/workflows/client.yml/dispatches", json={"ref": "main", "inputs": {"mode": "stores"}},
                              headers=_headers(token), timeout=60)
     response.raise_for_status()
 
@@ -116,7 +115,7 @@ def retry(store, latest=None):
         code, after = int(mark.group(1)), int(mark.group(2))
         version = TITLE_RE.match(issue["title"]).group(1)
         if any(c >= code for c in present) or version in names:
-            requests.patch(f"{API}/repos/{CLIENT_REPO}/issues/{issue['number']}", json={"state": "closed", "state_reason": "completed"},
+            net.send(None, "PATCH", f"{API}/repos/{CLIENT_REPO}/issues/{issue['number']}", json={"state": "closed", "state_reason": "completed"},
                            headers=_headers(token), timeout=60).raise_for_status()
             say(f"RUSTORE: {version} is in the store, manual-upload Issue closed")
         elif waiting:
@@ -125,7 +124,7 @@ def retry(store, latest=None):
             _dispatch_stores()
             dispatched = True
             body = MARK_RE.sub(f"<!-- rustore code={code} after={live} -->", issue["body"])
-            requests.patch(f"{API}/repos/{CLIENT_REPO}/issues/{issue['number']}", json={"body": body}, headers=_headers(token), timeout=60).raise_for_status()
+            net.send(None, "PATCH", f"{API}/repos/{CLIENT_REPO}/issues/{issue['number']}", json={"body": body}, headers=_headers(token), timeout=60).raise_for_status()
             say(f"RUSTORE: previous version is live, client.yml stores started again for {version}")
         else:
             say(f"::warning::RUSTORE: {version} still needs a manual upload in the console")

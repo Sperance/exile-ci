@@ -93,6 +93,11 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
+      - name: CI scripts guards
+        run: |
+          python3 -c 'import yaml' 2>/dev/null || python3 -m pip install --quiet --disable-pip-version-check pyyaml
+          python3 -I ci/guard-network.py
+          python3 -I ci/guard-parity.py
       - name: Target commit
         id: target
         env:
@@ -115,7 +120,7 @@ jobs:
         run: |
           trusted=false
           if [ "$MODE" = push ]; then
-            state=$(gh api "repos/$SERVER_REPO/commits/$SHA/statuses?per_page=100" --jq '[.[] | select(.context == "check-wip")] | first | .state' 2>/dev/null || true)
+            state=$(bash ci/retry.sh read gh api "repos/$SERVER_REPO/commits/$SHA/statuses?per_page=100" --jq '[.[] | select(.context == "check-wip")] | first | .state' 2>/dev/null || true)
             echo "check-wip status of ${SHA:0:12}: ${state:-none}"
             if [ "$state" = success ]; then trusted=true; echo "checks, panel and compat are skipped: this commit was checked by Check wip"; fi
           fi
@@ -468,7 +473,7 @@ jobs:
           api=$(sed -nE 's/^const val API_REVISION = ([0-9]+)/\1/p' server/rules/src/main/kotlin/com/sperance/exileforge/rules/wire/Protocol.kt)
           [[ -n $api ]] || { echo "::error::API_REVISION not found"; exit 1; }
           for attempt in 1 2 3 4 5; do
-            client=$(curl -fsSL "$LATEST" | python3 -c 'import json, sys; print(json.load(sys.stdin)["apiRevision"])' || echo 0)
+            client=$(bash ci/retry.sh read curl -fsSL "$LATEST" | python3 -c 'import json, sys; print(json.load(sys.stdin)["apiRevision"])' || echo 0)
             if (( client >= api )); then
               echo "client release speaks API $client, server $api: deploying"
               echo "ready=true" >> "$GITHUB_OUTPUT"
@@ -522,12 +527,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           ISSUES_TOKEN: ${{ secrets.EXILEFORGE_TOKEN }}
         run: |
-          gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/server-deployed/" --paginate --jq '.[].ref' > "$RUNNER_TEMP/deployed.txt"
+          bash ci/retry.sh read gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/server-deployed/" --paginate --jq '.[].ref' > "$RUNNER_TEMP/deployed.txt"
           base=$(python3 -I ci/release_state.py baseline --srv server --head "$SHA" --deployed "$RUNNER_TEMP/deployed.txt")
           if [ -z "$VERSION" ] && [ -n "$ISSUES_TOKEN" ]; then
             GH_TOKEN=$ISSUES_TOKEN bash ci/close-server-issues.sh Sperance/ExileForge server "$base" "$SHA" || echo "::warning::server issues were not closed"
           fi
-          gh api -X POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/server-deployed/$SHA" -f sha="$GITHUB_SHA" >/dev/null || echo "::notice::deploy mark already exists"
+          bash ci/retry.sh idem gh api -X POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/server-deployed/$SHA" -f sha="$GITHUB_SHA" >/dev/null || echo "::notice::deploy mark already exists"
       # Новый текст IMPORTANT.md выложенного сервера - пост в тему «Важное» группы Telegram (telegram-important.yml); после выпуска клиента
       # заголовок несёт его версию. Выкат сервера без клиента - ещё и пост новых пунктов «[сервер]» заметок (telegram-server-notes.yml).
       - name: Announce the important news
@@ -536,8 +541,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh workflow run telegram-important.yml -R "$GITHUB_REPOSITORY" --ref main -f sha="$SHA" -f version="$VERSION"
-          [ -n "$VERSION" ] || gh workflow run telegram-server-notes.yml -R "$GITHUB_REPOSITORY" --ref main
+          bash ci/retry.sh once gh workflow run telegram-important.yml -R "$GITHUB_REPOSITORY" --ref main -f sha="$SHA" -f version="$VERSION"
+          [ -n "$VERSION" ] || bash ci/retry.sh once gh workflow run telegram-server-notes.yml -R "$GITHUB_REPOSITORY" --ref main
       - name: Encrypted log
         if: failure()
         uses: ./.github/actions/upload-log
@@ -570,12 +575,12 @@ jobs:
           CLIENT_REPO: Sperance/ExileForge
         run: |
           set -a; . ci/branches.env; set +a
-          bash ci/quiet.sh clone-sources sh -c 'git clone -q --filter=blob:none --no-checkout "https://x-access-token:$TOKEN@github.com/$SERVER_REPO" srv && git clone -q --filter=blob:none --no-checkout --branch "$CLIENT_BRANCH" "https://x-access-token:$TOKEN@github.com/$CLIENT_REPO" cli'
+          bash ci/quiet.sh clone-sources sh -c 'bash ci/retry.sh read git clone -q --filter=blob:none --no-checkout "https://x-access-token:$TOKEN@github.com/$SERVER_REPO" srv && bash ci/retry.sh read git clone -q --filter=blob:none --no-checkout --branch "$CLIENT_BRANCH" "https://x-access-token:$TOKEN@github.com/$CLIENT_REPO" cli'
           pin=$(git -C cli ls-tree "origin/$CLIENT_BRANCH" backend | awk '{print $3}')
           [[ $pin =~ ^[0-9a-f]{40}$ ]] || { echo "::warning::client pin of backend not found, cache refresh skipped"; exit 0; }
           files() { git -C srv ls-tree -r --name-only "$1" -- '*.gradle.kts' gradle.properties gradle | sort; }
           sums() { files "$1" | while read -r f; do git -C srv show "$1:$f" | sha256sum; done | sha256sum | cut -c1-16; }
           now=$(sums "$SHA"); old=$(sums "$pin")
           if [ "$now" = "$old" ]; then echo "build files unchanged since the client pin: archive stays"; exit 0; fi
-          gh workflow run client.yml -R "$GITHUB_REPOSITORY" -f mode=cache -f server_head=true
+          bash ci/retry.sh once gh workflow run client.yml -R "$GITHUB_REPOSITORY" -f mode=cache -f server_head=true
           echo "server build files changed since the client pin: client.yml cache started with the server head"

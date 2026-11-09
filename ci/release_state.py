@@ -17,11 +17,11 @@ import hashlib
 import importlib.util
 import os
 import re
-import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "telegram"))
+import net
 import notes
 from store_common import say
 
@@ -36,7 +36,7 @@ SPLIT = "\x00"
 
 
 def run(directory, *args):
-    done = subprocess.run(["git", "-C", directory, *args], capture_output=True)
+    done = net.run(net.READ, ["git", "-C", directory, *args], capture_output=True)
     return done.stdout if done.returncode == 0 else None
 
 
@@ -232,7 +232,7 @@ def open_issues(numbers, repo):
         return numbers
     still = []
     for number in numbers:
-        done = subprocess.run(["gh", "issue", "view", str(number), "-R", repo, "--json", "state", "--jq", ".state"], capture_output=True, text=True)
+        done = net.run(net.READ, ["gh", "issue", "view", str(number), "-R", repo, "--json", "state", "--jq", ".state"], capture_output=True, text=True)
         if done.returncode != 0 or done.stdout.strip() == "OPEN":
             still.append(number)
     return still

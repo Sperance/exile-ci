@@ -17,14 +17,15 @@ import re
 import sys
 import time
 import urllib.error
-import urllib.request
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+import net
 import notes as release_notes
 
 LIMIT = 4096
+IDEMPOTENT_METHODS = {"editMessageText"}
 MANDATORY = release_notes.MANDATORY
 SERVER_BLOCK = "Уже в игре"
 MONTHS = ("января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря")
@@ -118,32 +119,23 @@ class Bot:
         self._token = token
 
     def call(self, method, **params):
-        """Вызов Bot API. 429 - до пяти попыток с паузой, что просит Telegram; сбои сети и сервера Telegram - до трёх; прочее - сразу."""
+        """Вызов Bot API. sendMessage не повторяется вслепую (дубль поста): ONCE, повтор только до отправки; правка поста идемпотентна.
+        429 Telegram отклонил запрос целиком - до пяти попыток с паузой, что он просит; прочий отказ - сразу."""
         data = json.dumps(params).encode()
-        failures = 0
-        for attempt in range(5):
-            request = urllib.request.Request(f"https://api.telegram.org/bot{self._token}/{method}", data,
-                                             {"Content-Type": "application/json"})
+        mode = net.IDEMPOTENT if method in IDEMPOTENT_METHODS else net.ONCE
+        url = f"https://api.telegram.org/bot{self._token}/{method}"
+        for _ in range(5):
             try:
-                with urllib.request.urlopen(request, timeout=30) as response:
-                    return json.load(response)["result"]
+                return json.loads(net.fetch(url, method="POST", data=data, headers={"Content-Type": "application/json"}, timeout=30, mode=mode).body)["result"]
             except urllib.error.HTTPError as e:
                 reply = json.loads(e.read() or b"{}")
-                error = TelegramError(f"{method}: {reply.get('description', f'HTTP {e.code}')}")
                 retry_after = reply.get("parameters", {}).get("retry_after")
-                if retry_after:
-                    time.sleep(retry_after + 1)
-                    continue
-                failures += 1
-                if e.code < 500 or failures == 3:
-                    raise error from None
+                if not retry_after:
+                    raise TelegramError(f"{method}: {reply.get('description', f'HTTP {e.code}')}") from None
+                time.sleep(retry_after + 1)
             except (urllib.error.URLError, TimeoutError) as e:
-                error = TelegramError(f"{method}: {getattr(e, 'reason', e)}")
-                failures += 1
-                if failures == 3:
-                    raise error from None
-            time.sleep(5 * failures)
-        raise error
+                raise TelegramError(f"{method}: {getattr(e, 'reason', e)}") from None
+        raise TelegramError(f"{method}: flood control did not clear")
 
 
 def wait_for_image(url, timeout=180):
@@ -151,9 +143,8 @@ def wait_for_image(url, timeout=180):
     deadline = time.monotonic() + timeout
     while True:
         try:
-            with urllib.request.urlopen(url, timeout=20) as response:
-                if response.headers.get_content_type().startswith("image/"):
-                    return
+            if net.fetch(url, timeout=20, delays=()).headers.get_content_type().startswith("image/"):
+                return
         except urllib.error.URLError:
             pass
         if time.monotonic() > deadline:

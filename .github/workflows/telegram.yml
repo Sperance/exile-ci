@@ -50,7 +50,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.tag }}
         run: |
-          gh release view $TAG -R "$GITHUB_REPOSITORY" --json tagName,body > "$RUNNER_TEMP/release.json"
+          bash ci/retry.sh read gh release view $TAG -R "$GITHUB_REPOSITORY" --json tagName,body > "$RUNNER_TEMP/release.json"
           tag=$(jq -r .tagName "$RUNNER_TEMP/release.json")
           [[ $tag =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::'$tag' is not a game release tag"; exit 1; }
           jq -r .body "$RUNNER_TEMP/release.json" | tr -d '\r' > "$RUNNER_TEMP/notes.md"

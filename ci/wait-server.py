@@ -13,8 +13,8 @@ import os
 import sys
 import time
 import urllib.error
-import urllib.request
 
+import net
 from store_common import fail, load_update, say
 
 POLL_SECONDS = 30
@@ -23,10 +23,9 @@ REPORT_EVERY = 10
 
 def server_revision(base):
     """Ревизия, что сервер объявляет в манифесте; None - манифест не отдан или не разобран."""
-    request = urllib.request.Request(base + "/static/index.json", headers={"Accept": "application/json"})
     try:
-        with urllib.request.urlopen(request, timeout=20) as response:
-            return int(json.load(response)["revision"])
+        response = net.fetch(base + "/static/index.json", headers={"Accept": "application/json"}, timeout=20, delays=())
+        return int(json.loads(response.body)["revision"])
     except (urllib.error.URLError, TimeoutError, OSError, ValueError, KeyError, TypeError):
         return None
 

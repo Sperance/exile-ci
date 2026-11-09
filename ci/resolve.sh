@@ -20,7 +20,7 @@ else
 fi
 if [[ -z $sha ]]; then
     . "$(dirname "$0")/retry.sh"
-    head_of() { sha=$(git ls-remote "https://x-access-token:$TOKEN@github.com/$repo.git" "refs/heads/$branch" | cut -f1) && [[ -n $sha ]]; }
+    head_of() { sha=$(netcall read git ls-remote "https://x-access-token:$TOKEN@github.com/$repo.git" "refs/heads/$branch" | cut -f1) && [[ -n $sha ]]; }
     retry head_of || true
 fi
 [[ $sha =~ ^[0-9a-f]{40}$ ]] || { echo "::error::bad $label commit: '$sha'"; exit 1; }

@@ -36,8 +36,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           . ci/branches.env
-          GH_TOKEN=$SOURCE_TOKEN gh api -H "Accept: application/vnd.github.raw" "repos/$CLIENT_REPO/contents/RELEASE_NOTES.md?ref=$CLIENT_BRANCH" > RELEASE_NOTES.md
-          gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/server-note-" --paginate --jq '.[].ref' > posted.txt
+          GH_TOKEN=$SOURCE_TOKEN bash ci/retry.sh read gh api -H "Accept: application/vnd.github.raw" "repos/$CLIENT_REPO/contents/RELEASE_NOTES.md?ref=$CLIENT_BRANCH" > RELEASE_NOTES.md
+          bash ci/retry.sh read gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/server-note-" --paginate --jq '.[].ref' > posted.txt
       - name: Post
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -46,7 +46,7 @@ jobs:
           python3 ci/telegram/server_notes.py RELEASE_NOTES.md posted.txt new-tags.txt || true
           if [ -s new-tags.txt ]; then
             while read -r tag; do
-              gh api -X POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$tag" -f sha="$GITHUB_SHA" >/dev/null
+              bash ci/retry.sh idem gh api -X POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$tag" -f sha="$GITHUB_SHA" >/dev/null
             done < new-tags.txt
             echo "tagged $(wc -l < new-tags.txt) server notes"
           fi

@@ -124,6 +124,11 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
+      - name: CI scripts guards
+        run: |
+          python3 -c 'import yaml' 2>/dev/null || python3 -m pip install --quiet --disable-pip-version-check pyyaml
+          python3 -I ci/guard-network.py
+          python3 -I ci/guard-parity.py
       - name: Target commit
         id: target
         env:
@@ -184,7 +189,7 @@ jobs:
           if [ "$MODE" = push ]; then
             # Пуш в рабочую ветку - fast-forward из wip, sha тот же, что прошёл Check wip: commit status `check-wip` = success на этом sha
             # значит, все ворота уже зелёные на этом коде, и они пропускаются. Статуса нет, он не success или не прочитался - ворота идут как обычно.
-            state=$(GH_TOKEN="$STATUS_TOKEN" gh api "repos/$CLIENT_REPO/commits/$SHA/statuses?per_page=100" --jq '[.[] | select(.context == "check-wip")] | first | .state' 2>/dev/null || true)
+            state=$(GH_TOKEN="$STATUS_TOKEN" bash ../ci/retry.sh read gh api "repos/$CLIENT_REPO/commits/$SHA/statuses?per_page=100" --jq '[.[] | select(.context == "check-wip")] | first | .state' 2>/dev/null || true)
             echo "check-wip status of ${SHA:0:12}: ${state:-none}"
             if [ "$state" = success ]; then
               trusted=true
@@ -194,7 +199,7 @@ jobs:
           fi
           echo "trusted=$trusted" >> "$GITHUB_OUTPUT"
           if [ "$MODE" = release ]; then
-            keys=$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/caches?key=client-green-$tree-&per_page=100" --jq '.actions_caches[].key' 2>/dev/null || true)
+            keys=$(bash ../ci/retry.sh read gh api --paginate "repos/$GITHUB_REPOSITORY/actions/caches?key=client-green-$tree-&per_page=100" --jq '.actions_caches[].key' 2>/dev/null || true)
             for gate in core app ui server; do
               if grep -qx "client-green-$tree-$gate" <<<"$keys"; then
                 echo "skip_$gate=true" >> "$GITHUB_OUTPUT"
@@ -204,7 +209,8 @@ jobs:
           fi
       # Релиз только в режиме release (пуш не выпускает); R8-сборки и эмулятор идут и на пуш (выход ui). У versionName уже есть релиз
       # здесь - ошибка, номер версии занят.
-      - id: release
+      - name: Release state
+        id: release
         working-directory: src
         env:
           GH_TOKEN: ${{ github.token }}
@@ -213,13 +219,13 @@ jobs:
           version=$(sed -n 's/.*versionName = "\(.*\)".*/\1/p' app/build.gradle.kts | head -1)
           pending=false
           if [ "$MODE" = release ]; then
-            ! gh release view "v$version" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 || { echo "::error::v$version is already released: release mode needs a new versionName"; exit 1; }
+            ! bash ../ci/retry.sh read gh release view "v$version" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 || { echo "::error::v$version is already released: release mode needs a new versionName"; exit 1; }
             pending=true
           fi
           # Режим stores: версия уже выпущена здесь - заново собираются и выкладываются только сборки магазинов
           stores=false
           if [ "$MODE" = stores ]; then
-            gh release view "v$version" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 || { echo "::error::v$version is not released yet: stores mode publishes only a released version"; exit 1; }
+            bash ../ci/retry.sh read gh release view "v$version" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 || { echo "::error::v$version is not released yet: stores mode publishes only a released version"; exit 1; }
             stores=true
           fi
           { echo "pending=$pending"; echo "stores=$stores"; echo "tag=v$version"; } >> "$GITHUB_OUTPUT"
@@ -242,7 +248,8 @@ jobs:
           token: ${{ secrets.SOURCE_TOKEN }}
           cache-writer: 'true'
       # Задачи job - в scripts/check.sh клиента: та же проверка перед пушем
-      - working-directory: src
+      - name: Core checks
+        working-directory: src
         run: bash ../ci/quiet.sh core bash scripts/check.sh core
       - name: Encrypted log
         if: failure()
@@ -266,7 +273,8 @@ jobs:
         with:
           sha: ${{ needs.changes.outputs.sha }}
           token: ${{ secrets.SOURCE_TOKEN }}
-      - working-directory: src
+      - name: Fast Android guards
+        working-directory: src
         run: bash ../ci/quiet.sh app-fast bash scripts/check.sh app-fast
       - name: Encrypted log
         if: failure()
@@ -289,7 +297,8 @@ jobs:
           sha: ${{ needs.changes.outputs.sha }}
           token: ${{ secrets.SOURCE_TOKEN }}
       # Отладочной сборки нет нигде: lint - по релизному варианту, APK - только R8-сборки ниже
-      - working-directory: src
+      - name: Android Lint
+        working-directory: src
         run: bash ../ci/quiet.sh app bash scripts/check.sh app-lint
       - name: Encrypted log
         if: failure()
@@ -694,7 +703,8 @@ jobs:
           sha: ${{ needs.changes.outputs.sha }}
           token: ${{ secrets.SOURCE_TOKEN }}
           java: '21'
-      - working-directory: src/backend
+      - name: Build the server distribution
+        working-directory: src/backend
         run: bash ../../ci/quiet.sh server-dist bash gradlew installDist
       - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.9.1
         with:
@@ -728,7 +738,8 @@ jobs:
     env:
       TREE: ${{ needs.changes.outputs.tree }}
     steps:
-      - run: mkdir -p green && echo "$TREE" > green/tree
+      - name: Green tree file
+        run: mkdir -p green && echo "$TREE" > green/tree
       - if: ${{ needs.core.result == 'success' || needs.changes.outputs.trusted == 'true' }}
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
@@ -783,14 +794,15 @@ jobs:
           submodules: true
           fetch-depth: 0
           fetch-tags: true
-      - id: version
+      - name: Release version
+        id: version
         working-directory: src
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           version=$(sed -n 's/.*versionName = "\(.*\)".*/\1/p' app/build.gradle.kts | head -1)
           echo "tag=v$version" >> "$GITHUB_OUTPUT"
-          if gh release view "v$version" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then echo "exists=true" >> "$GITHUB_OUTPUT"; else echo "exists=false" >> "$GITHUB_OUTPUT"; fi
+          if bash ../ci/retry.sh read gh release view "v$version" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then echo "exists=true" >> "$GITHUB_OUTPUT"; else echo "exists=false" >> "$GITHUB_OUTPUT"; fi
       - if: steps.version.outputs.exists == 'false'
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
@@ -838,16 +850,16 @@ jobs:
           # Карты сжатые (в ~10 раз меньше): сервер читает mapping.txt.gz (прямой APK), mapping-play.txt.gz и mapping-rustore.txt.gz
           # (сборки магазинов; нужную выбирает по pg_map_id), у старых релизов - mapping.txt (ReleaseMappings)
           gzip -9 -kf mapping.txt mapping-play.txt mapping-rustore.txt
-          if gh release view "$TAG" -R "$CLIENT_REPO" >/dev/null 2>&1; then
-            gh release upload "$TAG" mapping.txt.gz mapping-play.txt.gz mapping-rustore.txt.gz -R "$CLIENT_REPO" --clobber
+          if bash ../ci/retry.sh read gh release view "$TAG" -R "$CLIENT_REPO" >/dev/null 2>&1; then
+            bash ../ci/retry.sh idem gh release upload "$TAG" mapping.txt.gz mapping-play.txt.gz mapping-rustore.txt.gz -R "$CLIENT_REPO" --clobber
           else
-            gh release create "$TAG" mapping.txt.gz mapping-play.txt.gz mapping-rustore.txt.gz -R "$CLIENT_REPO" --target "$SHA" --title "ExileForge ${TAG#v}" --notes "R8 mapping of ${TAG#v}"
+            bash ../ci/retry.sh once gh release create "$TAG" mapping.txt.gz mapping-play.txt.gz mapping-rustore.txt.gz -R "$CLIENT_REPO" --target "$SHA" --title "ExileForge ${TAG#v}" --notes "R8 mapping of ${TAG#v}"
           fi
           # Карты хранятся у 10 последних релизов v*: у старших ассеты mapping*.txt* удаляются (сам релиз и тег остаются)
           # Порядок - по дате выхода, не по номеру: среди тегов есть старая схема v4.x, старше нынешних v0.x
-          gh api --paginate "repos/$CLIENT_REPO/releases?per_page=100" --jq '.[] | select(.tag_name | test("^v[0-9]")) | [.created_at, .tag_name, ([.assets[] | select(.name | startswith("mapping")) | .id] | join(" "))] | @tsv' \
+          bash ../ci/retry.sh read gh api --paginate "repos/$CLIENT_REPO/releases?per_page=100" --jq '.[] | select(.tag_name | test("^v[0-9]")) | [.created_at, .tag_name, ([.assets[] | select(.name | startswith("mapping")) | .id] | join(" "))] | @tsv' \
             | sort -r | tail -n +11 | while IFS=$'\t' read -r _ old ids; do
-                for id in $ids; do gh api -X DELETE "repos/$CLIENT_REPO/releases/assets/$id" >/dev/null || echo "::warning::mapping of $old was not deleted"; done
+                for id in $ids; do bash ../ci/retry.sh idem gh api -X DELETE "repos/$CLIENT_REPO/releases/assets/$id" >/dev/null || echo "::warning::mapping of $old was not deleted"; done
               done
       # Подпись описания: Ed25519 над байтами update.json как есть, 128 hex в update.json.sig (клиент: ManifestSignature)
       - if: steps.version.outputs.exists == 'false'
@@ -871,7 +883,7 @@ jobs:
           APK: ${{ steps.files.outputs.apk }}
         run: |
           sig=(); [ -s update.json.sig ] && sig=(update.json.sig)
-          gh release create "$TAG" "$APK" update.json "${sig[@]}" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "ExileForge ${TAG#v}" --notes-file RELEASE_NOTES.md --latest
+          bash ../ci/retry.sh once gh release create "$TAG" "$APK" update.json "${sig[@]}" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "ExileForge ${TAG#v}" --notes-file RELEASE_NOTES.md --latest
       # Сервер с новым API ждёт этот релиз: опубликовали - сразу запускаем его деплой (магазины ждут сервер, job'ы publish-* стартуют
       # после этого job'а), он выкатит проверенный образ головы рабочей ветки сервера. Закрытие Issues и пост идут уже после запуска.
       - if: steps.version.outputs.exists == 'false'
@@ -880,7 +892,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           FORCE: ${{ inputs.force_breaking || false }}
           TAG: ${{ steps.version.outputs.tag }}
-        run: gh workflow run server.yml -R "$GITHUB_REPOSITORY" --ref main -f mode=deploy -f force_breaking="$FORCE" -f version="${TAG#v}"
+        run: bash ../ci/retry.sh once gh workflow run server.yml -R "$GITHUB_REPOSITORY" --ref main -f mode=deploy -f force_breaking="$FORCE" -f version="${TAG#v}"
       # Пост с заметками в группу Telegram (telegram.yml). Не запустился - релиз не держит: повторить можно через Release → telegram.
       - if: steps.version.outputs.exists == 'false'
         name: Announce in Telegram
@@ -888,7 +900,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.version.outputs.tag }}
-        run: gh workflow run telegram.yml -R "$GITHUB_REPOSITORY" --ref main -f tag="$TAG"
+        run: bash ../ci/retry.sh once gh workflow run telegram.yml -R "$GITHUB_REPOSITORY" --ref main -f tag="$TAG"
       # Issues, что чинит релиз: коммиты клиента с прошлого релиза, что называют трейлером `Issue: #N`, и коммиты сервера между
       # закреплёнными в клиенте серверами прошлого и этого релиза с трейлером `Refs <репо клиента>#N` (история backend/ нужна целиком) -
       # Issue получает метку версии и закрывается выполненным, без комментария; игра увидит это синхронизацией сервера.
@@ -900,7 +912,7 @@ jobs:
           GH_TOKEN: ${{ secrets.EXILEFORGE_TOKEN }}
           TAG: ${{ steps.version.outputs.tag }}
         run: |
-          git -C backend fetch --quiet --unshallow 2>/dev/null || true
+          bash ../ci/retry.sh read git -C backend fetch --quiet --unshallow 2>/dev/null || true
           bash ../ci/close-issues.sh "$CLIENT_REPO" "$TAG" "$SHA"
       # Прямой канал сервер узнаёт отчётом: релиз GitHub вышел, доля 1.0. Новый деплой сервера (шаг выше) ещё идёт, поэтому отчёт
       # может не дойти (маршрута нет у прежнего сервера) - это предупреждение, отчёт повторит задача store-status (после выкладки и раз в 6 часов) в maintenance.yml.
@@ -943,7 +955,8 @@ jobs:
       TAG: ${{ needs.release.outputs.tag || needs.changes.outputs.tag }}
       SERVER_URL: ${{ vars.SERVER_URL }}
     steps:
-      - id: gate
+      - name: Store gate
+        id: gate
         run: |
           if [ -n "$PLAY_SERVICE_ACCOUNT_JSON" ]; then echo "enabled=true" >> "$GITHUB_OUTPUT"
           else echo "::notice::PLAY_SERVICE_ACCOUNT_JSON is not set: Google Play upload skipped"; fi
@@ -954,7 +967,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release download "$TAG" -R "$GITHUB_REPOSITORY" -p update.json
+          bash ci/retry.sh read gh release download "$TAG" -R "$GITHUB_REPOSITORY" -p update.json
           python3 ci/wait-server.py update.json
       - if: steps.gate.outputs.enabled == 'true'
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -1001,7 +1014,8 @@ jobs:
       RUSTORE_CONTACT_VK: ${{ vars.RUSTORE_CONTACT_VK }}
       SERVER_URL: ${{ vars.SERVER_URL }}
     steps:
-      - id: gate
+      - name: Store gate
+        id: gate
         run: |
           if [ -n "$RUSTORE_KEY_ID" ] && [ -n "$RUSTORE_PRIVATE_KEY" ]; then echo "enabled=true" >> "$GITHUB_OUTPUT"
           else echo "::notice::RUSTORE_KEY_ID or RUSTORE_PRIVATE_KEY is not set: RuStore upload skipped"; fi
@@ -1012,7 +1026,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release download "$TAG" -R "$GITHUB_REPOSITORY" -p update.json
+          bash ci/retry.sh read gh release download "$TAG" -R "$GITHUB_REPOSITORY" -p update.json
           python3 ci/wait-server.py update.json
       - if: steps.gate.outputs.enabled == 'true'
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -1052,7 +1066,7 @@ jobs:
           version=$(python3 -c 'import json;print(json.load(open("update.json"))["versionName"])')
           asset="ExileForge-$version-rustore.apk"
           cp "$APK" "$RUNNER_TEMP/$asset"
-          gh release upload "$TAG" "$RUNNER_TEMP/$asset" -R "$GITHUB_REPOSITORY" --clobber
+          bash ci/retry.sh idem gh release upload "$TAG" "$RUNNER_TEMP/$asset" -R "$GITHUB_REPOSITORY" --clobber
           # Один Issue на версию: шаги, строка «ждёт модерации прошлой / нужна ручная загрузка»; повтор - store-status (maintenance.yml)
           EXILEFORGE_TOKEN="$ISSUE_TOKEN" bash ci/quiet.sh rustore-manual python3 ci/rustore_manual.py note "$version" \
             "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/$asset" "$RUNNER_TEMP/rustore-state.json"
@@ -1075,7 +1089,7 @@ jobs:
       - name: Run the store status task
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh workflow run maintenance.yml -R "$GITHUB_REPOSITORY" --ref main -f task=store-status
+        run: bash ci/retry.sh once gh workflow run maintenance.yml -R "$GITHUB_REPOSITORY" --ref main -f task=store-status
 
   # Архивы для облачных сессий агента - prerelease `gradle-cache` приватного ExileForge (не latest: игра, update.json и релизы
   # версий его не видят); сессия распаковывает их хуками .claude/hooks/gradle-cache.sh и toolchain.sh клиента:
@@ -1114,7 +1128,7 @@ jobs:
           TOKEN: ${{ secrets.SOURCE_TOKEN }}
         run: |
           . ci/branches.env
-          bash ci/quiet.sh server-head git -C src/backend fetch -q "https://x-access-token:$TOKEN@github.com/$SERVER_REPO" "$SERVER_BRANCH"
+          bash ci/quiet.sh server-head bash ci/retry.sh read git -C src/backend fetch -q "https://x-access-token:$TOKEN@github.com/$SERVER_REPO" "$SERVER_BRANCH"
           git -C src/backend checkout -q FETCH_HEAD
           echo "server for the archives: $(git -C src/backend rev-parse --short HEAD)"
       - name: Cache key
@@ -1125,7 +1139,7 @@ jobs:
         run: |
           key=$(for d in src src/backend; do git -C "$d" ls-files -z -- '*.gradle.kts' 'gradle.properties' 'gradle/*' | (cd "$d" && xargs -0 sha256sum); done | sha256sum | cut -c1-16)
           asset="gradle-cache-$key.tar.gz"
-          have=$(gh release view "$TAG" -R "$CLIENT_REPO" --json assets -q '.assets[].name' 2>/dev/null || true)
+          have=$(bash ci/retry.sh read gh release view "$TAG" -R "$CLIENT_REPO" --json assets -q '.assets[].name' 2>/dev/null || true)
           if grep -qx "$asset" <<<"$have"; then fresh=true; else fresh=false; fi
           # Кэш сборки обновляется только кнопкой (режим cache) на main; после обычного выпуска ключ тот же - ничего не пересобирается
           if [ "$CACHE_MODE" = true ] && [ "$GITHUB_REF" = refs/heads/main ]; then
@@ -1176,13 +1190,13 @@ jobs:
         run: |
           tar -C "$HOME/.gradle" --exclude='*.lock' --exclude='gc.properties' -czf "$ASSET" caches/modules-2 wrapper/dists
           echo "archive: $(du -h "$ASSET" | cut -f1)"
-          if ! gh release view "$TAG" -R "$CLIENT_REPO" >/dev/null 2>&1; then
-            gh release create "$TAG" -R "$CLIENT_REPO" --target "$SHA" --prerelease --latest=false --title "Gradle cache" \
+          if ! bash ci/retry.sh read gh release view "$TAG" -R "$CLIENT_REPO" >/dev/null 2>&1; then
+            bash ci/retry.sh once gh release create "$TAG" -R "$CLIENT_REPO" --target "$SHA" --prerelease --latest=false --title "Gradle cache" \
               --notes "Gradle dependencies for cloud agent sessions (exile-ci client.yml, job gradle-cache). Not a game release."
           fi
-          gh release upload "$TAG" "$ASSET" -R "$CLIENT_REPO" --clobber
-          gh release view "$TAG" -R "$CLIENT_REPO" --json assets -q '.assets[].name' | grep '^gradle-cache-' | grep -vx "$ASSET" | while read -r old; do
-            gh release delete-asset "$TAG" "$old" -R "$CLIENT_REPO" -y
+          bash ci/retry.sh idem gh release upload "$TAG" "$ASSET" -R "$CLIENT_REPO" --clobber
+          bash ci/retry.sh read gh release view "$TAG" -R "$CLIENT_REPO" --json assets -q '.assets[].name' | grep '^gradle-cache-' | grep -vx "$ASSET" | while read -r old; do
+            bash ci/retry.sh idem gh release delete-asset "$TAG" "$old" -R "$CLIENT_REPO" -y
           done
       - name: Publish the build cache archive
         if: steps.key.outputs.build == 'true'
@@ -1197,13 +1211,13 @@ jobs:
           fi
           tar -C "$HOME/.gradle" --exclude='*.lock' --exclude='gc.properties' -czf "$ASSET" caches/build-cache-1
           echo "archive: $(du -h "$ASSET" | cut -f1)"
-          if ! gh release view "$TAG" -R "$CLIENT_REPO" >/dev/null 2>&1; then
-            gh release create "$TAG" -R "$CLIENT_REPO" --target "$SHA" --prerelease --latest=false --title "Gradle cache" \
+          if ! bash ci/retry.sh read gh release view "$TAG" -R "$CLIENT_REPO" >/dev/null 2>&1; then
+            bash ci/retry.sh once gh release create "$TAG" -R "$CLIENT_REPO" --target "$SHA" --prerelease --latest=false --title "Gradle cache" \
               --notes "Gradle dependencies for cloud agent sessions (exile-ci client.yml, job gradle-cache). Not a game release."
           fi
-          gh release upload "$TAG" "$ASSET" -R "$CLIENT_REPO" --clobber
-          gh release view "$TAG" -R "$CLIENT_REPO" --json assets -q '.assets[].name' | grep '^build-cache-' | grep -vx "$ASSET" | while read -r old; do
-            gh release delete-asset "$TAG" "$old" -R "$CLIENT_REPO" -y
+          bash ci/retry.sh idem gh release upload "$TAG" "$ASSET" -R "$CLIENT_REPO" --clobber
+          bash ci/retry.sh read gh release view "$TAG" -R "$CLIENT_REPO" --json assets -q '.assets[].name' | grep '^build-cache-' | grep -vx "$ASSET" | while read -r old; do
+            bash ci/retry.sh idem gh release delete-asset "$TAG" "$old" -R "$CLIENT_REPO" -y
           done
       # Контрольные суммы архивов: хуки сессии сверяют их до распаковки (ci/cache-sums.sh, файл SHA256SUMS релиза)
       - name: Checksums of the archives
@@ -1247,7 +1261,7 @@ jobs:
           GH_TOKEN: ${{ secrets.EXILEFORGE_TOKEN }}
         run: |
           asset="toolchain-$(bash .claude/hooks/toolchain.sh key).tar.gz"
-          have=$(gh release view "$TAG" -R "$CLIENT_REPO" --json assets -q '.assets[].name' 2>/dev/null || true)
+          have=$(bash ../ci/retry.sh read gh release view "$TAG" -R "$CLIENT_REPO" --json assets -q '.assets[].name' 2>/dev/null || true)
           if grep -qx "$asset" <<<"$have"; then fresh=true; else fresh=false; fi
           echo "asset=$asset" >> "$GITHUB_OUTPUT"
           echo "fresh=$fresh" >> "$GITHUB_OUTPUT"
@@ -1266,13 +1280,13 @@ jobs:
         run: |
           bash .claude/hooks/toolchain.sh pack "$PWD/$ASSET"
           echo "archive: $(du -h "$ASSET" | cut -f1)"
-          if ! gh release view "$TAG" -R "$CLIENT_REPO" >/dev/null 2>&1; then
-            gh release create "$TAG" -R "$CLIENT_REPO" --target "$SHA" --prerelease --latest=false --title "Gradle cache" \
+          if ! bash ../ci/retry.sh read gh release view "$TAG" -R "$CLIENT_REPO" >/dev/null 2>&1; then
+            bash ../ci/retry.sh once gh release create "$TAG" -R "$CLIENT_REPO" --target "$SHA" --prerelease --latest=false --title "Gradle cache" \
               --notes "Gradle dependencies for cloud agent sessions (exile-ci client.yml, job gradle-cache). Not a game release."
           fi
-          gh release upload "$TAG" "$ASSET" -R "$CLIENT_REPO" --clobber
-          gh release view "$TAG" -R "$CLIENT_REPO" --json assets -q '.assets[].name' | grep '^toolchain-' | grep -vx "$ASSET" | while read -r old; do
-            gh release delete-asset "$TAG" "$old" -R "$CLIENT_REPO" -y
+          bash ../ci/retry.sh idem gh release upload "$TAG" "$ASSET" -R "$CLIENT_REPO" --clobber
+          bash ../ci/retry.sh read gh release view "$TAG" -R "$CLIENT_REPO" --json assets -q '.assets[].name' | grep '^toolchain-' | grep -vx "$ASSET" | while read -r old; do
+            bash ../ci/retry.sh idem gh release delete-asset "$TAG" "$old" -R "$CLIENT_REPO" -y
           done
       - name: Checksums of the archives
         working-directory: src

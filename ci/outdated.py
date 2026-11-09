@@ -13,10 +13,10 @@ import os
 import sys
 import tomllib
 import urllib.error
-import urllib.request
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor
 
+import net
 from store_common import say
 
 LIBRARY_REPOS = ("https://repo.maven.apache.org/maven2", "https://dl.google.com/dl/android/maven2")
@@ -59,8 +59,7 @@ def published(module, repos):
     for repo in repos:
         url = f"{repo}/{group.replace('.', '/')}/{artifact}/maven-metadata.xml"
         try:
-            with urllib.request.urlopen(url, timeout=TIMEOUT_S) as response:
-                root = ET.fromstring(response.read())
+            root = ET.fromstring(net.fetch(url, timeout=TIMEOUT_S).body)
         except urllib.error.HTTPError as error:
             if error.code == 404:
                 continue

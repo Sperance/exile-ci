@@ -18,6 +18,7 @@ import json
 import os
 import sys
 
+import net
 from store_common import fail, load_update, say, short_notes
 
 API = "https://androidpublisher.googleapis.com/androidpublisher/v3/applications"
@@ -57,20 +58,20 @@ class Play:
     def edit(self):
         """Правка Play: создаётся, отдаётся как id; не закоммиченная - удаляется."""
         base = f"{API}/{self.package}/edits"
-        edit_id = self._check(self.http.post(base, json={}), "edit insert")["id"]
+        edit_id = self._check(net.send(self.http, "POST", base, mode=net.IDEMPOTENT, json={}), "edit insert")["id"]
         try:
             yield edit_id
         finally:
-            self.http.delete(f"{base}/{edit_id}")
+            net.send(self.http, "DELETE", f"{base}/{edit_id}")
 
     def _commit(self, edit_id):
         # Коммит закрывает правку: последующее удаление в edit() вернёт 404 и ничего не испортит
-        self._check(self.http.post(f"{API}/{self.package}/edits/{edit_id}:commit"), "edit commit")
+        self._check(net.send(self.http, "POST", f"{API}/{self.package}/edits/{edit_id}:commit"), "edit commit")
 
     def newest(self, track=TRACK):
         """Самый новый выпуск дорожки track (по наибольшему versionCode) или None."""
         with self.edit() as edit_id:
-            response = self.http.get(f"{API}/{self.package}/edits/{edit_id}/tracks/{track}")
+            response = net.send(self.http, "GET", f"{API}/{self.package}/edits/{edit_id}/tracks/{track}")
             if response.status_code == 404:
                 return None
             releases = self._check(response, "track get").get("releases", [])
@@ -79,7 +80,7 @@ class Play:
 
     def _upload_bundle(self, edit_id, path, version_code):
         with open(path, "rb") as bundle:
-            response = self.http.post(f"{UPLOAD}/{self.package}/edits/{edit_id}/bundles?uploadType=media", data=bundle,
+            response = net.send(self.http, "POST", f"{UPLOAD}/{self.package}/edits/{edit_id}/bundles?uploadType=media", data=bundle,
                                       headers={"Content-Type": "application/octet-stream"}, timeout=1800)
         if response.status_code in (400, 403) and ("apkUpgradeVersionConflict" in response.text or "has already been used" in response.text):
             # Повторный запуск после обрыва: пакет этой версии в Play уже есть - дальше только дорожка
@@ -89,13 +90,13 @@ class Play:
 
     def _set_track(self, edit_id, release):
         url = f"{API}/{self.package}/edits/{edit_id}/tracks/{TRACK}"
-        response = self.http.put(url, json={"track": TRACK, "releases": [release]})
+        response = net.send(self.http, "PUT", url, json={"track": TRACK, "releases": [release]})
         if response.status_code == 400 and "draft app" in response.text.lower():
             # Приложение в Play ещё черновик: API принимает только черновик выпуска, остальное владелец доделает в консоли
             say("::notice::Play: the app is still a draft, the release is saved as a draft: finish it in the Play Console")
             release = {key: value for key, value in release.items() if key != "userFraction"}
             release["status"] = "draft"
-            response = self.http.put(url, json={"track": TRACK, "releases": [release]})
+            response = net.send(self.http, "PUT", url, json={"track": TRACK, "releases": [release]})
         self._check(response, "track update")
 
     def release(self, aab, version_code, version_name, notes, mandatory=False):
@@ -115,7 +116,7 @@ class Play:
         done = {key: value for key, value in release.items() if key != "userFraction"}
         done["status"] = "completed"
         with self.edit() as edit_id:
-            self._check(self.http.put(f"{API}/{self.package}/edits/{edit_id}/tracks/{track}", json={"track": track, "releases": [done]}),
+            self._check(net.send(self.http, "PUT", f"{API}/{self.package}/edits/{edit_id}/tracks/{track}", json={"track": track, "releases": [done]}),
                         "track promote")
             self._commit(edit_id)
 

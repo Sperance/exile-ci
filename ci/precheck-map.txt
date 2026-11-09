@@ -1,0 +1,56 @@
+# Карта «шаг CI -> шаг scripts/precheck.sh»: у каждого job и шага server.yml, client.yml и check-wip.yml есть решение. Сторож: ci/guard-parity.py
+# (job guards в check-wip.yml, шаг «CI scripts guards» в job'ах changes client.yml и resolve server.yml): шаг без строки или строка без шага - красное.
+# Формат: `ключ => precheck:<client|server>:<шаг>[,<шаг>]` либо `ключ => ci-only: <причина>`; ключ - `workflow/job[/имя шага]`, `*` разрешён только у ci-only.
+# Шаги precheck: сервер - format, comment-style, compile, content, snapshots, rules-version, js, tests; клиент - format, guards, compile, tests, meta-combat.
+# Новый шаг CI: либо шаг в precheck и строка precheck здесь, либо ci-only с причиной, почему локально его не повторить («Причины красного CI» в rules-md/server/ci.md).
+
+# --- сервер (server.yml)
+server/resolve* => ci-only: выбор коммита и режима прогона, читает commit status check-wip
+server/checks => precheck:server:format,comment-style,compile,content,snapshots,rules-version,js,tests
+server/checks/One rules version per release => precheck:server:rules-version
+server/checks/Content and contract checks => precheck:server:format,comment-style,content,snapshots,js,tests
+server/panel* => ci-only: браузерная проверка графиков панели (Playwright и Chromium), в сессии браузера нет
+server/compat* => ci-only: контрактные тесты старейшего клиента окна ревизий, нужны MongoDB и исходники релиза клиента
+server/image* => ci-only: сборка и публикация образа в ghcr, нужен Docker и права на пакеты
+server/mark* => ci-only: метка проверенного образа в ghcr
+server/deploy* => ci-only: выкат на VPS, секреты SSH и ghcr
+server/refresh-cache* => ci-only: сверка файлов сборки с закреплением клиента и запуск пересборки кэша Gradle
+
+# --- клиент (client.yml)
+client/changes* => ci-only: выбор ворот по разнице, зелёные деревья и состояние выпуска; читает кэш Actions и commit status
+client/core => precheck:client:format,guards,compile,tests,meta-combat
+client/core/Core checks => precheck:client:format,guards,tests,meta-combat
+client/app-fast => precheck:client:format,guards
+client/app-fast/Fast Android guards => precheck:client:format,guards
+client/app => ci-only: Android Lint (:app:lintDirectRelease) собирает все варианты с SDK раннера, в precheck не входит
+client/app/Android Lint => ci-only: Android Lint (:app:lintDirectRelease) собирает все варианты с SDK раннера, в precheck не входит
+client/minified* => ci-only: сборки uiTest и minifiedTest (R8) для эмулятора
+client/release-apk* => ci-only: сборка APK прямого канала (R8, ключ сборки)
+client/release-aab* => ci-only: сборка AAB для Google Play (R8, ключ сборки)
+client/release-rustore* => ci-only: сборка APK для RuStore (R8, ключ сборки)
+client/sign* => ci-only: подпись ключом выпуска, секрет есть только у CI
+client/emulator* => ci-only: UI-тесты и строгий смоук на эмуляторе Android
+client/client-server* => ci-only: контракт клиента с настоящим сервером, нужна MongoDB
+client/mark-green* => ci-only: метки зелёных деревьев в кэше Actions
+client/release* => ci-only: публикация релиза, подпись update.json, деплой сервера, закрытие Issues
+client/publish-play* => ci-only: выкладка в Google Play, секреты магазина
+client/publish-rustore* => ci-only: выкладка в RuStore, секреты магазина
+client/store-status* => ci-only: опрос каналов магазинов
+client/gradle-cache* => ci-only: сборка архивов кэша Gradle для сессий агента
+client/gradle-toolchain* => ci-only: архив JDK и Android SDK для сессий агента
+
+# --- check-wip.yml
+check-wip/resolve* => ci-only: головы wip обоих репозиториев и закрепление сервера в клиенте
+check-wip/server => ci-only: вызывает server.yml в режиме check-wip, шаги этого workflow выше
+check-wip/client => ci-only: вызывает client.yml в режиме check-wip, шаги этого workflow выше
+check-wip/guards => ci-only: сторожа накопления заметок, важного текста и вайпов смотрят историю и теги обоих репозиториев
+check-wip/guards/uses:actions/checkout => ci-only: инфраструктура Actions
+check-wip/guards/Both repositories with the working branches => ci-only: клоны обоих репозиториев для сторожей
+check-wip/guards/Accumulated notes, important text and wipes => ci-only: ci/release_state.py check смотрит историю, теги и рабочие ветки обоих репозиториев
+check-wip/guards/Encrypted log => ci-only: журнал упавшего шага шифруется для владельца
+check-wip/record* => ci-only: запись commit status check-wip на оба коммита
+
+# --- общие шаги
+*/*/CI scripts guards => ci-only: сторож самого репозитория exile-ci (сеть и карта), не код игры
+*/*/uses:* => ci-only: инфраструктурные действия Actions (checkout, кэш, артефакты, установка инструментов)
+*/*/Encrypted log => ci-only: журнал упавшего шага шифруется для владельца

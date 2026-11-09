@@ -14,8 +14,7 @@ import json
 import os
 import sys
 
-import requests
-
+import net
 from store_common import fail, load_update, say, short_notes
 
 BASE = "https://public-api.rustore.ru"
@@ -61,7 +60,7 @@ def load_key(text):
 class RuStore:
     def __init__(self, key_id, private_key, package):
         self.package = package
-        self.http = requests.Session()
+        self.http = net.session()
         self.http.headers["Public-Token"] = self._token(key_id, load_key(private_key))
 
     def _token(self, key_id, key):
@@ -70,7 +69,8 @@ class RuStore:
 
         stamp = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="milliseconds")
         signature = base64.b64encode(key.sign((key_id + stamp).encode(), padding.PKCS1v15(), hashes.SHA512())).decode()
-        response = requests.post(f"{BASE}/public/auth/", json={"keyId": key_id, "timestamp": stamp, "signature": signature}, timeout=60)
+        response = net.send(None, "POST", f"{BASE}/public/auth/", mode=net.IDEMPOTENT,
+                            json={"keyId": key_id, "timestamp": stamp, "signature": signature}, timeout=60)
         return self._body(response, "auth")["jwe"]
 
     @staticmethod
@@ -96,7 +96,7 @@ class RuStore:
 
     def versions(self):
         """Версии приложения: список словарей с versionId, versionName, versionCode, versionStatus."""
-        body = self._body(self.http.get(self._app(), params={"size": 50}, timeout=60), "versions")
+        body = self._body(net.send(self.http, "GET", self._app(), params={"size": 50}, timeout=60), "versions")
         return body.get("content", []) if isinstance(body, dict) else (body or [])
 
     def newest(self):
@@ -129,15 +129,15 @@ class RuStore:
             raise Queued()
         # Черновик не правится, только удаляется: брошенный прошлым прогоном уходит перед новым
         for draft in (v for v in existing if str(v.get("versionStatus", "")).upper() == "DRAFT"):
-            self._body(self.http.delete(self._app(f"/{draft['versionId']}"), timeout=60), "draft delete")
+            self._body(net.send(self.http, "DELETE", self._app(f"/{draft['versionId']}"), timeout=60), "draft delete")
         draft = {"whatsNew": short_notes(notes, NOTES_LIMIT), "publishType": "INSTANTLY"}
         contacts = developer_contacts()
         if contacts:
             draft["developerContacts"] = contacts
-        version_id = self._body(self.http.post(self._app(), json=draft, timeout=60), "draft create")
+        version_id = self._body(net.send(self.http, "POST", self._app(), json=draft, timeout=60), "draft create")
         try:
             with open(apk, "rb") as file:
-                self._body(self.http.post(self._app(f"/{version_id}/apk"), params={"isMainApk": "true", "servicesType": "Unknown"},
+                self._body(net.send(self.http, "POST", self._app(f"/{version_id}/apk"), params={"isMainApk": "true", "servicesType": "Unknown"},
                                           files={"file": (os.path.basename(apk), file, "application/vnd.android.package-archive")},
                                           timeout=1800), "apk upload")
         except RuStoreError:
@@ -145,12 +145,12 @@ class RuStore:
             self._drop_draft(version_id)
             raise
         priority = MANDATORY_PRIORITY if mandatory else 0
-        self._body(self.http.post(self._app(f"/{version_id}/commit"), params={"priorityUpdate": priority}, timeout=60), "commit")
+        self._body(net.send(self.http, "POST", self._app(f"/{version_id}/commit"), params={"priorityUpdate": priority}, timeout=60), "commit")
 
     def _drop_draft(self, version_id):
         try:
-            self._body(self.http.delete(self._app(f"/{version_id}"), timeout=60), "draft delete")
-        except (RuStoreError, requests.RequestException):
+            self._body(net.send(self.http, "DELETE", self._app(f"/{version_id}"), timeout=60), "draft delete")
+        except (RuStoreError, OSError):
             say("::warning::RuStore: the empty draft could not be deleted, remove it in the console")
 
 

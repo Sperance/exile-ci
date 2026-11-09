@@ -8,13 +8,13 @@ import json
 import os
 import re
 import sys
-import time
 import urllib.error
-import urllib.request
 from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import net
 import notes
+from net import get_json
 
 REPORT_PATH = "/api/v1/admin/release/channels"
 CHANNELS = ("DIRECT", "PLAY", "RUSTORE")
@@ -77,24 +77,6 @@ def build_entry(version_code, version_name, revision, availability, published_at
     return entry
 
 
-def get_json(url, token=None, attempts=4):
-    """JSON по адресу; ответ 5xx или обрыв сети GitHub повторяется с паузой 5, 10, 20 с (скачивание ассетов релиза бывает медленным)."""
-    headers = {"Accept": "application/vnd.github+json"}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    for attempt in range(attempts):
-        try:
-            with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=60) as response:
-                return json.load(response)
-        except urllib.error.HTTPError as error:
-            if error.code < 500 or attempt == attempts - 1:
-                raise
-        except (urllib.error.URLError, TimeoutError):
-            if attempt == attempts - 1:
-                raise
-        time.sleep(5 * 2 ** attempt)
-
-
 def parse_time(text):
     return int(datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp() * 1000)
 
@@ -145,18 +127,10 @@ def post_report(channel, active, build=None, attempts=1, pause=30):
     В исключении - только код ответа: тело ответа и адрес в журнал не идут."""
     body = {"channel": channel, "active": bool(active), "build": build}
     url = os.environ["SERVER_URL"].strip().rstrip("/") + REPORT_PATH
-    request = urllib.request.Request(
-        url, data=json.dumps(body).encode(), method="POST",
-        headers={"Content-Type": "application/json", "X-Release-Token": os.environ["RELEASE_STATUS_TOKEN"].strip()})
-    for attempt in range(1, attempts + 1):
-        try:
-            with urllib.request.urlopen(request, timeout=30) as response:
-                response.read()
-            return
-        except urllib.error.HTTPError as error:
-            problem = f"HTTP {error.code}"
-        except (urllib.error.URLError, TimeoutError, OSError) as error:
-            problem = type(error).__name__
-        if attempt == attempts:
-            raise RuntimeError(f"report of {channel} refused: {problem}")
-        time.sleep(pause)
+    headers = {"Content-Type": "application/json", "X-Release-Token": os.environ["RELEASE_STATUS_TOKEN"].strip()}
+    try:
+        net.fetch(url, method="POST", data=json.dumps(body).encode(), headers=headers, timeout=30, mode=net.IDEMPOTENT, delays=(pause,) * (attempts - 1))
+    except urllib.error.HTTPError as error:
+        raise RuntimeError(f"report of {channel} refused: HTTP {error.code}") from None
+    except (urllib.error.URLError, TimeoutError, OSError) as error:
+        raise RuntimeError(f"report of {channel} refused: {type(error).__name__}") from None

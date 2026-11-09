@@ -164,11 +164,11 @@ jobs:
           TAG: ${{ steps.pack.outputs.tag }}
         run: |
           # Файл отдаётся вместе с созданием: gh создаёт черновик, грузит архив и только потом публикует
-          gh release create "$TAG" "$RUNNER_TEMP/$ASSET" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease --latest=false \
+          bash ci/retry.sh once gh release create "$TAG" "$RUNNER_TEMP/$ASSET" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease --latest=false \
             --title "Art $TAG" --notes 'Game pictures for update.sh art on the server. Newest release wins.'
           # Старые архивы - целыми релизами: тег неизменяемого релиза может остаться, это не мешает
-          gh release list -R "$GITHUB_REPOSITORY" --limit 200 --json tagName -q '.[].tagName' | grep -E '^art-[0-9]{8}-[0-9]{6}$' | sort -r \
-            | tail -n +$((KEEP + 1)) | while read -r old; do gh release delete "$old" -R "$GITHUB_REPOSITORY" -y || true; done
+          bash ci/retry.sh read gh release list -R "$GITHUB_REPOSITORY" --limit 200 --json tagName -q '.[].tagName' | grep -E '^art-[0-9]{8}-[0-9]{6}$' | sort -r \
+            | tail -n +$((KEEP + 1)) | while read -r old; do bash ci/retry.sh idem gh release delete "$old" -R "$GITHUB_REPOSITORY" -y || true; done
           echo "published $TAG"
 
       - name: Install on the server
@@ -239,10 +239,10 @@ jobs:
           ARCHIVE: ${{ steps.export.outputs.archive }}
           TAG: ${{ steps.export.outputs.tag }}
         run: |
-          gh release create "$TAG" "$ARCHIVE" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease --latest=false \
+          bash ci/retry.sh once gh release create "$TAG" "$ARCHIVE" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease --latest=false \
             --title "Art $TAG (server backup)" --notes 'Daily copy of the server pictures. update.sh art restores the newest art release.'
-          gh release list -R "$GITHUB_REPOSITORY" --limit 200 --json tagName -q '.[].tagName' | grep -E '^art-[0-9]{8}-[0-9]{6}$' | sort -r \
-            | tail -n +$((KEEP + 1)) | while read -r old; do gh release delete "$old" -R "$GITHUB_REPOSITORY" -y || true; done
+          bash ci/retry.sh read gh release list -R "$GITHUB_REPOSITORY" --limit 200 --json tagName -q '.[].tagName' | grep -E '^art-[0-9]{8}-[0-9]{6}$' | sort -r \
+            | tail -n +$((KEEP + 1)) | while read -r old; do bash ci/retry.sh idem gh release delete "$old" -R "$GITHUB_REPOSITORY" -y || true; done
           echo "published $TAG"
 
       - name: Encrypted log
@@ -327,11 +327,11 @@ jobs:
           gzip -t "$tmp/db.archive.gz" || { rm -f "$tmp/db.archive.gz"; echo '::error::the copy from the server is not a gzip archive'; exit 1; }
           age -r "$LOG_AGE_RECIPIENT" -r "$SEAL_AGE_RECIPIENT" -o "$tmp/db-$stamp.archive.gz.age" "$tmp/db.archive.gz"
           rm -f "$tmp/db.archive.gz"
-          gh release create "db-$stamp" "$tmp/db-$stamp.archive.gz.age" -R Sperance/ExileForge --prerelease --latest=false \
+          bash ci/retry.sh once gh release create "db-$stamp" "$tmp/db-$stamp.archive.gz.age" -R Sperance/ExileForge --prerelease --latest=false \
             --title "DB db-$stamp" --notes 'Weekly encrypted copy of the game databases (age). Restore: workflow VPS in exile-ci, command restore.'
           rm -f "$tmp/db-$stamp.archive.gz.age"
-          gh release list -R Sperance/ExileForge --limit 200 --json tagName -q '.[].tagName' | grep -E '^db-[0-9]{8}-[0-9]{6}$' | sort -r \
-            | tail -n +5 | while read -r old; do gh release delete "$old" -R Sperance/ExileForge -y --cleanup-tag || true; done
+          bash ci/retry.sh read gh release list -R Sperance/ExileForge --limit 200 --json tagName -q '.[].tagName' | grep -E '^db-[0-9]{8}-[0-9]{6}$' | sort -r \
+            | tail -n +5 | while read -r old; do bash ci/retry.sh idem gh release delete "$old" -R Sperance/ExileForge -y --cleanup-tag || true; done
           echo "published db-$stamp"
 
       - name: Encrypted log
@@ -374,7 +374,7 @@ jobs:
           elif [[ $FROM =~ ^db-[0-9]{8}-[0-9]{6}$ ]]; then
             [[ -n $SEAL_AGE_IDENTITY && -n $GH_TOKEN ]] || { echo '::error::SEAL_AGE_IDENTITY or EXILEFORGE_TOKEN is not set'; exit 1; }
             . ci/crypt.sh; ensure_age
-            gh release download "$FROM" -R Sperance/ExileForge -p "$FROM.archive.gz.age" -O "$tmp/db.age" || { echo '::error::no such weekly copy'; exit 1; }
+            bash ci/retry.sh read gh release download "$FROM" -R Sperance/ExileForge -p "$FROM.archive.gz.age" -O "$tmp/db.age" || { echo '::error::no such weekly copy'; exit 1; }
             install -m 600 /dev/null "$tmp/id" && printf '%s\n' "$SEAL_AGE_IDENTITY" > "$tmp/id"
             age -d -i "$tmp/id" -o "$tmp/db.archive.gz" "$tmp/db.age"
             rm -f "$tmp/id" "$tmp/db.age"
@@ -420,7 +420,7 @@ jobs:
           tmp=${RUNNER_TEMP:?}
           mkdir -p "$tmp/bundles" logs
           for repo in ExileForge ktor-bestgame exile-ci; do
-            git clone -q --mirror "https://x-access-token:$SOURCE_TOKEN@github.com/Sperance/$repo.git" "$tmp/$repo.git"
+            bash ci/retry.sh read git clone -q --mirror "https://x-access-token:$SOURCE_TOKEN@github.com/Sperance/$repo.git" "$tmp/$repo.git"
             git -C "$tmp/$repo.git" bundle create -q "$tmp/bundles/$repo.bundle" --all
           done
           tar -C "$tmp/bundles" -cf "$tmp/repos.tar" ExileForge.bundle ktor-bestgame.bundle exile-ci.bundle

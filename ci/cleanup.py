@@ -13,11 +13,11 @@ import os
 import re
 import sys
 import urllib.error
-import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
 from store_common import fail, say
+import net
 
 API = "https://api.github.com"
 PRIVATE_REPOS = ("Sperance/ExileForge", "Sperance/ktor-bestgame")
@@ -36,15 +36,14 @@ class GitHub:
         self.token = token
 
     def request(self, method, url):
-        request = urllib.request.Request(url if url.startswith("https://") else API + url, method=method, headers={
+        headers = {
             "Authorization": f"Bearer {self.token}",
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
-        })
+        }
         try:
-            with urllib.request.urlopen(request, timeout=30) as response:
-                body = response.read()
-                return response.status, json.loads(body) if body else None, response.headers.get("Link", "")
+            response = net.fetch(url if url.startswith("https://") else API + url, method=method, headers=headers, timeout=30)
+            return response.status, json.loads(response.body) if response.body else None, response.headers.get("Link", "")
         except urllib.error.HTTPError as error:
             return error.code, None, ""
 

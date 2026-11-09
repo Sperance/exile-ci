@@ -49,14 +49,14 @@ jobs:
           SHA: ${{ inputs.sha }}
         run: |
           . ci/branches.env
-          sha=${SHA:-$(gh api "repos/$SERVER_REPO/commits/$SERVER_BRANCH" --jq .sha)}
-          if ! gh api -H "Accept: application/vnd.github.raw" "repos/$SERVER_REPO/contents/IMPORTANT.md?ref=$sha" > IMPORTANT.md 2> "$RUNNER_TEMP/err"; then
+          sha=${SHA:-$(bash ci/retry.sh read gh api "repos/$SERVER_REPO/commits/$SERVER_BRANCH" --jq .sha)}
+          if ! bash ci/retry.sh read gh api -H "Accept: application/vnd.github.raw" "repos/$SERVER_REPO/contents/IMPORTANT.md?ref=$sha" > IMPORTANT.md 2> "$RUNNER_TEMP/err"; then
             grep -q "HTTP 404" "$RUNNER_TEMP/err" || { echo "::error::IMPORTANT.md of the server was not read"; exit 1; }
             : > IMPORTANT.md
           fi
           if ! grep -q '[^[:space:]]' IMPORTANT.md; then echo "no important text"; echo "tag=" >> "$GITHUB_OUTPUT"; exit 0; fi
           tag="important-$(sha256sum IMPORTANT.md | cut -c1-12)"
-          if GH_TOKEN=$REPO_TOKEN gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" >/dev/null 2>&1; then
+          if GH_TOKEN=$REPO_TOKEN bash ci/retry.sh read gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" >/dev/null 2>&1; then
             echo "already posted: $tag"; echo "tag=" >> "$GITHUB_OUTPUT"
           else
             echo "new important text: $tag"; echo "tag=$tag" >> "$GITHUB_OUTPUT"
@@ -70,6 +70,6 @@ jobs:
           VERSION: ${{ inputs.version }}
         run: |
           if python3 ci/telegram/important.py IMPORTANT.md "$VERSION"; then
-            gh api -X POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$TAG" -f sha="$GITHUB_SHA" >/dev/null
+            bash ci/retry.sh idem gh api -X POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$TAG" -f sha="$GITHUB_SHA" >/dev/null
             echo "tagged $TAG"
           fi

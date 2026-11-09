@@ -10,9 +10,9 @@ GITHUB_OUTPUT. Результат - строка `tag=` в $GITHUB_OUTPUT: пу�
 """
 import os
 import re
-import subprocess
 import sys
 
+import net
 from store_common import fail, get_json, say
 
 CLIENT_REPO = "Sperance/ExileForge"
@@ -35,7 +35,7 @@ def has_client_tag(tag):
     if not token:
         return True
     url = f"https://x-access-token:{token}@github.com/{CLIENT_REPO}.git"
-    return subprocess.run(["git", "ls-remote", "--exit-code", "--tags", url, f"refs/tags/{tag}"], capture_output=True).returncode == 0
+    return net.run(net.READ, ["git", "ls-remote", "--exit-code", "--tags", url, f"refs/tags/{tag}"], capture_output=True).returncode == 0
 
 
 def main():
