@@ -5,7 +5,8 @@
 #   2. server.yml и client.yml как вызываемые workflow в режиме check-wip: те же ворота, что у пуша кода, но все, а не по разнице
 #      (клиент: core, app, R8-сборки и эмулятор, контракт с сервером; сервер: проверки, панель в браузере, совместимость со старейшим
 #      клиентом). Образ в ghcr не собирается и не метится, выпуска и деплоя нет;
-#   3. guards: накопление не потеряно (ci/release_state.py check): (а) строки невыпущенной «Следующей версии» RELEASE_NOTES.md и
+#   3. guards (идёт ПЕРВЫМ после resolve: server и client ждут его, красное из дешёвых сторожей приходит за минуту, а не после полной загрузки раннеров;
+#      зелёный путь дольше на ~15 с): версия правил за выпуск (ci/rules-step.py: RULES_VERSION не выше правил последнего релиза клиента + 1), накопление не потеряно (ci/release_state.py check): (а) строки невыпущенной «Следующей версии» RELEASE_NOTES.md и
 #      неопубликованного IMPORTANT.md рабочей ветки есть на wip (перенос между подразделами - не удаление), иначе нужен трейлер
 #      `Notes-Edit: <причина>` в коммите wip; (б) поднятая с прошлого выката сервера версия игровой коллекции (любой, кроме служебных из ci/service-collections.txt)
 #      сопровождена новым текстом IMPORTANT.md или трейлером `Wipe-Silent: <причина>`; (в) к вышедшему тексту IMPORTANT.md (тег
@@ -13,11 +14,13 @@
 #      Там же сторожа самого exile-ci (шаг «CI scripts guards»): ci/guard-network.py - голый gh, curl, git или urlopen вне ci/retry.sh и ci/net.py,
 #      ci/guard-parity.py - шаг CI без строки в ci/precheck-map.txt или шаг precheck из карты, которого нет в scripts/precheck.sh обоих репозиториев,
 #      ci/guard-test-vps.py - job тестового стенда с боевым ключом деплоя или путём /opt/exileforge;
-#   4. record: оба зелёные - на sha клиента и sha сервера кладётся commit status «check-wip» = success (ci/check-wip-status.sh); упал любой
+#   4. record: сводка времён job'ов и сторож замедления (ci/check-wip-timing.py: wall прогона > 1,4 медианы последних 10 успешных - предупреждение, не падение);
+#      оба зелёные - на sha клиента и sha сервера кладётся commit status «check-wip» = success (ci/check-wip-status.sh); упал любой
 #      - failure. Отметку читает хук pre-push репозиториев: пуш в рабочую ветку без зелёного check-wip на этом sha отклоняется.
 # Журналы шифруются так же, как в client.yml и server.yml (ci/quiet.sh, age). Ворота client.yml, прошедшие здесь, ставят метки
 # зелёного дерева: релиз потом их не повторяет.
-# Секреты: SOURCE_TOKEN (чтение), CHECK_WIP_TOKEN либо EXILEFORGE_TOKEN с правом «Commit statuses: write» на ExileForge и ktor-bestgame.
+# Запись статуса сразу читается обратно токеном SOURCE_TOKEN (ci/check-wip-read.sh --expect): так же читают ворота пуша; нечитаемый статус - красное.
+# Секреты: SOURCE_TOKEN (чтение, в том числе «Commit statuses: read» на ExileForge и ktor-bestgame), CHECK_WIP_TOKEN либо EXILEFORGE_TOKEN с правом «Commit statuses: write» на ExileForge и ktor-bestgame.
 name: Check wip
 
 on:
@@ -82,7 +85,7 @@ jobs:
           { echo "client=$client"; echo "server=$server"; } >> "$GITHUB_OUTPUT"
 
   server:
-    needs: resolve
+    needs: [ resolve, guards ]
     uses: ./.github/workflows/server.yml
     with:
       mode: check-wip
@@ -95,7 +98,7 @@ jobs:
       actions: write
 
   client:
-    needs: resolve
+    needs: [ resolve, guards ]
     uses: ./.github/workflows/client.yml
     with:
       mode: check-wip
@@ -133,6 +136,14 @@ jobs:
           python3 -I ci/guard-network.py
           python3 -I ci/guard-parity.py --client-precheck "$RUNNER_TEMP/precheck-client.sh" --server-precheck "$RUNNER_TEMP/precheck-server.sh"
           python3 -I ci/guard-test-vps.py
+      - name: One rules version per release
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          SERVER: ${{ needs.resolve.outputs.server }}
+        run: |
+          content=$(python3 ci/rules-step.py --content-path)
+          bash ci/retry.sh read git -C srv show "$SERVER:$content" > "$RUNNER_TEMP/Content.kt"
+          python3 ci/rules-step.py --file "$RUNNER_TEMP/Content.kt"
       - name: Accumulated notes, important text and wipes
         env:
           GH_TOKEN: ${{ github.token }}
@@ -164,13 +175,28 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: read
+      actions: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
+      # Время каждого job и прогона; прогон дольше 1,4 медианы последних 10 успешных - предупреждение (не падение, шаг ничего не роняет)
+      - name: Timing summary
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          jobs="$RUNNER_TEMP/jobs.jsonl" run="$RUNNER_TEMP/run.json" runs="$RUNNER_TEMP/runs.jsonl"
+          bash ci/retry.sh read gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?per_page=100" --jq '.jobs[] | {name, started_at, completed_at}' > "$jobs" || : > "$jobs"
+          bash ci/retry.sh read gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" > "$run" || echo '{}' > "$run"
+          bash ci/retry.sh read gh api "repos/$GITHUB_REPOSITORY/actions/workflows/check-wip.yml/runs?status=success&per_page=10" --jq '.workflow_runs[] | {id, run_started_at, updated_at}' > "$runs" || : > "$runs"
+          python3 -I ci/check-wip-timing.py "$jobs" "$run" "$runs" || true
+      # Сторож доверия: записанный статус читается обратно тем же токеном (SOURCE_TOKEN) и тем же путём, что ворота пуша в client.yml и server.yml;
+      # не прочитался (нет права «Commit statuses: read») - красное, иначе пуш молча повторял бы все проверки
       - name: Record check-wip on both commits
         env:
           TOKEN: ${{ secrets.CHECK_WIP_TOKEN || secrets.EXILEFORGE_TOKEN }}
+          READ_TOKEN: ${{ secrets.SOURCE_TOKEN }}
           CLIENT: ${{ needs.resolve.outputs.client }}
           SERVER: ${{ needs.resolve.outputs.server }}
           GREEN: ${{ needs.server.result == 'success' && needs.client.result == 'success' && needs.guards.result == 'success' }}
@@ -180,4 +206,6 @@ jobs:
           if [ "$GREEN" = true ]; then state=success; text="client and server wip checked together"; else state=failure; text="check-wip failed or was cancelled"; fi
           bash ci/check-wip-status.sh "$CLIENT_REPO" "$CLIENT" "$state" "$text (server ${SERVER:0:12})" "$URL"
           bash ci/check-wip-status.sh "$SERVER_REPO" "$SERVER" "$state" "$text (client ${CLIENT:0:12})" "$URL"
+          TOKEN="$READ_TOKEN" bash ci/check-wip-read.sh --expect "$state" "$CLIENT_REPO" "$CLIENT"
+          TOKEN="$READ_TOKEN" bash ci/check-wip-read.sh --expect "$state" "$SERVER_REPO" "$SERVER"
           [ "$state" = success ]

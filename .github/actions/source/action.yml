@@ -29,8 +29,11 @@ inputs:
     description: History depth (0 - all, with tags)
     default: '1'
   cache-writer:
-    description: "'true' - the job saves the Gradle cache (build cache included); the writers are core, ui-build (client) and checks (server), all other jobs only read it"
+    description: "'true' - the job saves the Gradle cache (build cache included); the writers are core, app, ui-build (client) and checks (server), all other jobs only read it"
     default: 'false'
+  gradle:
+    description: "'false' - no JDK and Gradle setup (a job that does not run Gradle: the post step of setup-gradle alone costs 15-25 s)"
+    default: 'true'
 runs:
   using: composite
   steps:
@@ -49,14 +52,16 @@ runs:
       env:
         SRC: ${{ inputs.path }}
       run: '[ "$(git -C "$SRC/backend" rev-parse --is-shallow-repository)" = false ] || bash ci/retry.sh read git -C "$SRC/backend" fetch --quiet --unshallow'
-    - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.9.1
+    - if: ${{ inputs.gradle == 'true' }}
+      uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.9.1
       with:
         distribution: temurin
         java-version: ${{ inputs.java }}
-    # Кэш Gradle (зависимости и кэш сборки caches/build-cache-1) сохраняют только job'ы-писатели (cache-writer: core и ui-build клиента,
-    # checks сервера: вместе они проходят код клиента, R8-сборку и сервер), остальные его только читают: сохранение в каждом job'е стоило
+    # Кэш Gradle (зависимости и кэш сборки caches/build-cache-1) сохраняют только job'ы-писатели (cache-writer: core, app и ui-build клиента,
+    # checks сервера: вместе они проходят код клиента, Lint, R8-сборку и сервер), остальные его только читают: сохранение в каждом job'е стоило
     # 15-24 с и не добавляло записей. Писать кэш может лишь запуск на main (в других ветках setup-gradle читает всегда)
-    - uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4.4.3
+    - if: ${{ inputs.gradle == 'true' }}
+      uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4.4.3
       with:
         cache-read-only: ${{ inputs.cache-writer != 'true' }}
         # Неиспользуемые файлы кэша удаляются перед сохранением: кэш не копится до лимита GitHub (читателю чистить нечего)

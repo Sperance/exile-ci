@@ -2,6 +2,8 @@
 """Одна версия правил за выпуск (job `checks` server.yml): RULES_VERSION сервера не выше правил последнего релиза клиента + 1.
 
     python3 ci/rules-step.py <каталог с исходниками сервера>
+    python3 ci/rules-step.py --file <Content.kt сервера>     (job guards check-wip.yml: файл достаётся из git без checkout)
+    python3 ci/rules-step.py --content-path                  (путь Content.kt внутри исходников сервера)
 
 Сборка играет только со своими и прежними правилами (`rules-md/common/process/revision-window.md` сервера), поэтому выпуск может
 поднять правила лишь на одну версию: иначе новый клиент и прежние сборки не уживутся ни на одном сервере. Выпуски накопительные -
@@ -17,7 +19,8 @@ CONTENT = "rules/src/main/kotlin/com/sperance/exileforge/rules/content/Content.k
 
 
 def rules_version(source):
-    with open(os.path.join(source, CONTENT), encoding="utf-8") as file:
+    path = source if os.path.isfile(source) else os.path.join(source, CONTENT)
+    with open(path, encoding="utf-8") as file:
         for line in file:
             if line.startswith("const val RULES_VERSION = "):
                 return int(line.split("=", 1)[1].strip())
@@ -26,7 +29,11 @@ def rules_version(source):
 
 
 def main():
-    rules = rules_version(sys.argv[1])
+    if sys.argv[1] == "--content-path":
+        print(CONTENT)
+        return
+    source = sys.argv[2] if sys.argv[1] == "--file" else sys.argv[1]
+    rules = rules_version(source)
     latest = Catalog().latest()
     if latest is None or "rules" not in latest:
         say("::warning::no released client with rules to compare RULES_VERSION against")

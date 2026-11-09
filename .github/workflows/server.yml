@@ -141,18 +141,19 @@ jobs:
         run: . ci/branches.env && bash ci/resolve.sh "$SERVER_REPO" "$SERVER_BRANCH" server push deploy rebuild deploy-test check-wip
       # Пуш в рабочую ветку - fast-forward из wip, sha тот же, что прошёл Check wip: commit status `check-wip` = success на этом sha значит, что
       # проверки, панель и совместимость уже зелёные на этом коде, и они пропускаются; остаются образ и метка «проверен». Режим rebuild
-      # (Release → server-rebuild) проверки идёт заново всегда. Статуса нет, он не success или не прочитался - всё как обычно.
+      # (Release → server-rebuild) проверки идёт заново всегда. Статуса нет или он не success - всё как обычно; статус не прочитался - то же, но
+      # с предупреждением и строкой в сводке job (ci/check-wip-read.sh), а не молча.
       - name: Check wip status
         id: wip
         env:
-          GH_TOKEN: ${{ secrets.SOURCE_TOKEN }}
+          TOKEN: ${{ secrets.SOURCE_TOKEN }}
           MODE: ${{ steps.target.outputs.mode }}
           SHA: ${{ steps.target.outputs.sha }}
         run: |
           trusted=false
           if [ "$MODE" = push ]; then
-            state=$(bash ci/retry.sh read gh api "repos/$SERVER_REPO/commits/$SHA/statuses?per_page=100" --jq '[.[] | select(.context == "check-wip")] | first | .state' 2>/dev/null || true)
-            echo "check-wip status of ${SHA:0:12}: ${state:-none}"
+            state=$(bash ci/check-wip-read.sh "$SERVER_REPO" "$SHA")
+            echo "check-wip status of ${SHA:0:12}: $state"
             if [ "$state" = success ]; then trusted=true; echo "checks, panel and compat are skipped: this commit was checked by Check wip"; fi
           fi
           echo "trusted=$trusted" >> "$GITHUB_OUTPUT"
@@ -184,8 +185,10 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
-      # Одна версия правил за выпуск: накопленные работы не поднимают RULES_VERSION дважды до выпуска (ci/rules-step.py)
+      # Одна версия правил за выпуск: накопленные работы не поднимают RULES_VERSION дважды до выпуска (ci/rules-step.py). В режиме check-wip
+      # шаг идёт раньше, в job guards check-wip.yml: тяжёлые job стартуют после него
       - name: One rules version per release
+        if: ${{ needs.resolve.outputs.mode != 'check-wip' }}
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: python3 ci/rules-step.py server
@@ -199,7 +202,7 @@ jobs:
           name: checks-log
 
   # Графики панели баланса на настоящем контенте: сервер без базы (scripts/check.sh panel), Chromium обходит разделы с графиками.
-  # Ubuntu 24.04 закреплён на всех job (плавающий образ менял версию сам, кэши и времена плавали): Playwright 1.55 не ставит Chromium на образе ubuntu-latest (26.04).
+  # Ubuntu 24.04 закреплён на всех job'ах: Playwright 1.55 не ставит Chromium на плавающем образе ubuntu-latest (26.04).
   # Отчёт проверки не выкладывается: в нём страницы панели.
   panel:
     needs: resolve
@@ -295,6 +298,9 @@ jobs:
           sha: ${{ steps.oldest.outputs.tag }}
           token: ${{ secrets.SOURCE_TOKEN }}
           java: '21'
+      - name: Start the Mongo image pull
+        if: ${{ steps.oldest.outputs.tag != '' }}
+        run: (docker pull -q mirror.gcr.io/library/mongo:8.0 >/dev/null 2>&1 || true) &
       - name: Build the new server
         if: ${{ steps.oldest.outputs.tag != '' }}
         working-directory: server

@@ -206,9 +206,10 @@ jobs:
           trusted=false
           if [ "$MODE" = push ]; then
             # Пуш в рабочую ветку - fast-forward из wip, sha тот же, что прошёл Check wip: commit status `check-wip` = success на этом sha
-            # значит, все ворота уже зелёные на этом коде, и они пропускаются. Статуса нет, он не success или не прочитался - ворота идут как обычно.
-            state=$(GH_TOKEN="$STATUS_TOKEN" bash ../ci/retry.sh read gh api "repos/$CLIENT_REPO/commits/$SHA/statuses?per_page=100" --jq '[.[] | select(.context == "check-wip")] | first | .state' 2>/dev/null || true)
-            echo "check-wip status of ${SHA:0:12}: ${state:-none}"
+            # значит, все ворота уже зелёные на этом коде, и они пропускаются. Статуса нет или он не success - ворота идут как обычно; статус не
+            # прочитался - то же, но с предупреждением и строкой в сводке job (ci/check-wip-read.sh), а не молча.
+            state=$(TOKEN="$STATUS_TOKEN" bash ../ci/check-wip-read.sh "$CLIENT_REPO" "$SHA")
+            echo "check-wip status of ${SHA:0:12}: $state"
             if [ "$state" = success ]; then
               trusted=true
               for gate in core app ui server; do echo "skip_$gate=true" >> "$GITHUB_OUTPUT"; done
@@ -350,7 +351,14 @@ jobs:
         with:
           sha: ${{ needs.changes.outputs.sha }}
           token: ${{ secrets.SOURCE_TOKEN }}
-      # Отладочной сборки нет нигде: lint - по релизному варианту, APK - только R8-сборки ниже
+          cache-writer: 'true'
+      # Отладочной сборки нет нигде: lint - по релизному варианту, APK - только R8-сборки ниже. Компиляция и lint - разные шаги, чтобы в журнале
+      # было видно время каждого; job пишет кэш Gradle, и выходы lintAnalyze остаются для следующих прогонов
+      - name: Release flavor compile
+        working-directory: src
+        run: |
+          . ../ci/build-tasks.env
+          bash ../ci/quiet.sh app-release-compile bash gradlew "$DIRECT_COMPILE_TASK"
       - name: Android Lint
         working-directory: src
         run: bash ../ci/quiet.sh app bash scripts/check.sh app-lint
@@ -399,16 +407,27 @@ jobs:
           sha: ${{ needs.changes.outputs.sha }}
           token: ${{ secrets.SOURCE_TOKEN }}
           cache-writer: ${{ matrix.writer }}
-      - name: Build the test APKs
+      # Приложение и инструментальный APK - два шага: в журнале видно время R8 и время сборки тестов отдельно (решение о делении эмулятора - по цифрам)
+      - name: Build the app APK
         working-directory: src
         env:
           NAME: ${{ matrix.name }}
           PREFIX: ${{ matrix.prefix }}
         run: |
           . ../ci/build-tasks.env
-          app_task=${PREFIX}_APP_TASK test_task=${PREFIX}_TEST_TASK flags=${PREFIX}_FLAGS
+          app_task=${PREFIX}_APP_TASK flags=${PREFIX}_FLAGS
           # shellcheck disable=SC2086
-          bash ../ci/quiet.sh "$NAME" bash gradlew "${!app_task}" "${!test_task}" ${!flags}
+          bash ../ci/quiet.sh "$NAME-app" bash gradlew "${!app_task}" ${!flags}
+      - name: Build the androidTest APK
+        working-directory: src
+        env:
+          NAME: ${{ matrix.name }}
+          PREFIX: ${{ matrix.prefix }}
+        run: |
+          . ../ci/build-tasks.env
+          test_task=${PREFIX}_TEST_TASK flags=${PREFIX}_FLAGS
+          # shellcheck disable=SC2086
+          bash ../ci/quiet.sh "$NAME-test" bash gradlew "${!test_task}" ${!flags}
       - name: Stage UI test APKs
         if: ${{ matrix.stage }}
         working-directory: src
@@ -762,6 +781,9 @@ jobs:
           sha: ${{ needs.changes.outputs.sha }}
           token: ${{ secrets.SOURCE_TOKEN }}
           java: '21'
+      # Образ Mongo тянется, пока собирается сервер: действие mongo потом берёт его уже скачанным
+      - name: Start the Mongo image pull
+        run: (docker pull -q mirror.gcr.io/library/mongo:8.0 >/dev/null 2>&1 || true) &
       - name: Build the server distribution
         working-directory: src/backend
         run: bash ../../ci/quiet.sh server-dist bash gradlew installDist
@@ -1487,6 +1509,7 @@ jobs:
           token: ${{ secrets.SOURCE_TOKEN }}
           submodules: 'false'
           persist-credentials: 'false'
+          gradle: 'false'
       - name: Toolchain key
         id: key
         working-directory: src

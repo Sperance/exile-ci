@@ -1,14 +1,14 @@
 # Карта «шаг CI -> шаг scripts/precheck.sh»: у каждого job и шага server.yml, client.yml и check-wip.yml есть решение. Сторож: ci/guard-parity.py
 # (job guards в check-wip.yml, шаг «CI scripts guards» в job'ах changes client.yml и resolve server.yml): шаг без строки или строка без шага - красное.
 # Формат: `ключ => precheck:<client|server>:<шаг>[,<шаг>]` либо `ключ => ci-only: <причина>`; ключ - `workflow/job[/имя шага]`, `*` разрешён только у ci-only.
-# Шаги precheck: сервер - format, comment-style, compile, content, snapshots, rules-version, notes-edit, js, tests; клиент - notes-edit, format, guards, compile, tests, meta-combat.
+# Шаги precheck: сервер - format, comment-style-compile-content, snapshots, rules-version, notes-edit, js, tests; клиент - notes-edit, format, guards-compile, tests, meta-combat.
 # Новый шаг CI: либо шаг в precheck и строка precheck здесь, либо ci-only с причиной, почему локально его не повторить («Причины красного CI» в rules-md/server/ci.md).
 
 # --- сервер (server.yml)
 server/resolve* => ci-only: выбор коммита и режима прогона, читает commit status check-wip
-server/checks => precheck:server:format,comment-style,compile,content,snapshots,rules-version,js,tests
+server/checks => precheck:server:format,comment-style-compile-content,snapshots,rules-version,js,tests
 server/checks/One rules version per release => precheck:server:rules-version
-server/checks/Content and contract checks => precheck:server:format,comment-style,content,snapshots,js,tests
+server/checks/Content and contract checks => precheck:server:format,comment-style-compile-content,snapshots,js,tests
 server/panel* => ci-only: браузерная проверка графиков панели (Playwright и Chromium), в сессии браузера нет
 server/compat* => ci-only: контрактные тесты старейшего клиента окна ревизий, нужны MongoDB и исходники релиза клиента
 server/image* => ci-only: сборка и публикация образа в ghcr, нужен Docker и права на пакеты
@@ -20,13 +20,14 @@ server/refresh-cache* => ci-only: сверка файлов сборки с за
 
 # --- клиент (client.yml)
 client/changes* => ci-only: выбор ворот по разнице, зелёные деревья и состояние выпуска; читает кэш Actions и commit status
-client/core => precheck:client:format,guards,compile,tests,meta-combat
-client/core/Core checks => precheck:client:format,guards,tests,meta-combat
-client/app-fast => precheck:client:format,guards
-client/app-fast/Fast Android guards => precheck:client:format,guards
+client/core => precheck:client:format,guards-compile,tests,meta-combat
+client/core/Core checks => precheck:client:format,guards-compile,tests,meta-combat
+client/app-fast => precheck:client:format,guards-compile
+client/app-fast/Fast Android guards => precheck:client:format,guards-compile
 client/app => ci-only: Android Lint (:app:lintDirectRelease) собирает все варианты с SDK раннера, в precheck не входит
 client/app/Android Lint => ci-only: Android Lint (:app:lintDirectRelease) собирает все варианты с SDK раннера, в precheck не входит
-client/app/QA flavor compiles => precheck:client:compile
+client/app/Release flavor compile => precheck:client:guards-compile
+client/app/QA flavor compiles => precheck:client:guards-compile
 client/minified* => ci-only: сборки uiTest и minifiedTest (R8) для эмулятора
 client/release-apk* => ci-only: сборка APK прямого канала (R8, ключ сборки)
 client/release-aab* => ci-only: сборка AAB для Google Play (R8, ключ сборки)
@@ -52,6 +53,7 @@ check-wip/client => ci-only: вызывает client.yml в режиме check-w
 check-wip/guards => ci-only: сторожа накопления заметок, важного текста и вайпов смотрят историю и теги обоих репозиториев
 check-wip/guards/uses:actions/checkout => ci-only: инфраструктура Actions
 check-wip/guards/Both repositories with the working branches => ci-only: клоны обоих репозиториев для сторожей
+check-wip/guards/One rules version per release => precheck:server:rules-version
 check-wip/guards/Accumulated notes, important text and wipes => precheck:client:notes-edit
 check-wip/guards/Encrypted log => ci-only: журнал упавшего шага шифруется для владельца
 check-wip/record* => ci-only: запись commit status check-wip на оба коммита
