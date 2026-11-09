@@ -8,8 +8,15 @@
     python3 -I ci/test-stand.py check <stand.json> <клон клиента> <клон сервера> <голова клиента> <файл вывода>
         -> on_test=true|false и reason= (стоит ли голова на стенде: после коммита стенда менялись только .md, версия и заметки, пин сервера
            тот же или отличается только .md вне образа - ci/server-diff.sh)
-    python3 -I ci/test-stand.py report <stand.json|-> <on|off|na> <число открытых Issues test|-> <skip_test true|false> <файл сводки>
+    python3 -I ci/test-stand.py report <stand.json|-> <on|off|na|disabled> <число открытых Issues test|-> <skip_test true|false> <файл сводки>
         -> markdown для сводки прогона: сколько голова живёт на тесте, открытые Issues `test`, красная строка при skip_test
+
+    python3 -I ci/test-stand.py live-extract <файл вывода>      (ответ static/index.json теста - в stdin)
+        -> только блок `stand` с известными полями (коммит образа, версия сервера, выпуск баланса, отличие от боя, время выката); код 4 - блока нет
+    python3 -I ci/test-stand.py live-check <stand.json|-> <live.json|-> <файл вывода>
+        -> alive=true|false, image_ok=true|false и reason=: стенд отвечает и стоит на образе записи о выкате
+    python3 -I ci/test-stand.py state-block <stand.json|-> <live.json|-> <файл сводки>
+        -> блок «Состояние теста»: жив, образ, возраст выката, отличие баланса от боя
 
 Коммиты и пути в журнал не выводятся: только счётчики и причина словами. Ошибки - строкой ::error:: и код 1.
 """
@@ -98,6 +105,59 @@ def check(stand, client_dir, server_dir, head, output):
         out.write(f"on_test={'true' if ok else 'false'}\nreason={reason}\n")
 
 
+LIVE_FIELDS = {"commit": str, "deployedAt": int, "serverVersion": str, "balanceRelease": int, "differsFromProd": bool}
+
+
+def live_extract(target):
+    try:
+        stand = json.load(sys.stdin).get("stand")
+    except (ValueError, AttributeError):
+        stand = None
+    if not isinstance(stand, dict) or not SHA.match(str(stand.get("commit", ""))):
+        print("::warning::the test stand does not answer with a stand block")
+        sys.exit(4)
+    kept = {key: stand[key] for key, kind in LIVE_FIELDS.items() if isinstance(stand.get(key), kind) and not (kind is int and isinstance(stand.get(key), bool))}
+    with open(target, "w", encoding="utf-8") as out:
+        json.dump(kept, out, sort_keys=True)
+
+
+def read_json(path):
+    return None if path == "-" or not os.path.exists(path) else json.load(open(path, encoding="utf-8"))
+
+
+def live_verdict(stand, live):
+    if live is None:
+        return False, False, "the test stand does not answer"
+    if stand is None or stand.get("image") != live.get("commit"):
+        return True, False, "the test stand runs another image than the last recorded deploy"
+    return True, True, "the test stand is alive and runs the recorded image"
+
+
+def live_check(stand, live, output):
+    alive, image_ok, reason = live_verdict(read_json(stand), read_json(live))
+    print(f"test stand: {reason}")
+    with open(output, "a", encoding="utf-8") as out:
+        out.write(f"alive={str(alive).lower()}\nimage_ok={str(image_ok).lower()}\nreason={reason}\n")
+
+
+def state_block(stand, live, target):
+    recorded, answer = read_json(stand), read_json(live)
+    lines = ["### Состояние теста"]
+    if answer is None:
+        lines.append("- Стенд **не отвечает**.")
+    else:
+        lines.append("- Стенд жив.")
+        lines.append(f"- Образ: `{str(answer.get('commit', ''))[:7] or '?'}`, версия сервера {answer.get('serverVersion') or '?'}" + (" (как в записи о выкате)." if recorded and recorded.get("image") == answer.get("commit") else " (не тот, что в записи о выкате)."))
+        if answer.get("deployedAt"):
+            lines.append(f"- Выкат на стенде: {duration(time.time() - answer['deployedAt'] / 1000)} назад.")
+        release = answer.get("balanceRelease")
+        lines.append(f"- Баланс теста: {'выпуск №' + str(release) if release is not None else 'свой выпуск не публиковался'}.")
+        differs = answer.get("differsFromProd")
+        lines.append("- Баланс отличается от боя: " + ("не известно (базы боя на тесте нет)." if differs is None else ("**да**." if differs else "нет.")))
+    with open(target, "a", encoding="utf-8") as out:
+        out.write("\n".join(lines) + "\n")
+
+
 def duration(seconds):
     minutes = max(int(seconds // 60), 0)
     days, rest = divmod(minutes, 1440)
@@ -108,7 +168,10 @@ def duration(seconds):
 
 def report(stand, state, issues, skip, target):
     lines = ["### Тест перед выпуском"]
-    if stand == "-":
+    if state == "disabled":
+        lines.append("- **тестовый стенд не включён**: выпуск идёт без проверки на тесте (нет переменной TEST_SERVER_URL).")
+        print("::error title=test stand::тестовый стенд не включён")
+    elif stand == "-":
         lines.append("- Тестовый стенд: записи о выкате нет.")
     else:
         deployed = json.load(open(stand, encoding="utf-8")).get("deployedAt", 0)
@@ -118,7 +181,8 @@ def report(stand, state, issues, skip, target):
             "off": f"- Голова не на тесте; на стенде стоит другой код, выкачен {age} назад.",
             "na": f"- На тестовом стенде стоит выкат {age} давности.",
         }[state])
-    lines.append(f"- Открытых Issues с меткой `test`: {issues} (выпуск не блокируют).")
+    if state != "disabled":
+        lines.append(f"- Открытых Issues с меткой `test`: {issues} (выпуск не блокируют).")
     if skip == "true":
         lines.append("- **выпущено мимо теста**")
         print("::error title=skip_test::выпущено мимо теста")
@@ -134,10 +198,16 @@ def main():
         record(*args)
     elif command == "check" and len(args) == 5:
         check(*args)
-    elif command == "report" and len(args) == 5 and args[1] in ("on", "off", "na"):
+    elif command == "report" and len(args) == 5 and args[1] in ("on", "off", "na", "disabled"):
         report(*args)
+    elif command == "live-extract" and len(args) == 1:
+        live_extract(*args)
+    elif command == "live-check" and len(args) == 3:
+        live_check(*args)
+    elif command == "state-block" and len(args) == 3:
+        state_block(*args)
     else:
-        fail("usage: test-stand.py code-changed|record|check|report (see the header)")
+        fail("usage: test-stand.py code-changed|record|check|report|live-extract|live-check|state-block (see the header)")
 
 
 main()

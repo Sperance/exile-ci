@@ -44,9 +44,10 @@
 # метки нет - ворота идут как обычно. Метка живёт в кэше Actions (до 7 суток без обращений).
 # Тестовая сборка (flavor qa, vars.TEST_SERVER_URL): после зелёных ворот пуша (режим push), если менялся код клиента или пин backend/ (любой файл,
 # кроме .md, audit/, .claude/ и номера версии; ci/test-stand.py code-changed - пуш только с документами сборку не запускает) и sha - голова рабочей ветки,
-# job `qa-apk` собирает qa-вариант (R8, одноразовый ключ), `qa-sign` подписывает его ключом релиза, `qa-release` публикует предрелиз qa-<число
-# коммитов> (ExileForge-qa.apk, update.json с mandatory=true и подпись), оставляет 5 новейших и запускает server.yml deploy-test на сервере,
-# закреплённом в клиенте (передаёт ему sha клиента и тег qa: по ним deploy-test записывает, что стоит на тесте, - ci/test-stand.sh). Переменная пуста - все три job'а пропускаются зелёными. Секреты те же, что у выпуска; новых нет.
+# job `qa-apk` собирает qa-вариант (R8, одноразовый ключ), `qa-sign` подписывает его ключом релиза, `qa-release` готовит файлы предрелиза qa-<число
+# коммитов> (ExileForge-qa.apk, update.json с mandatory=true и подпись; заметки - номер сборки и пункты «что проверить» из трейлеров `Test-Plan:`), запечатывает
+# их и запускает server.yml deploy-test на сервере, закреплённом в клиенте (передаёт ему sha клиента, тег qa и номер своего прогона: по ним deploy-test
+# записывает, что стоит на тесте, - ci/test-stand.sh, а job `qa-publish` ПОСЛЕ удачного выката публикует предрелиз, оставляет 5 новейших и ведёт qa-latest). Переменная пуста - все три job'а пропускаются зелёными. Секреты те же, что у выпуска; новых нет.
 name: Client
 
 on:
@@ -1103,9 +1104,11 @@ jobs:
         with:
           name: qa-sign-log
 
-  # Предрелиз qa-<число коммитов>: релизы неизменяемы, каждая сборка - свой (клиент берёт самый новый qa-* из списка релизов). Публикуется, только
-  # если sha всё ещё голова рабочей ветки (более новый пуш уже ведёт свою сборку; порядок номеров сохраняется). Повторный прогон того же sha ничего
-  # не публикует заново. Затем - деплой тестового сервера на sha, закреплённом в этом коммите клиента (server.yml, режим deploy-test).
+  # Файлы тестовой сборки (qa-<число коммитов>): APK, update.json только с номером сборки и пунктами «что проверить» (трейлеры `Test-Plan:` коммитов
+  # с прошлой тестовой сборки, ci/qa-files.py plan) и подпись запечатываются в артефакт qa-publish. Сами они НЕ публикуются: предрелиз qa-<n> и
+  # постоянный адрес qa-latest выкладывает server.yml job `qa-publish` ТОЛЬКО после удачного выката сервера теста. Здесь - если sha всё ещё голова
+  # рабочей ветки (более новый пуш ведёт свою сборку; порядок номеров сохраняется) и тега ещё нет - запуск деплоя тестового сервера на sha,
+  # закреплённом в этом коммите клиента (server.yml, режим deploy-test), с номером этого прогона.
   qa-release:
     needs: [ changes, qa-sign ]
     if: ${{ !cancelled() && needs.qa-sign.result == 'success' }}
@@ -1131,6 +1134,8 @@ jobs:
           token: ${{ secrets.SOURCE_TOKEN }}
           path: src
           submodules: true
+          fetch-depth: 0
+          filter: blob:none
           persist-credentials: false
       - name: Still the head of the working branch
         id: head
@@ -1150,6 +1155,18 @@ jobs:
           name: exile-forge-qa
           path: sealed
       - if: steps.head.outputs.current == 'true'
+        name: Test plan since the previous test build
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          prev=$(bash ci/retry.sh read gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq '.[] | select(.prerelease) | .tag_name' | grep -E '^qa-[0-9]+$' | sort -t- -k2 -n | tail -1 || true)
+          old=-
+          if [ -n "$prev" ]; then
+            short=$(bash ci/retry.sh read gh release view "$prev" -R "$GITHUB_REPOSITORY" --json body --jq .body | sed -n 's/.*+\([0-9a-f]\{7\}\).*/\1/p' | head -1)
+            [ -z "$short" ] || old=$(git -C src rev-parse --verify --quiet "$short^{commit}" || echo -)
+          fi
+          python3 -I ci/qa-files.py plan src "$old" "$SHA" "$RUNNER_TEMP/plan.txt"
+      - if: steps.head.outputs.current == 'true'
         name: Test release files
         working-directory: src
         env:
@@ -1158,23 +1175,18 @@ jobs:
         run: |
           . ../ci/build-tasks.env
           bash ../ci/seal.sh -d ../sealed/qa.enc ../signed
-          python3 ../ci/qa-files.py release "../signed/$QA_APK" "$QA_NAME" "$QA_CODE" ../qa
+          python3 ../ci/qa-files.py release "../signed/$QA_APK" "$QA_NAME" "$QA_CODE" ../qa "$RUNNER_TEMP/plan.txt"
           bash ../ci/sign-update.sh ../qa/update.json
       - if: steps.head.outputs.current == 'true'
-        name: Publish the test prerelease
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          sig=(); [ -s qa/update.json.sig ] && sig=(qa/update.json.sig)
-          bash ci/retry.sh once gh release create "$TAG" qa/ExileForge-qa.apk qa/update.json "${sig[@]}" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
-            --prerelease --latest=false --title "ExileForge test $QA_CODE" --notes "Test build $QA_NAME for the test server. Newest qa-* wins."
-          echo "published $TAG"
+        name: Seal the files for the publication after the test deploy
+        run: bash ci/seal.sh --transit sealed-out/qa-publish.enc qa
       - if: steps.head.outputs.current == 'true'
-        name: Keep the five newest test builds
-        continue-on-error: true
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: bash ci/quiet.sh qa-cleanup python3 ci/cleanup.py qa-releases
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: qa-publish
+          path: sealed-out/qa-publish.enc
+          retention-days: 2
+          if-no-files-found: error
       - if: steps.head.outputs.current == 'true'
         name: Trigger the test server deploy
         env:
@@ -1182,7 +1194,7 @@ jobs:
         run: |
           pin=$(git -C src ls-tree "$SHA" backend | awk '{print $3}')
           [[ $pin =~ ^[0-9a-f]{40}$ ]] || { echo "::error::the client commit pins no server in backend/"; exit 1; }
-          bash ci/retry.sh once gh workflow run server.yml -R "$GITHUB_REPOSITORY" --ref main -f mode=deploy-test -f sha="$pin" -f client_sha="$SHA" -f qa_tag="$TAG"
+          bash ci/retry.sh once gh workflow run server.yml -R "$GITHUB_REPOSITORY" --ref main -f mode=deploy-test -f sha="$pin" -f client_sha="$SHA" -f qa_tag="$TAG" -f qa_run="$GITHUB_RUN_ID"
       - name: Encrypted log
         if: failure()
         uses: ./.github/actions/upload-log

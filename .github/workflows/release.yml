@@ -12,9 +12,9 @@
 #                     `## Следующая версия` в RELEASE_NOTES.md (нет раздела или он пуст - ошибка), затем запускает client.yml mode=release
 #                     на этом коммите (до коммита - стоп, если голова сервера по коду не закреплена в клиенте, её образ не
 #                     проверен или сторож деплоя ci/deploy-guard.py --candidate против выката: новый клиент не играл бы на сервере
-#                     после выката, или выкат отрезал бы сборки каналов без force_breaking; а также если голова клиента ещё не на тесте: тестовый
-#                     стенд стоит на другом коде клиента или другом закреплённом сервере - коммиты без кода (версия, заметки, .md) не мешают;
-#                     с skip_test это не проверяется): все проверки (кроме уже зелёных на том же коде), релиз, закрытие Issues по трейлерам `Issue: #N` (клиент) и `Refs Sperance/ExileForge#N` (сервер), выкат сервера (деплой после релиза запускает
+#                     после выката, или выкат отрезал бы сборки каналов без force_breaking; а также если стенд включён (задана TEST_SERVER_URL), а голова клиента ещё не на
+#                     живом тесте: тестовый стенд стоит на другом коде клиента или другом закреплённом сервере (коммиты без кода не мешают) либо
+#                     не отвечает образом выката; стенд не включён - выпуск идёт, в сводке красная строка; с skip_test это не проверяется): все проверки (кроме уже зелёных на том же коде), релиз, закрытие Issues по трейлерам `Issue: #N` (клиент) и `Refs Sperance/ExileForge#N` (сервер), выкат сервера (деплой после релиза запускает
 #                     client.yml сам) и после него перенос баланса и «Текстов клиента» теста в бой (как Release balance; отказ - красный
 #                     прогон server.yml, job `balance`), выкладка в магазины. Коммит делает EXILEFORGE_TOKEN (Contents: write на ExileForge);
 #   balance         - только баланс: по SSH слепок опубликованного баланса и «Текстов клиента» теста (update.sh balance-export ключом теста)
@@ -25,7 +25,7 @@
 #   telegram        - пост о последнем релизе в тему «Обновления» группы Telegram заново (telegram.yml): пост той же версии правится;
 #   important       - пост IMPORTANT.md головы сервера в тему «Важное» (telegram-important.yml), если этот текст ещё не выходил;
 #   server-notes    - пост новых пунктов «[сервер]» заметок в тему «Обновления» заново (telegram-server-notes.yml): то, что не вышло при выкате сервера;
-#   preview         - ничего не выпускает: сводка накопленного в итоге прогона (заметки по разделам, текст «Важного», Issues к закрытию, вайпы,
+#   preview         - ничего не выпускает: сводка накопленного в итоге прогона (баланс теста числами без значений - job preview-balance, заметки по разделам, текст «Важного», Issues к закрытию, вайпы,
 #                     обязательность, совет bump по трейлерам `Bump: minor`); нажимать перед client. Итог прогона публичен: в нём заметки и «Важное».
 #
 # skip_test (client, server, server-rebuild): выпуск без проверки теста - голова клиента не обязана стоять на тесте, сервер выкатывается с головы
@@ -157,15 +157,21 @@ jobs:
           bash ci/server-diff.sh srv "$pin" "$head" || { echo "::error::the server head $head has code the client does not pin ($pin): pin it in ExileForge (backend/, API_REVISION by its rules) and press Release again"; exit 1; }
           bash ci/checked-image.sh "$IMAGE" srv "$head" >/dev/null || { echo "::error::the server head $head has no checked image: wait for its push checks (or start Server with mode push) and press Release again"; exit 1; }
           echo "server $head: pinned and checked"
-      # Голова клиента обязана уже стоять на тесте (запись последнего удачного deploy-test, ci/test-stand.sh): код клиента после коммита стенда не менялся
-      # (версия, заметки, .md не в счёт), закреплённый сервер тот же. Итог (сколько голова живёт на тесте, открытые Issues `test`) - в сводке всегда и
-      # выпуск не блокирует. skip_test пропускает проверку, в сводке красная строка.
+      # Ворота теста. Стенд не включён (нет vars.TEST_SERVER_URL) - ворота пропускают, в сводке красная строка «тестовый стенд не включён».
+      # Стенд включён - ворота строгие: голова клиента уже стоит на тесте (запись последнего удачного deploy-test, ci/test-stand.sh: код клиента после
+      # коммита стенда не менялся, версия, заметки и .md не в счёт, закреплённый сервер тот же) И сам живой стенд отвечает публичным static/index.json
+      # образом этой записи. Итог (возраст выката, открытые Issues `test`, блок «Состояние теста») - в сводке всегда. skip_test обходит ворота.
       - name: Head of the client is on the test stand
         env:
           GH_TOKEN: ${{ github.token }}
           ISSUES_TOKEN: ${{ secrets.EXILEFORGE_TOKEN }}
           SKIP_TEST: ${{ inputs.skip_test }}
+          TEST_SERVER_URL: ${{ vars.TEST_SERVER_URL }}
         run: |
+          if [ -z "$TEST_SERVER_URL" ]; then
+            python3 -I ci/test-stand.py report - disabled - "$SKIP_TEST" "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
           code=0
           bash ci/test-stand.sh fetch "$RUNNER_TEMP/stand.json" || code=$?
           [ "$code" -eq 0 ] || [ "$code" -eq 3 ] || exit "$code"
@@ -176,10 +182,17 @@ jobs:
             grep -qx 'on_test=true' "$RUNNER_TEMP/check.txt" && state=on
             reason=$(sed -n 's/^reason=//p' "$RUNNER_TEMP/check.txt")
           fi
+          live=-
+          if bash ci/test-stand.sh live "$RUNNER_TEMP/live.json"; then live="$RUNNER_TEMP/live.json"; fi
+          python3 -I ci/test-stand.py live-check "$file" "$live" "$RUNNER_TEMP/live.txt"
+          if [ "$state" = on ] && ! grep -qx 'image_ok=true' "$RUNNER_TEMP/live.txt"; then
+            state=off; reason=$(sed -n 's/^reason=//p' "$RUNNER_TEMP/live.txt")
+          fi
           issues=$(GH_TOKEN=$ISSUES_TOKEN bash ci/test-stand.sh test-issues 2>/dev/null) || issues='?'
           python3 -I ci/test-stand.py report "$file" "$state" "${issues//[[:space:]]/}" "$SKIP_TEST" "$GITHUB_STEP_SUMMARY"
+          python3 -I ci/test-stand.py state-block "$file" "$live" "$GITHUB_STEP_SUMMARY"
           if [ "$state" != on ] && [ "$SKIP_TEST" != true ]; then
-            echo "::error::the head is not on the test stand yet ($reason): wait for the test build of the last push, or tick skip_test"
+            echo "::error::the head is not verified on the live test stand ($reason): wait for the test build of the last push and its deploy, or tick skip_test"
             exit 1
           fi
       # Тот же сторож, что у деплоя (ci/deploy-guard.py), до коммита версии: выпуск не начинается, если новый клиент не будет играть
@@ -282,6 +295,31 @@ jobs:
         uses: ./.github/actions/upload-log
         with:
           name: balance-log
+
+  # Сводка слепка баланса теста для предпросмотра: числа и имена файлов, без значений (ci/balance-summary.py). Читает только тест, боевого ключа нет
+  # (сторож ci/guard-test-vps.py). Стенд не включён - job не идёт.
+  preview-balance:
+    if: ${{ inputs.what == 'preview' && vars.TEST_SERVER_URL != '' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/balance-transfer
+        with:
+          direction: test-summary
+          host: ${{ secrets.DEPLOY_HOST }}
+          test-key: ${{ secrets.DEPLOY_SSH_KEY_TEST }}
+          host-key: ${{ vars.VPS_HOST_KEY }}
+          log-recipient: ${{ vars.LOG_AGE_RECIPIENT }}
+      - name: Encrypted log
+        if: failure()
+        uses: ./.github/actions/upload-log
+        with:
+          name: preview-balance-log
 
   # Предпросмотр накопленного без выпуска: те же исходники и диапазоны, что у выпуска (голова рабочей ветки клиента, коммиты клиента и
   # закреплённых серверов с прошлого тега), итог - markdown в сводке прогона (ci/release_state.py preview): совет bump, обязательность,

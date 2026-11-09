@@ -17,8 +17,8 @@
 #                                       выкат только сервера: Release → server); rebuild - проверки, образ и деплой (Release →
 #                                       server-rebuild);
 #   workflow_dispatch deploy-test     - тестовый сервер (второй проект на том же VPS, /opt/exileforge-test): job `deploy-test` выкатывает уже
-#                                       проверенный образ закреплённого в клиенте sha (его запускает job `qa-release` client.yml после
-#                                       предрелиза qa-<n>); ключ DEPLOY_SSH_KEY_TEST привязан к update.sh тестового проекта, боевой деплой
+#                                       проверенный образ закреплённого в клиенте sha (его запускает job `qa-release` client.yml;
+#                                       предрелиз qa-<n> и постоянный qa-latest публикует job `qa-publish` ПОСЛЕ удачного выката); ключ DEPLOY_SSH_KEY_TEST привязан к update.sh тестового проекта, боевой деплой
 #                                       этот режим не затрагивает; без vars.TEST_SERVER_URL job пропускается зелёным. После удачного выката job пишет,
 #                                       что стоит на тесте (ci/test-stand.sh: prerelease `stand-<UTC>` с stand.json: sha клиента, закреплённый
 #                                       сервер, образ, время) - по записи Release решает, на тесте ли голова. Первый выкат теста (записей ещё нет)
@@ -66,6 +66,9 @@ on:
       qa_tag:
         type: string
         default: ''
+      qa_run:
+        type: string
+        default: ''
       skip_test:
         type: boolean
         default: false
@@ -92,7 +95,11 @@ on:
         required: false
         default: ''
       qa_tag:
-        description: 'deploy-test: tag qa-<n> of the test build (record only)'
+        description: 'deploy-test: tag qa-<n> of the test build (record, and the release published after the deploy)'
+        required: false
+        default: ''
+      qa_run:
+        description: 'deploy-test: id of the client.yml run whose sealed artifact qa-publish holds the test build files (published only after the deploy succeeded)'
         required: false
         default: ''
       skip_test:
@@ -690,6 +697,82 @@ jobs:
       - name: Forget the key
         if: always()
         run: rm -f "$RUNNER_TEMP/key"
+
+  # Тестовая сборка публикуется ТОЛЬКО после удачного выката сервера теста: упавший выкат ничего не публикует (клиент теста обновляется принудительно и
+  # не должен опередить свой сервер). Файлы собрал и запечатал client.yml (artifact qa-publish его прогона qa_run). Публикуется, пока sha остаётся головой
+  # рабочей ветки клиента (более новый пуш ведёт свою сборку, порядок номеров сохраняется); повтор того же тега ничего не публикует. Кроме предрелиза
+  # qa-<n> CI ведёт постоянный адрес «последняя тестовая сборка» - предрелиз qa-latest с тем же APK (клиент выбирает qa-<число>, qa-latest он не видит).
+  qa-publish:
+    needs: [ resolve, deploy-test ]
+    if: ${{ !cancelled() && needs.deploy-test.result == 'success' && inputs.qa_tag != '' && inputs.qa_run != '' && inputs.client_sha != '' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    concurrency:
+      group: qa-publish
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      actions: read
+    env:
+      TAG: ${{ inputs.qa_tag }}
+      CLIENT_SHA: ${{ inputs.client_sha }}
+      CLIENT_REPO: Sperance/ExileForge
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Still the head of the working branch
+        id: head
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_TOKEN: ${{ secrets.SOURCE_TOKEN }}
+        run: |
+          . ci/branches.env
+          [[ $TAG =~ ^qa-[0-9]+$ ]] || { echo "::error::'$TAG' is not a test build tag"; exit 1; }
+          head=$(GH_TOKEN="$HEAD_TOKEN" bash ci/retry.sh read gh api "repos/$CLIENT_REPO/git/ref/heads/$CLIENT_BRANCH" --jq .object.sha)
+          current=true
+          [ "$head" = "$CLIENT_SHA" ] || { echo "a newer push owns the test build: nothing is published"; current=false; }
+          if bash ci/retry.sh read gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then echo "$TAG is already published"; current=false; fi
+          echo "current=$current" >> "$GITHUB_OUTPUT"
+      - if: steps.head.outputs.current == 'true'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: qa-publish
+          run-id: ${{ inputs.qa_run }}
+          github-token: ${{ github.token }}
+          path: sealed
+      - if: steps.head.outputs.current == 'true'
+        name: Publish the test prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SEAL_AGE_IDENTITY: ${{ secrets.SEAL_AGE_IDENTITY }}
+        run: |
+          bash ci/seal.sh -d sealed/qa-publish.enc files
+          name=$(python3 -I -c 'import json; print(json.load(open("files/qa/update.json"))["versionName"])')
+          code=${TAG#qa-}
+          sig=(); [ -s files/qa/update.json.sig ] && sig=(files/qa/update.json.sig)
+          bash ci/retry.sh once gh release create "$TAG" files/qa/ExileForge-qa.apk files/qa/update.json "${sig[@]}" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --prerelease --latest=false --title "ExileForge test $code" --notes "Test build $name for the test server. Newest qa-* wins."
+          echo "published $TAG"
+          if bash ci/retry.sh read gh release view qa-latest -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            bash ci/retry.sh idem gh release upload qa-latest files/qa/ExileForge-qa.apk files/qa/update.json "${sig[@]}" -R "$GITHUB_REPOSITORY" --clobber
+            bash ci/retry.sh idem gh release edit qa-latest -R "$GITHUB_REPOSITORY" --notes "Latest test build: $name ($TAG). The address of this release does not change."
+          else
+            bash ci/retry.sh once gh release create qa-latest files/qa/ExileForge-qa.apk files/qa/update.json "${sig[@]}" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+              --prerelease --latest=false --title "ExileForge latest test build" --notes "Latest test build: $name ($TAG). The address of this release does not change."
+          fi
+          echo "latest test build: $name"
+      - if: steps.head.outputs.current == 'true'
+        name: Keep the five newest test builds
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: bash ci/quiet.sh qa-cleanup python3 ci/cleanup.py qa-releases
+      - name: Encrypted log
+        if: failure()
+        uses: ./.github/actions/upload-log
+        with:
+          name: qa-publish-log
 
   # Один раз при первом выкате теста: боевой слепок баланса и текстов клиента - базой теста (update.sh balance-export на бою -> balance-import на тесте).
   # Свои правки теста база не затирает; провал виден красным, повтор - VPS → test-base. Оба ключа VPS - только через действие balance-transfer

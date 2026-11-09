@@ -4,12 +4,14 @@ name: Balance transfer
 description: Moves the balance snapshot between the test and the prod stand over SSH
 inputs:
   direction:
-    description: test-to-prod | prod-to-test
+    description: test-to-prod | prod-to-test | test-summary (only the test key, read only)
     required: true
   host:
     required: true
   prod-key:
-    required: true
+    description: not used by test-summary
+    required: false
+    default: ''
   test-key:
     required: true
   host-key:

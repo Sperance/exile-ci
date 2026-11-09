@@ -5,6 +5,7 @@
 # Использование:
 #   ci/test-stand.sh fetch <файл>      новейший stand.json в файл; код 3 - записей ещё нет
 #   ci/test-stand.sh publish <файл>    опубликовать stand.json новым prerelease
+#   ci/test-stand.sh live <файл>       блок `stand` публичного static/index.json стенда (TEST_SERVER_URL) в файл; код 4 - переменной нет или стенд не ответил
 #   ci/test-stand.sh test-issues       число открытых Issues с меткой `test` в Sperance/ExileForge (GH_TOKEN с правом чтения Issues там)
 # Окружение: GH_TOKEN, GITHUB_REPOSITORY (publish ещё GITHUB_SHA).
 set -euo pipefail
@@ -30,7 +31,11 @@ case ${1:-} in
             --title "Test stand" --notes "Last successful deploy to the test stand."
         rm -rf "$dir"
         echo "test stand: record published" ;;
+    live)
+        [[ -n ${TEST_SERVER_URL:-} ]] || exit 4
+        body=$(netcall read curl -fsS --max-time 20 "${TEST_SERVER_URL%/}/static/index.json") || { echo "::warning::the test stand did not answer"; exit 4; }
+        printf '%s' "$body" | python3 -I "$here/test-stand.py" live-extract "$2" ;;
     test-issues)
         netcall read gh api --paginate "repos/Sperance/ExileForge/issues?labels=test&state=open&per_page=100" --jq '.[] | select(.pull_request | not) | .number' | wc -l ;;
-    *) echo "usage: test-stand.sh fetch <file> | publish <file> | test-issues" >&2; exit 2 ;;
+    *) echo "usage: test-stand.sh fetch <file> | publish <file> | live <file> | test-issues" >&2; exit 2 ;;
 esac

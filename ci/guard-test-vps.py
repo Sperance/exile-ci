@@ -8,6 +8,7 @@
 2. Перенос баланса между стендами - единственное место, где вместе стоят оба ключа: job'ы из TRANSFERS (workflow/job -> направление) обязаны брать
    оба ключа и звать действие ./.github/actions/balance-transfer с нужным направлением (в них нет путей установок и своего ssh); любой другой job
    в любом workflow, где есть оба ключа или это действие, - красный. Действие само не читает secrets и зовёт только ci/balance-transfer.sh.
+2a. Сводка слепка теста для preview (SUMMARIES) читает только тест: ключ теста, никакого боевого ключа, то же действие с направлением test-summary.
 3. Ключ теста не встречается ни в одном job'е, кроме job'ов теста и переноса (боевые job'ы не ходят на тест), а путь /opt/exileforge-test - вне job'ов теста.
 Красное - строкой ::error:: и код 1 (job guards в check-wip.yml, шаг «CI scripts guards» client.yml и server.yml).
 """
@@ -25,6 +26,9 @@ TRANSFERS = {
     ("vps", "test-base"): "prod-to-test",
     ("server", "balance"): "test-to-prod",
     ("release", "balance"): "test-to-prod",
+}
+SUMMARIES = {
+    ("release", "preview-balance"): "test-summary",
 }
 ACTION = "./.github/actions/balance-transfer"
 PROD_KEY = re.compile(r"secrets\.DEPLOY_SSH_KEY(?!_TEST)\b")
@@ -70,6 +74,20 @@ def transfer_problems(label, body, text, direction):
     return found
 
 
+def summary_problems(label, body, text, direction):
+    found = []
+    if not TEST_KEY.search(text):
+        found.append(f"{label}: the summary job needs the test key")
+    if PROD_KEY.search(text):
+        found.append(f"{label}: the summary job is read only on the test stand and never takes the prod key")
+    steps = [step for step in body.get("steps") or [] if str(step.get("uses", "")).split("@")[0] == ACTION]
+    if len(steps) != 1 or (steps[0].get("with") or {}).get("direction") != direction:
+        found.append(f"{label}: the summary goes through exactly one {ACTION} step with direction {direction}")
+    if PROD_PATH.search(text) or TEST_PATH.search(text) or any(SSH_LINE.search(str(step.get("run", ""))) for step in body.get("steps") or []):
+        found.append(f"{label}: no install path and no ssh of its own in a summary job")
+    return found
+
+
 def action_problems(root):
     path = os.path.join(root, ACTION[2:], "action.yml")
     if not os.path.exists(path):
@@ -96,10 +114,15 @@ def problems(root):
             found.append(f"{key[0]}.yml: transfer job `{key[1]}` not found")
         else:
             found += transfer_problems(f"{key[0]}.yml/{key[1]}", jobs[key], json.dumps(jobs[key]), direction)
+    for key, direction in SUMMARIES.items():
+        if key not in jobs:
+            found.append(f"{key[0]}.yml: summary job `{key[1]}` not found")
+        else:
+            found += summary_problems(f"{key[0]}.yml/{key[1]}", jobs[key], json.dumps(jobs[key]), direction)
     for key, body in jobs.items():
         text = json.dumps(body)
         label = f"{key[0]}.yml/{key[1]}"
-        if key in TRANSFERS:
+        if key in TRANSFERS or key in SUMMARIES:
             continue
         if ACTION in text or (PROD_KEY.search(text) and TEST_KEY.search(text)):
             found.append(f"{label}: both stand keys or the transfer action outside the transfer jobs {sorted(f'{w}/{j}' for w, j in TRANSFERS)}")

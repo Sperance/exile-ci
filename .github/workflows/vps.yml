@@ -12,13 +12,13 @@
 # закреплён в vars.VPS_HOST_KEY, StrictHostKeyChecking=yes. Секреты: DEPLOY_HOST, DEPLOY_SSH_KEY; переменные: VPS_HOST_KEY,
 # LOG_AGE_RECIPIENT.
 #
-# test-status, test-reset (job `test`) - тестовый проект на том же VPS (/opt/exileforge-test, vars.TEST_SERVER_URL): ключ DEPLOY_SSH_KEY_TEST
+# test-status, test-reset, test-reset-all (job `test`) - тестовый проект на том же VPS (/opt/exileforge-test, vars.TEST_SERVER_URL): ключ DEPLOY_SSH_KEY_TEST
 # привязан к update.sh этого проекта, поэтому команды достают только тестовый стенд, боевую установку - никогда (сторож ci/guard-test-vps.py).
-# test-status - состояние стенда; test-reset - сносит ТОЛЬКО тестовую базу (коды приглашений и допущенные устройства тоже: стенд одноразовый)
-# и поднимает пустой стенд; нужен ввод confirm = RESET. Без переменной TEST_SERVER_URL job пропускается зелёным. Вывод - в зашифрованный журнал.
+# test-status - состояние стенда; test-reset - сносит тестовую базу, КРОМЕ кодов приглашений и аккаунтов (герои и баланс теста уходят), и поднимает стенд; нужен ввод
+# confirm = RESET. test-reset-all - сносит ВСЁ, приглашения и аккаунты тоже; нужен ввод confirm = RESET-ALL. Копий базы у теста нет. Без переменной TEST_SERVER_URL job пропускается зелёным. Вывод - в зашифрованный журнал.
 # Секреты: DEPLOY_HOST, DEPLOY_SSH_KEY_TEST; переменные VPS_HOST_KEY, LOG_AGE_RECIPIENT, TEST_SERVER_URL.
 # test-base (job `test-base`) - боевой слепок баланса и текстов клиента базой теста (ci/balance-transfer.sh prod-to-test: balance-export на бою,
-# balance-import на тесте; свои правки теста база не затирает): сам идёт после test-reset, вручную - повтор, если перенос после первого выката
+# balance-import на тесте; свои правки теста база не затирает): сам идёт после test-reset и test-reset-all, вручную - повтор, если перенос после первого выката
 # теста (server.yml, job `test-base`) не удался. Единственная команда этого файла с обоими ключами (DEPLOY_SSH_KEY и DEPLOY_SSH_KEY_TEST) - через
 # действие balance-transfer, сторож ci/guard-test-vps.py.
 #
@@ -54,9 +54,9 @@ on:
   workflow_dispatch:
     inputs:
       command:
-        description: 'update.sh on the server (rules-md/server/vps-maintenance.md): status, logs, restart, health, backup, prune, upgrade, reboot; db-export - weekly encrypted DB copy into an ExileForge release; restore - DB from a copy (owner approval); art, art-backup - pictures; test-status, test-reset - the test project (test-reset wipes only the test database, then takes the prod balance as the base); test-base - the prod balance snapshot as the base of the test project'
+        description: 'update.sh on the server (rules-md/server/vps-maintenance.md): status, logs, restart, health, backup, prune, upgrade, reboot; db-export - weekly encrypted DB copy into an ExileForge release; restore - DB from a copy (owner approval); art, art-backup - pictures; test-status, test-reset, test-reset-all - the test project (test-reset wipes the test database but keeps invite codes and accounts, test-reset-all wipes everything; both then take the prod balance as the base); test-base - the prod balance snapshot as the base of the test project'
         type: choice
-        options: [ status, logs, restart, health, backup, prune, upgrade, reboot, db-export, restore, repo-mirror, art, art-backup, test-status, test-reset, test-base ]
+        options: [ status, logs, restart, health, backup, prune, upgrade, reboot, db-export, restore, repo-mirror, art, art-backup, test-status, test-reset, test-reset-all, test-base ]
         default: status
       restore_from:
         description: 'restore: a copy on the VPS (daily|deploy|pre/db-YYYYMMDD-HHMMSS.archive.gz, see status) or a weekly release tag db-YYYYMMDD-HHMMSS'
@@ -75,7 +75,7 @@ on:
         type: boolean
         default: true
       confirm:
-        description: 'test-reset: type RESET to wipe the test database'
+        description: 'test-reset: type RESET to wipe the test database (invite codes and accounts stay); test-reset-all: type RESET-ALL to wipe everything'
         type: string
         default: ''
 
@@ -133,7 +133,7 @@ jobs:
           name: vps-${{ inputs.command || 'backup' }}
 
   test:
-    if: ${{ github.event_name == 'workflow_dispatch' && contains(fromJSON('["test-status","test-reset"]'), inputs.command) && vars.TEST_SERVER_URL != '' }}
+    if: ${{ github.event_name == 'workflow_dispatch' && contains(fromJSON('["test-status","test-reset","test-reset-all"]'), inputs.command) && vars.TEST_SERVER_URL != '' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     concurrency:
@@ -159,6 +159,9 @@ jobs:
             test-reset)
               [[ $CONFIRM == RESET ]] || { echo '::error::test-reset wipes the test database: type RESET in the confirm input'; exit 1; }
               line=reset ;;
+            test-reset-all)
+              [[ $CONFIRM == RESET-ALL ]] || { echo '::error::test-reset-all wipes the whole test database, invite codes included: type RESET-ALL in the confirm input'; exit 1; }
+              line=reset-all ;;
             *) echo '::error::unknown command'; exit 1 ;;
           esac
           install -m 600 /dev/null "$RUNNER_TEMP/key" && printf '%s\n' "$KEY" > "$RUNNER_TEMP/key"
@@ -179,7 +182,7 @@ jobs:
 
   test-base:
     needs: test
-    if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && vars.TEST_SERVER_URL != '' && (inputs.command == 'test-base' || (inputs.command == 'test-reset' && needs.test.result == 'success')) }}
+    if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && vars.TEST_SERVER_URL != '' && (inputs.command == 'test-base' || (contains(fromJSON('["test-reset","test-reset-all"]'), inputs.command) && needs.test.result == 'success')) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     concurrency:
@@ -368,6 +371,20 @@ jobs:
           python3 ci/vps_health.py "$tmp/out.txt" "$code"
           bash ci/encrypt-log.sh "$tmp/out.txt" logs/vps-health.log.enc
           rm -f "$tmp/out.txt"
+
+      # Тест: публичный static/index.json стенда (только при заданной vars.TEST_SERVER_URL). Мёртвый тест - предупреждение и строка в сводке,
+      # боевой присмотр от него не краснеет.
+      - name: Probe the test stand
+        if: ${{ always() && vars.TEST_SERVER_URL != '' }}
+        env:
+          TEST_SERVER_URL: ${{ vars.TEST_SERVER_URL }}
+        run: |
+          if bash ci/test-stand.sh live "$RUNNER_TEMP/live.json"; then
+            python3 -I ci/test-stand.py state-block - "$RUNNER_TEMP/live.json" "$GITHUB_STEP_SUMMARY"
+          else
+            printf '### Состояние теста\n- Стенд **не отвечает** (предупреждение, боевой присмотр не затронут).\n' >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning title=test stand::the test stand does not answer"
+          fi
 
       - name: Encrypted output
         if: always()

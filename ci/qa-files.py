@@ -3,15 +3,20 @@
 
     python3 ci/qa-files.py version <последний тег v<x.y.z>> <число коммитов рабочей ветки> <sha7> [файл для name=]
         -> <следующий patch>-test.<число коммитов>+<sha7>, строкой name=… в файл (по умолчанию stdout)
-    python3 ci/qa-files.py release <APK сборки> <versionName> <versionCode> <каталог результата>   (из каталога исходников клиента)
+    python3 ci/qa-files.py plan <клон клиента> <от коммит или -> <до коммит> <файл>
+        -> пункты «что проверить»: значения трейлеров `Test-Plan:` коммитов от..до (по строке на пункт, без повторов), в файл
+    python3 ci/qa-files.py release <APK сборки> <versionName> <versionCode> <каталог результата> [файл пунктов plan]
         -> ExileForge-qa.apk и update.json той же формы, что у релиза (ci/update_info.py), mandatory всегда true
 
-Заметки - раздел `## Следующая версия` RELEASE_NOTES.md как есть (то, что уйдёт в выпуск); нет раздела - короткая строка.
-Содержимое заметок и кода в журнал не выводится. Ошибки - строкой ::error:: и код 1.
+Заметки публичной тестовой сборки (и update.json, откуда их берёт приложение: другого источника у обновления нет) - только номер сборки и пункты
+«что проверить»; раздел `## Следующая версия` RELEASE_NOTES.md в публичный предрелиз не попадает (будущие возможности до выхода не видны).
+Содержимое кода в журнал не выводится. Ошибки - строкой ::error:: и код 1.
 """
 import importlib.util
 import os
+import re
 import shutil
+import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -19,7 +24,11 @@ import notes
 import update_info
 
 APK_NAME = "ExileForge-qa.apk"
-NO_NOTES = "Тестовая сборка"
+NOTES_TITLE = "Тестовая сборка"
+PLAN_TITLE = "Что проверить:"
+PLAN_TRAILER = re.compile(r"^Test-Plan:[ \t]*(.+?)[ \t]*$", re.M | re.I)
+SHA = re.compile(r"^[0-9a-f]{40}$")
+FALLBACK_COMMITS = 30
 
 
 def release_version(tag):
@@ -39,23 +48,49 @@ def version(tag, commits, sha7, target):
         out.write(f"name={name}\n")
 
 
-def release(apk_source, name, code, out):
+def plan(clone, old, new, target):
+    if not SHA.match(new):
+        update_info.fail(f"commit '{new}' is not a sha")
+    span = [f"{old}..{new}"] if SHA.match(old) else [f"-{FALLBACK_COMMITS}", new]
+    done = subprocess.run(["git", "-C", clone, "log", "--format=%B%x00", *span], capture_output=True, text=True, check=False)
+    if done.returncode != 0:
+        update_info.fail("the commits of the test build could not be read")
+    items = []
+    for message in done.stdout.split("\0"):
+        for item in PLAN_TRAILER.findall(message):
+            if item not in items:
+                items.append(item)
+    with open(target, "w", encoding="utf-8") as out:
+        out.write("\n".join(items) + ("\n" if items else ""))
+    print(f"test plan: {len(items)} item(s)")
+
+
+def notes_of(name, plan_file):
+    items = [line.strip() for line in open(plan_file, encoding="utf-8").read().splitlines() if line.strip()] if plan_file else []
+    lines = [f"{NOTES_TITLE} {name}"]
+    if items:
+        lines += ["", PLAN_TITLE, *[f"- {item}" for item in items]]
+    return "\n".join(lines)
+
+
+def release(apk_source, name, code, out, plan_file=None):
     if not code.isdigit():
         update_info.fail(f"versionCode '{code}' is not a number")
     os.makedirs(out, exist_ok=True)
     shutil.copyfile(apk_source, os.path.join(out, APK_NAME))
-    section = notes.next_section(open("RELEASE_NOTES.md", encoding="utf-8").read())
-    update_info.write(out, int(code), name, APK_NAME, (section or "").strip() or NO_NOTES, True)
+    update_info.write(out, int(code), name, APK_NAME, notes_of(name, plan_file), True)
 
 
 def main():
     command, args = sys.argv[1], sys.argv[2:]
     if command == "version" and len(args) in (3, 4):
         version(*args[:3], args[3] if len(args) == 4 else "/dev/stdout")
-    elif command == "release" and len(args) == 4:
+    elif command == "plan" and len(args) == 4:
+        plan(*args)
+    elif command == "release" and len(args) in (4, 5):
         release(*args)
     else:
-        update_info.fail("usage: qa-files.py version <tag> <commits> <sha7> [file] | release <apk> <name> <code> <dir>")
+        update_info.fail("usage: qa-files.py version <tag> <commits> <sha7> [file] | plan <clone> <from|-> <to> <file> | release <apk> <name> <code> <dir> [plan file]")
 
 
 main()
