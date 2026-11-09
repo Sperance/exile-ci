@@ -9,7 +9,7 @@ ktor-bestgame (до переезда CI в exile-ci) оставили по debug
 Только стандартная библиотека; в публичный журнал (say) - лишь счётчики и коды ответов, без тегов и имён артефактов.
 Записи о тестовом стенде stand-<UTC> (ci/test-stand.sh): живут STAND_KEEP новейших по имени.
 Кэш Actions этого репозитория (`caches`): лимит GitHub - 10 ГБ, при его достижении вытесняются самые давние, в том числе нужные (Playwright, снимок эмулятора);
-записи gradle-home пишутся на каждый коммит. Живут записи, к которым обращались за CACHE_IDLE_DAYS суток; от каждого семейства ключей (хэши в ключе заменены на #)
+записи gradle-home пишутся на каждый коммит. Трогаются только записи с хэшем в ключе (по коммиту или дереву: gradle-home, client-green); записи без хэша (Playwright, снимок эмулятора, состояние поста Telegram) не удаляются никогда. Живут записи, к которым обращались за CACHE_IDLE_DAYS суток; от каждого семейства ключей (хэши в ключе заменены на #)
 остаются CACHE_FAMILY_KEEP новейших; если и тогда сумма больше CACHE_BUDGET_BYTES, удаляются самые давно использованные, кроме новейшей записи каждого семейства.
 Токен - workflow (job `caches` maintenance.yml, единственный с actions: write). В журнал - только счётчики и мегабайты, без ключей.
 Использование: ci/cleanup.py artifacts | images | qa-releases | stand-releases | caches
@@ -171,7 +171,7 @@ def cache_time(cache):
 def doomed_caches(caches, now):
     """Записи кэша на удаление: давно не использованные, сверх CACHE_FAMILY_KEEP в семействе, затем самые давние сверх бюджета (новейшая записи семейства неприкосновенна)."""
     by_family = {}
-    for cache in sorted(caches, key=cache_time, reverse=True):
+    for cache in sorted((c for c in caches if CACHE_HASH.search(c["key"])), key=cache_time, reverse=True):
         by_family.setdefault(cache_family(cache["key"]), []).append(cache)
     doomed = []
     kept = []
