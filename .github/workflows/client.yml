@@ -866,15 +866,7 @@ jobs:
         name: Sign update.json
         env:
           UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
-        run: |
-          if [ -z "$UPDATE_SIGNING_KEY" ]; then echo "::warning::UPDATE_SIGNING_KEY is not set: update.json goes out unsigned"; exit 0; fi
-          umask 077
-          printf '%s\n' "$UPDATE_SIGNING_KEY" > "$RUNNER_TEMP/update-signing.pem"
-          openssl pkeyutl -sign -rawin -inkey "$RUNNER_TEMP/update-signing.pem" -in update.json -out "$RUNNER_TEMP/update.sig.bin"
-          rm -f "$RUNNER_TEMP/update-signing.pem"
-          od -An -v -tx1 "$RUNNER_TEMP/update.sig.bin" | tr -d ' \n' > update.json.sig
-          [ "$(wc -c < update.json.sig)" = 128 ] || { echo "::error::update.json signature has a wrong length"; exit 1; }
-          echo "update.json signed"
+        run: bash ci/sign-update.sh update.json
       - if: steps.version.outputs.exists == 'false'
         name: Publish release
         env:

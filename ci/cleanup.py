@@ -4,9 +4,10 @@
 ktor-bestgame (до переезда CI в exile-ci) оставили по debug APK на прогон. Новые прогоны там артефактов не создают, поэтому
 артефакты этих репозиториев удаляются все. Образы GHCR: живут версия с именованным тегом (ветка) и SERVER_KEEP последних
 проверенных (тег :<sha>); черновые (только :build-<sha>) и безымянные старше суток удаляются - сутки покрывают идущий server.yml.
+Предрелизы тестовой сборки клиента qa-<n> этого репозитория: живут QA_KEEP новейших по номеру, старшие удаляются (job `qa-release` client.yml).
 
 Только стандартная библиотека; в публичный журнал (say) - лишь счётчики и коды ответов, без тегов и имён артефактов.
-Использование: ci/cleanup.py artifacts | images
+Использование: ci/cleanup.py artifacts | images | qa-releases
 """
 import json
 import os
@@ -23,6 +24,8 @@ API = "https://api.github.com"
 PRIVATE_REPOS = ("Sperance/ExileForge", "Sperance/ktor-bestgame")
 PACKAGE = "/users/Sperance/packages/container/ktor-bestgame"
 SERVER_KEEP = 5
+QA_KEEP = 5
+QA_TAG = re.compile(r"^qa-([0-9]+)$")
 DRAFT_AGE = timedelta(days=1)
 SHA_TAG = re.compile(r"^(build-)?[0-9a-f]{40}$")
 # Удаления параллельно: по одному тысячи старых артефактов не укладывались в срок шага
@@ -111,5 +114,23 @@ def clean_images():
              "give exile-ci the Admin role in the package's Manage Actions access")
 
 
+def doomed_qa_releases(releases):
+    """Предрелизы qa-<n> на удаление: все, кроме QA_KEEP с наибольшим номером (номер - число коммитов рабочей ветки клиента)."""
+    qa = [r for r in releases if r["prerelease"] and QA_TAG.match(r["tag_name"])]
+    qa.sort(key=lambda r: int(QA_TAG.match(r["tag_name"]).group(1)), reverse=True)
+    return qa[QA_KEEP:]
+
+
+def clean_qa_releases():
+    github = GitHub(os.environ["GITHUB_TOKEN"])
+    repo = os.environ["GITHUB_REPOSITORY"]
+    doomed = doomed_qa_releases(list(github.pages(f"/repos/{repo}/releases")))
+    failed = [code for code in github.delete_all(f"/repos/{repo}/releases/{r['id']}" for r in doomed) if code not in (204, 404)]
+    github.delete_all(f"/repos/{repo}/git/refs/tags/{r['tag_name']}" for r in doomed)
+    say(f"test builds: {len(doomed) - len(failed)} of {len(doomed)} old prereleases deleted, {QA_KEEP} newest kept")
+    if failed:
+        fail(f"test builds: {len(failed)} deletions refused (codes {sorted(set(failed))})")
+
+
 if __name__ == "__main__":
-    {"artifacts": clean_artifacts, "images": clean_images}[sys.argv[1]]()
+    {"artifacts": clean_artifacts, "images": clean_images, "qa-releases": clean_qa_releases}[sys.argv[1]]()
