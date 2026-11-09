@@ -11,7 +11,8 @@
 #      сопровождена новым текстом IMPORTANT.md или трейлером `Wipe-Silent: <причина>`; (в) к вышедшему тексту IMPORTANT.md (тег
 #      important-* есть) не дописано - файл начинают заново; подразделы заметок в порядке, «Важное» влезает в пост;
 #      Там же сторожа самого exile-ci (шаг «CI scripts guards»): ci/guard-network.py - голый gh, curl, git или urlopen вне ci/retry.sh и ci/net.py,
-#      ci/guard-parity.py - шаг CI без строки в ci/precheck-map.txt или шаг precheck из карты, которого нет в scripts/precheck.sh обоих репозиториев;
+#      ci/guard-parity.py - шаг CI без строки в ci/precheck-map.txt или шаг precheck из карты, которого нет в scripts/precheck.sh обоих репозиториев,
+#      ci/guard-test-vps.py - job тестового стенда с боевым ключом деплоя или путём /opt/exileforge;
 #   4. record: оба зелёные - на sha клиента и sha сервера кладётся commit status «check-wip» = success (ci/check-wip-status.sh); упал любой
 #      - failure. Отметку читает хук pre-push репозиториев: пуш в рабочую ветку без зелёного check-wip на этом sha отклоняется.
 # Журналы шифруются так же, как в client.yml и server.yml (ci/quiet.sh, age). Ворота client.yml, прошедшие здесь, ставят метки
@@ -131,6 +132,7 @@ jobs:
           bash ci/retry.sh read git -C srv show "$SERVER:scripts/precheck.sh" > "$RUNNER_TEMP/precheck-server.sh"
           python3 -I ci/guard-network.py
           python3 -I ci/guard-parity.py --client-precheck "$RUNNER_TEMP/precheck-client.sh" --server-precheck "$RUNNER_TEMP/precheck-server.sh"
+          python3 -I ci/guard-test-vps.py
       - name: Accumulated notes, important text and wipes
         env:
           GH_TOKEN: ${{ github.token }}

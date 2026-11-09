@@ -136,6 +136,7 @@ jobs:
           python3 -c 'import yaml' 2>/dev/null || python3 -m pip install --quiet --disable-pip-version-check pyyaml
           python3 -I ci/guard-network.py
           python3 -I ci/guard-parity.py
+          python3 -I ci/guard-test-vps.py
       - name: Target commit
         id: target
         env:

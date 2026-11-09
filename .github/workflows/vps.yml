@@ -12,6 +12,12 @@
 # закреплён в vars.VPS_HOST_KEY, StrictHostKeyChecking=yes. Секреты: DEPLOY_HOST, DEPLOY_SSH_KEY; переменные: VPS_HOST_KEY,
 # LOG_AGE_RECIPIENT.
 #
+# test-status, test-reset (job `test`) - тестовый проект на том же VPS (/opt/exileforge-test, vars.TEST_SERVER_URL): ключ DEPLOY_SSH_KEY_TEST
+# привязан к update.sh этого проекта, поэтому команды достают только тестовый стенд, боевую установку - никогда (сторож ci/guard-test-vps.py).
+# test-status - состояние стенда; test-reset - сносит ТОЛЬКО тестовую базу (коды приглашений и допущенные устройства тоже: стенд одноразовый)
+# и поднимает пустой стенд; нужен ввод confirm = RESET. Без переменной TEST_SERVER_URL job пропускается зелёным. Вывод - в зашифрованный журнал.
+# Секреты: DEPLOY_HOST, DEPLOY_SSH_KEY_TEST; переменные VPS_HOST_KEY, LOG_AGE_RECIPIENT, TEST_SERVER_URL.
+#
 # art (job `art`) - архив картинок игры:
 # Архив картинок игры - свой prerelease `art-<дата UTC>` на каждый архив: релизы репозитория неизменяемы (immutable), в
 # выложенный релиз файл уже не добавить, поэтому архив кладётся при создании релиза. `update.sh art` сервера без ссылки берёт
@@ -44,9 +50,9 @@ on:
   workflow_dispatch:
     inputs:
       command:
-        description: 'update.sh on the server (rules-md/server/vps-maintenance.md): status, logs, restart, health, backup, prune, upgrade, reboot; db-export - weekly encrypted DB copy into an ExileForge release; restore - DB from a copy (owner approval); art, art-backup - pictures'
+        description: 'update.sh on the server (rules-md/server/vps-maintenance.md): status, logs, restart, health, backup, prune, upgrade, reboot; db-export - weekly encrypted DB copy into an ExileForge release; restore - DB from a copy (owner approval); art, art-backup - pictures; test-status, test-reset - the test project (test-reset wipes only the test database)'
         type: choice
-        options: [ status, logs, restart, health, backup, prune, upgrade, reboot, db-export, restore, repo-mirror, art, art-backup ]
+        options: [ status, logs, restart, health, backup, prune, upgrade, reboot, db-export, restore, repo-mirror, art, art-backup, test-status, test-reset ]
         default: status
       restore_from:
         description: 'restore: a copy on the VPS (daily|deploy|pre/db-YYYYMMDD-HHMMSS.archive.gz, see status) or a weekly release tag db-YYYYMMDD-HHMMSS'
@@ -64,6 +70,10 @@ on:
         description: 'art: install the archive on the server right after publishing'
         type: boolean
         default: true
+      confirm:
+        description: 'test-reset: type RESET to wipe the test database'
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -117,6 +127,51 @@ jobs:
         uses: ./.github/actions/upload-log
         with:
           name: vps-${{ inputs.command || 'backup' }}
+
+  test:
+    if: ${{ github.event_name == 'workflow_dispatch' && contains(fromJSON('["test-status","test-reset"]'), inputs.command) && vars.TEST_SERVER_URL != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: vps-test
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Run on the test server
+        env:
+          HOST: ${{ secrets.DEPLOY_HOST }}
+          KEY: ${{ secrets.DEPLOY_SSH_KEY_TEST }}
+          VPS_HOST_KEY: ${{ vars.VPS_HOST_KEY }}
+          LOG_AGE_RECIPIENT: ${{ vars.LOG_AGE_RECIPIENT }}
+          COMMAND: ${{ inputs.command }}
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          [[ -n $HOST && -n $KEY && -n $LOG_AGE_RECIPIENT ]] || { echo '::error::DEPLOY_HOST, DEPLOY_SSH_KEY_TEST or LOG_AGE_RECIPIENT is not set'; exit 1; }
+          case $COMMAND in
+            test-status) line=status ;;
+            test-reset)
+              [[ $CONFIRM == RESET ]] || { echo '::error::test-reset wipes the test database: type RESET in the confirm input'; exit 1; }
+              line=reset ;;
+            *) echo '::error::unknown command'; exit 1 ;;
+          esac
+          install -m 600 /dev/null "$RUNNER_TEMP/key" && printf '%s\n' "$KEY" > "$RUNNER_TEMP/key"
+          mkdir -p logs
+          code=0
+          VPS_HOST=$HOST VPS_KEY_FILE="$RUNNER_TEMP/key" bash ci/vps-ssh.sh "$line" </dev/null >"$RUNNER_TEMP/out.txt" 2>&1 || code=$?
+          rm -f "$RUNNER_TEMP/key"
+          bash ci/encrypt-log.sh "$RUNNER_TEMP/out.txt" "logs/vps-$COMMAND.log.enc"
+          rm -f "$RUNNER_TEMP/out.txt"
+          echo "vps $COMMAND: exit $code"
+          exit $code
+
+      - name: Encrypted output
+        if: always()
+        uses: ./.github/actions/upload-log
+        with:
+          name: vps-${{ inputs.command }}
 
   art:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.command == 'art' }}
