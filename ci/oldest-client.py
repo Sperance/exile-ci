@@ -8,25 +8,15 @@
 GITHUB_OUTPUT. Результат - строка `tag=` в $GITHUB_OUTPUT: пусто, если старее нового клиента в окне нет (поддерживать нечего).
 Вывод перехватывает ci/quiet.sh; в публичный журнал - $PUBLIC_NOTES.
 """
-import json
 import os
 import re
 import subprocess
 import sys
-import urllib.request
 
-from store_common import fail, say
+from store_common import fail, get_json, say
 
 CLIENT_REPO = "Sperance/ExileForge"
 SCAN = 60
-
-
-def get_json(url, token=None):
-    headers = {"Accept": "application/vnd.github+json"}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=60) as response:
-        return json.load(response)
 
 
 def revisions(protocol):
