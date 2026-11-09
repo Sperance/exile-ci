@@ -1,0 +1,34 @@
+# Служебные коллекции сервера: их версия в CollectionSchemas поднимается без поста в «Важное». Любая другая коллекция считается игровой
+# (данные и нажитое игроков): поднятая версия вайпит их и требует текста в IMPORTANT.md (или трейлера Wipe-Silent). Новая служебная
+# коллекция вносится сюда в том же пакете; не внесённая - игровая. Проверка: ci/release_state.py check, правило - telegram.md сервера.
+AuthSession
+Complaint
+BugReport
+ReportShot
+ReportFight
+Sanction
+AppealToken
+UserDevice
+StaffNote
+ModerationEntry
+RedemptionCodes
+Serial
+IdempotentReply
+RouteTiming
+BackupLock
+RiftMedian
+ContestPeriod
+BalanceDraft
+BalanceAudit
+BalanceFavourite
+BalanceFavouriteList
+ContentRelease
+ContentActive
+ContentBody
+ContentStartup
+UiOverride
+ClientWindow
+ChannelState
+ReleaseBuild
+ClientSeen
+MemoryKills

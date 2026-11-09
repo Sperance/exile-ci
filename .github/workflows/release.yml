@@ -224,12 +224,23 @@ jobs:
           tags server-deployed/ tags-deployed.txt
           base=$(bash ci/release-base.sh src "$last")
           code=0
+          mkdir -p preview
           bash ci/quiet.sh preview python3 -I ci/release_state.py preview --cli src --srv srv --base "$base" --head HEAD --srv-head HEAD \
-            --last "$last" --repo Sperance/ExileForge --out "$RUNNER_TEMP/preview.md" --posted-important "$RUNNER_TEMP/tags-important.txt" \
+            --last "$last" --repo Sperance/ExileForge --out preview/preview.md --summary "$RUNNER_TEMP/summary.md" --posted-important "$RUNNER_TEMP/tags-important.txt" \
             --posted-server "$RUNNER_TEMP/tags-notes.txt" --deployed "$RUNNER_TEMP/tags-deployed.txt" || code=$?
           cat "$PUBLIC_NOTES" 2>/dev/null || true
-          [ "$code" -eq 0 ] && cat "$RUNNER_TEMP/preview.md" >> "$GITHUB_STEP_SUMMARY"
+          [ "$code" -eq 0 ] && cat "$RUNNER_TEMP/summary.md" >> "$GITHUB_STEP_SUMMARY"
           exit $code
+      - name: Seal the preview
+        if: always()
+        run: bash ci/seal.sh sealed/preview.enc preview
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: preview
+          path: sealed/preview.enc
+          retention-days: 7
+          if-no-files-found: ignore
       - name: Encrypted log
         if: failure()
         uses: ./.github/actions/upload-log

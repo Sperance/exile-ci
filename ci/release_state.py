@@ -5,7 +5,7 @@
 Подкоманды (каталоги --cli и --srv - клон клиента и клон сервера с историей):
   check     проверки check-wip (check-wip.yml): заметки «Следующей версии» и неопубликованное «Важное» не потеряны, к вышедшему тексту
             не дописано, вайп игровой коллекции сопровождён текстом «Важного»; красное - код 1;
-  preview   сводка выпуска без выпуска (Release → preview): markdown в --out;
+  preview   сводка выпуска без выпуска (Release → preview): полный markdown в --out (шифруется), счётчики в --summary;
   issues    номера Issues, что чинит выпуск: трейлеры клиента (`Issue: #N`, прежнее «Closes #N») и сервера (`Refs <репо>#N`) с прошлого выпуска;
   trailer   значения трейлера в коммитах клиента и сервера с прошлого выпуска (Update-Mandatory, Bump);
   baseline  последний выкаченный коммит сервера среди предков --head (теги server-deployed/<sha>).
@@ -28,7 +28,7 @@ from store_common import say
 NOTES_PATH = "RELEASE_NOTES.md"
 IMPORTANT_PATH = "IMPORTANT.md"
 SCHEMAS_PATH = "src/main/kotlin/ru/descend/exileforge/config/CollectionSchemas.kt"
-GAME_COLLECTIONS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "game-collections.txt")
+SERVICE_COLLECTIONS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "service-collections.txt")
 SCHEMA = re.compile(r'CollectionSchema\(\s*"(\w+)",\s*(\d+)')
 CLOSING = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?) #(\d+)", re.IGNORECASE)
 ISSUE_TRAILER = re.compile(r"^Issue: #(\d+)", re.MULTILINE)
@@ -104,8 +104,8 @@ def deployed_baseline(srv, head, deployed):
     return next((sha for sha in out.decode().split() if sha in deployed), "")
 
 
-def game_collections():
-    with open(GAME_COLLECTIONS, encoding="utf-8") as file:
+def service_collections():
+    with open(SERVICE_COLLECTIONS, encoding="utf-8") as file:
         return {line.strip() for line in file if line.strip() and not line.startswith("#")}
 
 
@@ -114,8 +114,8 @@ def schemas(srv, ref):
 
 
 def raised(before, after):
-    games = game_collections()
-    return {name: (before[name], version) for name, version in after.items() if name in games and name in before and version > before[name]}
+    service = service_collections()
+    return {name: (before[name], version) for name, version in after.items() if name not in service and name in before and version > before[name]}
 
 
 def short(text):
@@ -262,6 +262,11 @@ def command_preview(args):
            f"- Вайпы игровых коллекций с прошлого выката сервера: {', '.join(f'{n} {a}→{b}' for n, (a, b) in sorted(raised_now.items())) or 'нет'}"
            f"{'' if baseline else ' (выкат сервера не отмечен: считано от рабочей ветки)'}",
            f"- Пунктов «[сервер]», что ещё не выходили отдельным постом: {len(unposted)}", ""]
+    summary = out + [f"- «Важное»: {'нет текста' if not important.strip() else ('уже опубликовано' if posted else 'новый текст, ' + str(len(important_lines(important))) + ' строк')}",
+                     f"- Заметки: {', '.join(f'{title} {len(parsed.items(title))}' for title in notes.SECTIONS if parsed.items(title)) or 'нет'}",
+                     "", "Полный текст заметок и «Важного» - в зашифрованном артефакте `preview` (age)."]
+    with open(args.summary, "w", encoding="utf-8") as file:
+        file.write("\n".join(summary) + "\n")
     out += ["### «Важное»", ""]
     if not important.strip():
         out += ["Текста нет.", ""]
@@ -316,7 +321,7 @@ def parser():
         p.set_defaults(handler=handler)
 
     add("check", command_check, "cli", "srv", "cli-wip", "cli-work", "srv-wip", "srv-work", "posted-important", "deployed")
-    add("preview", command_preview, "cli", "srv", "base", "head", "srv-head", "last", "repo", "out", "posted-important", "posted-server", "deployed")
+    add("preview", command_preview, "cli", "srv", "base", "head", "srv-head", "last", "repo", "out", "summary", "posted-important", "posted-server", "deployed")
     add("issues", command_issues, "cli", "srv", "base", "head", "repo")
     add("server-issues", command_server_issues, "srv", "base", "head", "repo")
     p = sub.add_parser("trailer")
