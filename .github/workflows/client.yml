@@ -42,6 +42,10 @@
 # Зелёные деревья: пуш (и ручной push) после успешных ворот кладёт в кэш Actions пустую метку `client-green-<дерево>-<ворота>` (дерево -
 # ci/green-tree.sh: код без RELEASE_NOTES.md и номера версии). Режим release ищет метки и пропускает ворота, чей код уже был зелёным;
 # метки нет - ворота идут как обычно. Метка живёт в кэше Actions (до 7 суток без обращений).
+# Тестовая сборка (flavor qa, vars.TEST_SERVER_URL): после зелёных ворот пуша (режим push), если код клиента менялся и sha - голова рабочей ветки,
+# job `qa-apk` собирает qa-вариант (R8, одноразовый ключ), `qa-sign` подписывает его ключом релиза, `qa-release` публикует предрелиз qa-<число
+# коммитов> (ExileForge-qa.apk, update.json с mandatory=true и подпись), оставляет 5 новейших и запускает server.yml deploy-test на сервере,
+# закреплённом в клиенте. Переменная пуста - все три job'а пропускаются зелёными. Секреты те же, что у выпуска; новых нет.
 name: Client
 
 on:
@@ -118,6 +122,9 @@ jobs:
       ui: ${{ (steps.target.outputs.mode == 'release' || steps.target.outputs.mode == 'shots' || steps.target.outputs.mode == 'check-wip' || (steps.target.outputs.mode == 'push' && (steps.diff.outputs.core == 'true' || steps.diff.outputs.app == 'true'))) && steps.green.outputs.skip_ui != 'true' }}
       stores: ${{ steps.release.outputs.stores }}
       cache: ${{ steps.target.outputs.mode == 'cache' }}
+      qa: ${{ steps.qa.outputs.build }}
+      qa_name: ${{ steps.qa.outputs.name }}
+      qa_code: ${{ steps.qa.outputs.code }}
       tag: ${{ steps.release.outputs.tag }}
       suffix: ${{ steps.release.outputs.pending == 'true' && '-release' || steps.target.outputs.mode == 'check-wip' && '-wip' || '' }}
     steps:
@@ -230,6 +237,41 @@ jobs:
           fi
           { echo "pending=$pending"; echo "stores=$stores"; echo "tag=v$version"; } >> "$GITHUB_OUTPUT"
           echo "v$version: release pending=$pending, stores=$stores"
+      # Тестовая сборка: только пуш с изменённым кодом клиента, sha которого - голова рабочей ветки, и только при заданном адресе тестового
+      # сервера. Версия: <следующий patch>-test.<число коммитов ветки>+<sha7>; число коммитов - и versionCode, и номер предрелиза qa-<n>.
+      - name: Test build target
+        id: qa
+        working-directory: src
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_TOKEN: ${{ secrets.SOURCE_TOKEN }}
+          TEST_SERVER_URL: ${{ vars.TEST_SERVER_URL }}
+          MODE: ${{ steps.target.outputs.mode }}
+          SHA: ${{ steps.target.outputs.sha }}
+          CORE: ${{ steps.diff.outputs.core }}
+          APP: ${{ steps.diff.outputs.app }}
+        run: |
+          build=false
+          if [ -z "$TEST_SERVER_URL" ]; then
+            echo "TEST_SERVER_URL is not set: no test build"
+          elif [ "$MODE" != push ] || { [ "$CORE" != true ] && [ "$APP" != true ]; }; then
+            echo "not a push with client code changes: no test build"
+          else
+            . ../ci/branches.env
+            head=$(GH_TOKEN="$HEAD_TOKEN" bash ../ci/retry.sh read gh api "repos/$CLIENT_REPO/git/ref/heads/$CLIENT_BRANCH" --jq .object.sha)
+            if [ "$head" != "$SHA" ]; then
+              echo "${SHA:0:12} is not the head of the working branch: no test build"
+            else
+              code=$(git rev-list --count "$SHA")
+              last=$(bash ../ci/retry.sh read gh release list -R "$GITHUB_REPOSITORY" --limit 300 --json tagName --jq '.[].tagName' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1 || true)
+              [ -n "$last" ] || { echo "::error::no released version to number the test build from"; exit 1; }
+              python3 ../ci/qa-files.py version "$last" "$code" "${SHA:0:7}" "$GITHUB_OUTPUT"
+              echo "code=$code" >> "$GITHUB_OUTPUT"
+              build=true
+              echo "test build $code"
+            fi
+          fi
+          echo "build=$build" >> "$GITHUB_OUTPUT"
 
   core:
     needs: changes
@@ -300,6 +342,11 @@ jobs:
       - name: Android Lint
         working-directory: src
         run: bash ../ci/quiet.sh app bash scripts/check.sh app-lint
+      - name: QA flavor compiles
+        working-directory: src
+        run: |
+          . ../ci/build-tasks.env
+          bash ../ci/quiet.sh app-qa-compile bash gradlew "$QA_COMPILE_TASK"
       - name: Encrypted log
         if: failure()
         uses: ./.github/actions/upload-log
@@ -925,6 +972,187 @@ jobs:
         uses: ./.github/actions/upload-log
         with:
           name: release-log
+
+  # Тестовая сборка клиента (flavor qa, сервер из vars.TEST_SERVER_URL): после зелёных ворот пуша, если код менялся и sha - голова рабочей
+  # ветки (выход qa job'а changes). Сборка идёт без секретов, как release-apk: одноразовый ключ, URL тестового сервера и версия - свойствами Gradle.
+  qa-apk:
+    needs: [ changes, core, app-fast, app, minified, emulator, client-server ]
+    if: ${{ !cancelled() && needs.changes.outputs.qa == 'true' && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: client-qa-apk
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: ./.github/actions/source
+        with:
+          sha: ${{ needs.changes.outputs.sha }}
+          token: ${{ secrets.SOURCE_TOKEN }}
+      - name: Build the test APK (build-only key)
+        working-directory: src
+        env:
+          UPDATE_SIGN_PUBLIC_KEY: ${{ vars.UPDATE_SIGN_PUBLIC_KEY }}
+          TEST_SERVER_URL: ${{ vars.TEST_SERVER_URL }}
+          QA_NAME: ${{ needs.changes.outputs.qa_name }}
+          QA_CODE: ${{ needs.changes.outputs.qa_code }}
+        run: |
+          . ../ci/build-tasks.env
+          eval "$(bash ../ci/build-keystore.sh)"
+          bash ../ci/quiet.sh qa-apk bash gradlew "$QA_APK_TASK" "-PqaServerUrl=$TEST_SERVER_URL" "-PqaVersionName=$QA_NAME" "-PqaVersionCode=$QA_CODE"
+      - name: Seal the unsigned package
+        working-directory: src
+        run: |
+          . ../ci/build-tasks.env
+          bash ../ci/seal.sh --transit ../sealed/unsigned-qa.enc "$QA_APK"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: unsigned-qa
+          path: sealed/unsigned-qa.enc
+          if-no-files-found: error
+          retention-days: 1
+      - name: Encrypted log
+        if: failure()
+        uses: ./.github/actions/upload-log
+        with:
+          name: qa-apk-log
+
+  # Подпись тестового APK ключом релиза (тот же ci/sign.sh и те же секреты, что у job `sign`; сборка с одним applicationId не заходит на боевой
+  # сервер: пакет проверяет атрибуция сервера). Секреты подписи только здесь, кода игры в job'е нет.
+  qa-sign:
+    needs: [ changes, qa-apk ]
+    if: ${{ !cancelled() && needs.qa-apk.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    concurrency:
+      group: client-qa-sign
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: unsigned-qa
+          path: sealed
+      - name: Sign with the release key
+        env:
+          SEAL_AGE_IDENTITY: ${{ secrets.SEAL_AGE_IDENTITY }}
+          RELEASE_KEYSTORE: ${{ secrets.RELEASE_KEYSTORE }}
+          RELEASE_KEYSTORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
+          RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+          RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+        run: |
+          . ci/build-tasks.env
+          bash ci/keystore.sh
+          export RELEASE_KEYSTORE_PATH="$RUNNER_TEMP/release.jks"
+          bash ci/seal.sh -d sealed/unsigned-qa.enc unsigned
+          bash ci/quiet.sh sign-qa bash ci/sign.sh apk "unsigned/$QA_APK" "signed/$QA_APK"
+          mkdir -p out
+          (cd signed && bash "$GITHUB_WORKSPACE/ci/seal.sh" --transit "$GITHUB_WORKSPACE/out/qa.enc" "$QA_APK")
+          rm -f "$RUNNER_TEMP/release.jks"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: exile-forge-qa
+          path: out/qa.enc
+          if-no-files-found: error
+          retention-days: 1
+      - name: Forget the key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/release.jks"
+      - name: Encrypted log
+        if: failure()
+        uses: ./.github/actions/upload-log
+        with:
+          name: qa-sign-log
+
+  # Предрелиз qa-<число коммитов>: релизы неизменяемы, каждая сборка - свой (клиент берёт самый новый qa-* из списка релизов). Публикуется, только
+  # если sha всё ещё голова рабочей ветки (более новый пуш уже ведёт свою сборку; порядок номеров сохраняется). Повторный прогон того же sha ничего
+  # не публикует заново. Затем - деплой тестового сервера на sha, закреплённом в этом коммите клиента (server.yml, режим deploy-test).
+  qa-release:
+    needs: [ changes, qa-sign ]
+    if: ${{ !cancelled() && needs.qa-sign.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      actions: write
+    concurrency:
+      group: client-qa-release
+      cancel-in-progress: false
+    env:
+      SHA: ${{ needs.changes.outputs.sha }}
+      QA_NAME: ${{ needs.changes.outputs.qa_name }}
+      QA_CODE: ${{ needs.changes.outputs.qa_code }}
+      TAG: qa-${{ needs.changes.outputs.qa_code }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: ${{ env.CLIENT_REPO }}
+          ref: ${{ needs.changes.outputs.sha }}
+          token: ${{ secrets.SOURCE_TOKEN }}
+          path: src
+          submodules: true
+          persist-credentials: false
+      - name: Still the head of the working branch
+        id: head
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_TOKEN: ${{ secrets.SOURCE_TOKEN }}
+        run: |
+          . ci/branches.env
+          head=$(GH_TOKEN="$HEAD_TOKEN" bash ci/retry.sh read gh api "repos/$CLIENT_REPO/git/ref/heads/$CLIENT_BRANCH" --jq .object.sha)
+          current=true
+          [ "$head" = "$SHA" ] || { echo "a newer push owns the test build: nothing is published"; current=false; }
+          if bash ci/retry.sh read gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then echo "$TAG is already published"; current=false; fi
+          echo "current=$current" >> "$GITHUB_OUTPUT"
+      - if: steps.head.outputs.current == 'true'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: exile-forge-qa
+          path: sealed
+      - if: steps.head.outputs.current == 'true'
+        name: Test release files
+        working-directory: src
+        env:
+          SEAL_AGE_IDENTITY: ${{ secrets.SEAL_AGE_IDENTITY }}
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+        run: |
+          . ../ci/build-tasks.env
+          bash ../ci/seal.sh -d ../sealed/qa.enc ../signed
+          python3 ../ci/qa-files.py release "../signed/$QA_APK" "$QA_NAME" "$QA_CODE" ../qa
+          bash ../ci/sign-update.sh ../qa/update.json
+      - if: steps.head.outputs.current == 'true'
+        name: Publish the test prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sig=(); [ -s qa/update.json.sig ] && sig=(qa/update.json.sig)
+          bash ci/retry.sh once gh release create "$TAG" qa/ExileForge-qa.apk qa/update.json "${sig[@]}" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --prerelease --latest=false --title "ExileForge test $QA_CODE" --notes "Test build $QA_NAME for the test server. Newest qa-* wins."
+          echo "published $TAG"
+      - if: steps.head.outputs.current == 'true'
+        name: Keep the five newest test builds
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: bash ci/quiet.sh qa-cleanup python3 ci/cleanup.py qa-releases
+      - if: steps.head.outputs.current == 'true'
+        name: Trigger the test server deploy
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          pin=$(git -C src ls-tree "$SHA" backend | awk '{print $3}')
+          [[ $pin =~ ^[0-9a-f]{40}$ ]] || { echo "::error::the client commit pins no server in backend/"; exit 1; }
+          bash ci/retry.sh once gh workflow run server.yml -R "$GITHUB_REPOSITORY" --ref main -f mode=deploy-test -f sha="$pin"
+      - name: Encrypted log
+        if: failure()
+        uses: ./.github/actions/upload-log
+        with:
+          name: qa-release-log
 
   # Загрузка в магазины - после публикации релиза и только с ключами магазина; без них job зелёный и ничего не делает. Перед загрузкой
   # job ждёт сервер: манифест SERVER_URL/static/index.json должен объявить ревизию не ниже apiRevision релиза (ci/wait-server.py, до 30
