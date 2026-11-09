@@ -16,6 +16,10 @@
 #   workflow_dispatch                 - вручную: push - как пуш (без деплоя); deploy - деплой проверенного образа головы (срочный
 #                                       выкат только сервера: Release → server); rebuild - проверки, образ и деплой (Release →
 #                                       server-rebuild);
+#   workflow_dispatch deploy-test     - тестовый сервер (второй проект на том же VPS, /opt/exileforge-test): job `deploy-test` выкатывает уже
+#                                       проверенный образ закреплённого в клиенте sha (его запускает job `qa-release` client.yml после
+#                                       предрелиза qa-<n>); ключ DEPLOY_SSH_KEY_TEST привязан к update.sh тестового проекта, боевой деплой
+#                                       этот режим не затрагивает; без vars.TEST_SERVER_URL job пропускается зелёным;
 #   workflow_call (check-wip.yml)     - режим check-wip: проверки, панель и совместимость на текущем wip сервера, БЕЗ образа и деплоя.
 # После выката (job `deploy`): коммит отмечается тегом server-deployed/<sha> в этом репозитории (от него считаются «с прошлого выката»:
 # вайпы игровых коллекций в check-wip, Issues серверных коммитов); пост «Важное» (вход version - номер выпуска клиента для заголовка);
@@ -30,7 +34,7 @@
 # `deploy <sha> <sha256:дайджест>`: update.sh тянет образ по неизменяемому дайджесту, а не по тегу, и сверяет метку sha образа.
 # Журналы шифруются age (открытый ключ vars.LOG_AGE_RECIPIENT, ci/crypt.sh).
 # Trivy (зависимости и образ сервера) здесь не идёт: раз в неделю его гоняет задача `scan` maintenance.yml.
-# Секреты: SOURCE_TOKEN, DEPLOY_HOST, DEPLOY_SSH_KEY, GH_ISSUES_TOKEN. Переменные: VPS_HOST_KEY, LOG_AGE_RECIPIENT.
+# Секреты: SOURCE_TOKEN, DEPLOY_HOST, DEPLOY_SSH_KEY, GH_ISSUES_TOKEN (deploy-test: DEPLOY_SSH_KEY_TEST вместо DEPLOY_SSH_KEY). Переменные: VPS_HOST_KEY, LOG_AGE_RECIPIENT, TEST_SERVER_URL (только deploy-test).
 # Пакету в GHCR выдан доступ этого репозитория (Package settings - Manage Actions access - Write).
 name: Server
 
@@ -54,9 +58,9 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'push - checks and image, no deploy; deploy - deploy the checked head image; rebuild - checks, image and deploy; check-wip - checks, panel and compat without image and deploy (check-wip.yml calls it)'
+        description: 'push - checks and image, no deploy; deploy - deploy the checked head image; rebuild - checks, image and deploy; deploy-test - deploy the checked image of the sha to the test server (client.yml qa-release starts it; sha = server pinned in the client); check-wip - checks, panel and compat without image and deploy (check-wip.yml calls it)'
         type: choice
-        options: [ deploy, push, rebuild, check-wip ]
+        options: [ deploy, push, rebuild, deploy-test, check-wip ]
         default: deploy
       sha:
         description: 'Server commit (empty - head of the working branch)'
@@ -107,7 +111,7 @@ jobs:
           INPUT_MODE: ${{ inputs.mode }}
           INPUT_SHA: ${{ inputs.sha }}
           TOKEN: ${{ secrets.SOURCE_TOKEN }}
-        run: . ci/branches.env && bash ci/resolve.sh "$SERVER_REPO" "$SERVER_BRANCH" server push deploy rebuild check-wip
+        run: . ci/branches.env && bash ci/resolve.sh "$SERVER_REPO" "$SERVER_BRANCH" server push deploy rebuild deploy-test check-wip
       # Пуш в рабочую ветку - fast-forward из wip, sha тот же, что прошёл Check wip: commit status `check-wip` = success на этом sha значит, что
       # проверки, панель и совместимость уже зелёные на этом коде, и они пропускаются; остаются образ и метка «проверен». Режим rebuild
       # (Release → server-rebuild) проверки идёт заново всегда. Статуса нет, он не success или не прочитался - всё как обычно.
@@ -549,6 +553,80 @@ jobs:
         with:
           name: deploy-log
 
+      - name: Forget the key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/key"
+
+  # Тестовый сервер: образ закреплённого в клиенте sha уже собран и помечен «проверен» пушем сервера (job `mark`); здесь он только выкатывается
+  # во второй проект VPS. Пуш сервера мог ещё идти - образ ждём до 12 минут. Проверок совместимости, защиты каналов магазинов и отметки выката
+  # (server-deployed/<sha>, Issues, посты) нет: тест идёт впереди выпуска, боевой путь деплоя выше не затронут.
+  deploy-test:
+    needs: resolve
+    if: ${{ needs.resolve.outputs.mode == 'deploy-test' && vars.TEST_SERVER_URL != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    concurrency:
+      group: deploy-test
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: read
+    env:
+      SHA: ${{ needs.resolve.outputs.sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: ${{ env.SERVER_REPO }}
+          ref: ${{ needs.resolve.outputs.sha }}
+          token: ${{ secrets.SOURCE_TOKEN }}
+          path: server
+          persist-credentials: false
+          fetch-depth: 0
+          filter: blob:none
+          sparse-checkout: |
+            rules/src/main/kotlin/com/sperance/exileforge/rules/wire/Protocol.kt
+          sparse-checkout-cone-mode: false
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Checked image of the pinned server
+        id: image
+        run: |
+          for attempt in $(seq 1 12); do
+            if found=$(bash ci/checked-image.sh "$IMAGE" server "$SHA"); then
+              read -r commit digest <<<"$found"
+              { echo "digest=$digest"; echo "sha=$commit"; } >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "no checked image for ${SHA:0:12} yet (attempt $attempt of 12)"
+            sleep 60
+          done
+          echo "::error::no checked image for the pinned server ${SHA:0:12}: its push run has not finished or failed; after fixing use Release -> server-rebuild"
+          exit 1
+      - name: Update the test server on the VPS
+        env:
+          HOST: ${{ secrets.DEPLOY_HOST }}
+          KEY: ${{ secrets.DEPLOY_SSH_KEY_TEST }}
+          GH_ISSUES_TOKEN: ${{ secrets.GH_ISSUES_TOKEN }}
+          DIGEST: ${{ steps.image.outputs.digest }}
+          IMAGE_SHA: ${{ steps.image.outputs.sha }}
+          VPS_HOST_KEY: ${{ vars.VPS_HOST_KEY }}
+        run: |
+          [[ -n $HOST && -n $KEY ]] || { echo "::error::DEPLOY_HOST or DEPLOY_SSH_KEY_TEST is not set"; exit 1; }
+          [[ $DIGEST =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::no image digest to deploy"; exit 1; }
+          [[ $IMAGE_SHA =~ ^[0-9a-f]{40}$ ]] || { echo "::error::no commit of the image to deploy"; exit 1; }
+          install -m 600 /dev/null "$RUNNER_TEMP/key" && printf '%s\n' "$KEY" > "$RUNNER_TEMP/key"
+          # Ключ теста на VPS привязан к update.sh проекта /opt/exileforge-test: боевую установку эта команда достать не может
+          printf '%s\n' "$GH_ISSUES_TOKEN" | VPS_HOST=$HOST VPS_KEY_FILE="$RUNNER_TEMP/key" bash ci/quiet.sh deploy-test \
+            bash ci/vps-ssh.sh "deploy $IMAGE_SHA $DIGEST"
+      - name: Encrypted log
+        if: failure()
+        uses: ./.github/actions/upload-log
+        with:
+          name: deploy-test-log
       - name: Forget the key
         if: always()
         run: rm -f "$RUNNER_TEMP/key"
