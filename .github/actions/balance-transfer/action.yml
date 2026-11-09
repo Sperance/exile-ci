@@ -1,0 +1,31 @@
+# Перенос слепка баланса и текстов клиента между стендами (ci/balance-transfer.sh). Нужен checkout репозитория перед шагом.
+# Единственное действие, которому дают оба ключа VPS; ключи приходят входами из job'ов, перечисленных в ci/guard-test-vps.py.
+name: Balance transfer
+description: Moves the balance snapshot between the test and the prod stand over SSH
+inputs:
+  direction:
+    description: test-to-prod | prod-to-test
+    required: true
+  host:
+    required: true
+  prod-key:
+    required: true
+  test-key:
+    required: true
+  host-key:
+    required: true
+  log-recipient:
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Transfer the snapshot
+      shell: bash
+      env:
+        DIRECTION: ${{ inputs.direction }}
+        VPS_HOST: ${{ inputs.host }}
+        PROD_KEY: ${{ inputs.prod-key }}
+        TEST_KEY: ${{ inputs.test-key }}
+        VPS_HOST_KEY: ${{ inputs.host-key }}
+        LOG_AGE_RECIPIENT: ${{ inputs.log-recipient }}
+      run: bash ci/balance-transfer.sh "$DIRECTION"

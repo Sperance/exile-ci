@@ -7,7 +7,8 @@ ktor-bestgame (до переезда CI в exile-ci) оставили по debug
 Предрелизы тестовой сборки клиента qa-<n> этого репозитория: живут QA_KEEP новейших по номеру, старшие удаляются (job `qa-release` client.yml).
 
 Только стандартная библиотека; в публичный журнал (say) - лишь счётчики и коды ответов, без тегов и имён артефактов.
-Использование: ci/cleanup.py artifacts | images | qa-releases
+Записи о тестовом стенде stand-<UTC> (ci/test-stand.sh): живут STAND_KEEP новейших по имени.
+Использование: ci/cleanup.py artifacts | images | qa-releases | stand-releases
 """
 import json
 import os
@@ -26,6 +27,8 @@ PACKAGE = "/users/Sperance/packages/container/ktor-bestgame"
 SERVER_KEEP = 5
 QA_KEEP = 5
 QA_TAG = re.compile(r"^qa-([0-9]+)$")
+STAND_KEEP = 10
+STAND_TAG = re.compile(r"^stand-[0-9]{8}T[0-9]{6}Z$")
 DRAFT_AGE = timedelta(days=1)
 SHA_TAG = re.compile(r"^(build-)?[0-9a-f]{40}$")
 # Удаления параллельно: по одному тысячи старых артефактов не укладывались в срок шага
@@ -132,5 +135,22 @@ def clean_qa_releases():
         fail(f"test builds: {len(failed)} deletions refused (codes {sorted(set(failed))})")
 
 
+def doomed_stand_releases(releases):
+    """Записи stand-<UTC> на удаление: все, кроме STAND_KEEP новейших (имя сортируется по времени выката)."""
+    stand = sorted((r for r in releases if r["prerelease"] and STAND_TAG.match(r["tag_name"])), key=lambda r: r["tag_name"], reverse=True)
+    return stand[STAND_KEEP:]
+
+
+def clean_stand_releases():
+    github = GitHub(os.environ["GITHUB_TOKEN"])
+    repo = os.environ["GITHUB_REPOSITORY"]
+    doomed = doomed_stand_releases(list(github.pages(f"/repos/{repo}/releases")))
+    failed = [code for code in github.delete_all(f"/repos/{repo}/releases/{r['id']}" for r in doomed) if code not in (204, 404)]
+    github.delete_all(f"/repos/{repo}/git/refs/tags/{r['tag_name']}" for r in doomed)
+    say(f"test stand records: {len(doomed) - len(failed)} of {len(doomed)} old records deleted, {STAND_KEEP} newest kept")
+    if failed:
+        fail(f"test stand records: {len(failed)} deletions refused (codes {sorted(set(failed))})")
+
+
 if __name__ == "__main__":
-    {"artifacts": clean_artifacts, "images": clean_images, "qa-releases": clean_qa_releases}[sys.argv[1]]()
+    {"artifacts": clean_artifacts, "images": clean_images, "qa-releases": clean_qa_releases, "stand-releases": clean_stand_releases}[sys.argv[1]]()
