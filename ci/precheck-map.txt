@@ -1,7 +1,7 @@
 # Карта «шаг CI -> шаг scripts/precheck.sh»: у каждого job и шага server.yml, client.yml и check-wip.yml есть решение. Сторож: ci/guard-parity.py
 # (job guards в check-wip.yml, шаг «CI scripts guards» в job'ах changes client.yml и resolve server.yml): шаг без строки или строка без шага - красное.
 # Формат: `ключ => precheck:<client|server>:<шаг>[,<шаг>]` либо `ключ => ci-only: <причина>`; ключ - `workflow/job[/имя шага]`, `*` разрешён только у ci-only.
-# Шаги precheck: сервер - format, comment-style, compile, content, snapshots, rules-version, js, tests; клиент - format, guards, compile, tests, meta-combat.
+# Шаги precheck: сервер - format, comment-style, compile, content, snapshots, rules-version, notes-edit, js, tests; клиент - notes-edit, format, guards, compile, tests, meta-combat.
 # Новый шаг CI: либо шаг в precheck и строка precheck здесь, либо ci-only с причиной, почему локально его не повторить («Причины красного CI» в rules-md/server/ci.md).
 
 # --- сервер (server.yml)
@@ -46,7 +46,7 @@ check-wip/client => ci-only: вызывает client.yml в режиме check-w
 check-wip/guards => ci-only: сторожа накопления заметок, важного текста и вайпов смотрят историю и теги обоих репозиториев
 check-wip/guards/uses:actions/checkout => ci-only: инфраструктура Actions
 check-wip/guards/Both repositories with the working branches => ci-only: клоны обоих репозиториев для сторожей
-check-wip/guards/Accumulated notes, important text and wipes => ci-only: ci/release_state.py check смотрит историю, теги и рабочие ветки обоих репозиториев
+check-wip/guards/Accumulated notes, important text and wipes => precheck:client:notes-edit
 check-wip/guards/Encrypted log => ci-only: журнал упавшего шага шифруется для владельца
 check-wip/record* => ci-only: запись commit status check-wip на оба коммита
 
