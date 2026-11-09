@@ -60,9 +60,9 @@ on:
   workflow_dispatch:
     inputs:
       task:
-        description: 'store-status - report the store channels to the server; cleanup - free the paid GitHub storage; scan - Trivy over the server head and its checked image (fails on CRITICAL) and the full browser crawl of the panel, every bestiary page (job panel-full); outdated - list the outdated dependencies of client and server (sealed artifact); doctor - check secrets, tokens and access'
+        description: 'store-status - report the store channels to the server; cleanup - free the paid GitHub storage and trim the Actions cache; caches - only trim the Actions cache; scan - Trivy over the server head and its checked image (fails on CRITICAL) and the full browser crawl of the panel, every bestiary page (job panel-full); outdated - list the outdated dependencies of client and server (sealed artifact); doctor - check secrets, tokens and access'
         type: choice
-        options: [ store-status, cleanup, scan, outdated, doctor ]
+        options: [ store-status, cleanup, caches, scan, outdated, doctor ]
         default: store-status
   push:
     branches: [ main ]
@@ -175,6 +175,38 @@ jobs:
       - name: Result
         if: steps.artifacts.outcome == 'failure' || steps.images.outcome == 'failure'
         run: exit 1
+
+  # Кэш Actions репозитория: лимит GitHub 10 ГБ, записи gradle-home пишутся на каждый коммит и вытесняют нужные (Playwright, снимок эмулятора).
+  # Удаляются записи, не использованные несколько суток, лишние в своём семействе и самые давние сверх бюджета (ci/cleanup.py caches). Единственный job
+  # с actions: write; ключи и содержимое в журнал не выводятся.
+  caches:
+    if: ${{ (github.event_name == 'schedule' && github.event.schedule == '43 2 * * *') || (github.event_name == 'workflow_dispatch' && (inputs.task == 'cleanup' || inputs.task == 'caches')) }}
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: write
+      contents: read
+    timeout-minutes: 15
+    concurrency:
+      group: cleanup-caches
+      cancel-in-progress: false
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
+      PUBLIC_NOTES: ${{ runner.temp }}/caches.txt
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Trim the Actions cache
+        run: |
+          code=0
+          bash ci/quiet.sh cleanup-caches python3 ci/cleanup.py caches || code=$?
+          cat "$PUBLIC_NOTES" 2>/dev/null || true
+          exit $code
+      - name: Encrypted log
+        if: failure()
+        uses: ./.github/actions/upload-log
+        with:
+          name: cleanup-caches-log
 
   scan:
     if: ${{ (github.event_name == 'schedule' && github.event.schedule == '31 3 * * 1') || (github.event_name == 'workflow_dispatch' && inputs.task == 'scan') }}

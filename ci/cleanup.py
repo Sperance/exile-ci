@@ -8,7 +8,11 @@ ktor-bestgame (до переезда CI в exile-ci) оставили по debug
 
 Только стандартная библиотека; в публичный журнал (say) - лишь счётчики и коды ответов, без тегов и имён артефактов.
 Записи о тестовом стенде stand-<UTC> (ci/test-stand.sh): живут STAND_KEEP новейших по имени.
-Использование: ci/cleanup.py artifacts | images | qa-releases | stand-releases
+Кэш Actions этого репозитория (`caches`): лимит GitHub - 10 ГБ, при его достижении вытесняются самые давние, в том числе нужные (Playwright, снимок эмулятора);
+записи gradle-home пишутся на каждый коммит. Живут записи, к которым обращались за CACHE_IDLE_DAYS суток; от каждого семейства ключей (хэши в ключе заменены на #)
+остаются CACHE_FAMILY_KEEP новейших; если и тогда сумма больше CACHE_BUDGET_BYTES, удаляются самые давно использованные, кроме новейшей записи каждого семейства.
+Токен - workflow (job `caches` maintenance.yml, единственный с actions: write). В журнал - только счётчики и мегабайты, без ключей.
+Использование: ci/cleanup.py artifacts | images | qa-releases | stand-releases | caches
 """
 import json
 import os
@@ -29,6 +33,10 @@ QA_KEEP = 5
 QA_TAG = re.compile(r"^qa-([0-9]+)$")
 STAND_KEEP = 10
 STAND_TAG = re.compile(r"^stand-[0-9]{8}T[0-9]{6}Z$")
+CACHE_IDLE_DAYS = 5
+CACHE_FAMILY_KEEP = 2
+CACHE_BUDGET_BYTES = 8 * 2**30
+CACHE_HASH = re.compile(r"[0-9a-f]{16,}")
 DRAFT_AGE = timedelta(days=1)
 SHA_TAG = re.compile(r"^(build-)?[0-9a-f]{40}$")
 # Удаления параллельно: по одному тысячи старых артефактов не укладывались в срок шага
@@ -152,5 +160,47 @@ def clean_stand_releases():
         fail(f"test stand records: {len(failed)} deletions refused (codes {sorted(set(failed))})")
 
 
+def cache_family(key):
+    return CACHE_HASH.sub("#", key)
+
+
+def cache_time(cache):
+    return datetime.fromisoformat(cache["last_accessed_at"].replace("Z", "+00:00"))
+
+
+def doomed_caches(caches, now):
+    """Записи кэша на удаление: давно не использованные, сверх CACHE_FAMILY_KEEP в семействе, затем самые давние сверх бюджета (новейшая записи семейства неприкосновенна)."""
+    by_family = {}
+    for cache in sorted(caches, key=cache_time, reverse=True):
+        by_family.setdefault(cache_family(cache["key"]), []).append(cache)
+    doomed = []
+    kept = []
+    for family in by_family.values():
+        for index, cache in enumerate(family):
+            idle = now - cache_time(cache) > timedelta(days=CACHE_IDLE_DAYS)
+            (doomed if idle or index >= CACHE_FAMILY_KEEP else kept).append(cache)
+    total = sum(cache["size_in_bytes"] for cache in kept)
+    newest = {family[0]["id"] for family in by_family.values()}
+    for cache in sorted(kept, key=cache_time):
+        if total <= CACHE_BUDGET_BYTES:
+            break
+        if cache["id"] not in newest:
+            doomed.append(cache)
+            total -= cache["size_in_bytes"]
+    return doomed
+
+
+def clean_caches():
+    github = GitHub(os.environ["GITHUB_TOKEN"])
+    repo = os.environ["GITHUB_REPOSITORY"]
+    caches = list(github.pages(f"/repos/{repo}/actions/caches", "actions_caches"))
+    doomed = doomed_caches(caches, datetime.now(timezone.utc))
+    failed = [code for code in github.delete_all(f"/repos/{repo}/actions/caches/{c['id']}" for c in doomed) if code not in (204, 404)]
+    left = sum(c["size_in_bytes"] for c in caches) - sum(c["size_in_bytes"] for c in doomed)
+    say(f"actions cache: {len(caches)} entries, {len(doomed) - len(failed)} deleted, about {left / 2**20:.0f} MB left")
+    if failed:
+        fail(f"actions cache: {len(failed)} deletions refused (codes {sorted(set(failed))}) - the job needs actions: write")
+
+
 if __name__ == "__main__":
-    {"artifacts": clean_artifacts, "images": clean_images, "qa-releases": clean_qa_releases, "stand-releases": clean_stand_releases}[sys.argv[1]]()
+    {"artifacts": clean_artifacts, "images": clean_images, "qa-releases": clean_qa_releases, "stand-releases": clean_stand_releases, "caches": clean_caches}[sys.argv[1]]()
