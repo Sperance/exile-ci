@@ -77,12 +77,22 @@ def build_entry(version_code, version_name, revision, availability, published_at
     return entry
 
 
-def get_json(url, token=None):
+def get_json(url, token=None, attempts=4):
+    """JSON по адресу; ответ 5xx или обрыв сети GitHub повторяется с паузой 5, 10, 20 с (скачивание ассетов релиза бывает медленным)."""
     headers = {"Accept": "application/vnd.github+json"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
-    with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=60) as response:
-        return json.load(response)
+    for attempt in range(attempts):
+        try:
+            with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=60) as response:
+                return json.load(response)
+        except urllib.error.HTTPError as error:
+            if error.code < 500 or attempt == attempts - 1:
+                raise
+        except (urllib.error.URLError, TimeoutError):
+            if attempt == attempts - 1:
+                raise
+        time.sleep(5 * 2 ** attempt)
 
 
 def parse_time(text):
