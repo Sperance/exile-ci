@@ -113,7 +113,7 @@ env:
 
 jobs:
   resolve:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 3
     outputs:
       sha: ${{ steps.target.outputs.sha }}
@@ -160,7 +160,7 @@ jobs:
   checks:
     needs: resolve
     if: ${{ needs.resolve.outputs.trusted != 'true' && (needs.resolve.outputs.mode == 'push' || needs.resolve.outputs.mode == 'rebuild' || needs.resolve.outputs.mode == 'check-wip') }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     # Новый пуш отменяет проверки устаревшего: выкатывать всё равно будут его
     concurrency:
@@ -199,7 +199,7 @@ jobs:
           name: checks-log
 
   # Графики панели баланса на настоящем контенте: сервер без базы (scripts/check.sh panel), Chromium обходит разделы с графиками.
-  # Ubuntu 24.04 закреплён: Playwright 1.55 не ставит Chromium на образе ubuntu-latest (26.04).
+  # Ubuntu 24.04 закреплён на всех job (плавающий образ менял версию сам, кэши и времена плавали): Playwright 1.55 не ставит Chromium на образе ubuntu-latest (26.04).
   # Отчёт проверки не выкладывается: в нём страницы панели.
   panel:
     needs: resolve
@@ -262,7 +262,7 @@ jobs:
   compat:
     needs: resolve
     if: ${{ needs.resolve.outputs.trusted != 'true' && (needs.resolve.outputs.mode == 'push' || needs.resolve.outputs.mode == 'rebuild' || needs.resolve.outputs.mode == 'check-wip') }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 40
     concurrency:
       group: server-compat${{ needs.resolve.outputs.mode == 'check-wip' && '-wip' || '' }}
@@ -335,7 +335,7 @@ jobs:
   image:
     needs: resolve
     if: ${{ (needs.resolve.outputs.mode == 'push' || needs.resolve.outputs.mode == 'rebuild') }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     concurrency:
       group: server-image
@@ -404,7 +404,7 @@ jobs:
   mark:
     needs: [ resolve, checks, panel, compat, image ]
     if: ${{ !cancelled() && (needs.resolve.outputs.mode == 'push' || needs.resolve.outputs.mode == 'rebuild') && (needs.resolve.outputs.trusted == 'true' || (needs.checks.result == 'success' && needs.panel.result == 'success' && needs.compat.result == 'success')) && needs.image.result == 'success' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     concurrency:
       group: mark
@@ -437,7 +437,7 @@ jobs:
   deploy:
     needs: [ resolve, image, mark ]
     if: ${{ !cancelled() && needs.resolve.result == 'success' && (needs.resolve.outputs.mode == 'deploy' || (needs.resolve.outputs.mode == 'rebuild' && needs.mark.result == 'success')) }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     outputs:
       deployed: ${{ steps.client.outputs.ready == 'true' }}
@@ -592,7 +592,7 @@ jobs:
   deploy-test:
     needs: resolve
     if: ${{ needs.resolve.outputs.mode == 'deploy-test' && vars.TEST_SERVER_URL != '' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
     outputs:
       first: ${{ steps.record.outputs.first }}
@@ -691,7 +691,7 @@ jobs:
   test-base:
     needs: deploy-test
     if: ${{ needs.deploy-test.result == 'success' && needs.deploy-test.outputs.first == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     concurrency:
       group: balance-transfer
@@ -722,7 +722,7 @@ jobs:
   balance:
     needs: deploy
     if: ${{ !cancelled() && needs.deploy.result == 'success' && needs.deploy.outputs.deployed == 'true' && inputs.version != '' && inputs.skip_test != true }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     concurrency:
       group: balance-transfer
@@ -752,7 +752,7 @@ jobs:
   refresh-cache:
     needs: [ resolve, deploy ]
     if: ${{ !cancelled() && needs.deploy.result == 'success' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: read

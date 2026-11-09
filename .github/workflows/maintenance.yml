@@ -78,7 +78,7 @@ env:
 jobs:
   store-status:
     if: ${{ (github.event_name == 'schedule' && github.event.schedule == '17 */6 * * *') || (github.event_name == 'workflow_dispatch' && inputs.task == 'store-status') }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       actions: write
@@ -130,7 +130,7 @@ jobs:
 
   cleanup:
     if: ${{ (github.event_name == 'schedule' && github.event.schedule == '43 2 * * *') || (github.event_name == 'workflow_dispatch' && inputs.task == 'cleanup') }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       packages: write
@@ -178,7 +178,7 @@ jobs:
 
   scan:
     if: ${{ (github.event_name == 'schedule' && github.event.schedule == '31 3 * * 1') || (github.event_name == 'workflow_dispatch' && inputs.task == 'scan') }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       packages: read
@@ -249,7 +249,7 @@ jobs:
 
   outdated:
     if: ${{ (github.event_name == 'schedule' && github.event.schedule == '29 4 * * 1') || (github.event_name == 'workflow_dispatch' && inputs.task == 'outdated') }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     timeout-minutes: 15
@@ -374,7 +374,7 @@ jobs:
 
   doctor:
     if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.task == 'doctor') }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       packages: read

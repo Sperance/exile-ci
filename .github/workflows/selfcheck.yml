@@ -1,0 +1,29 @@
+# Самопроверка самого exile-ci: ci/precheck.sh на каждом пуше в main (после финального fast-forward пуша из wip) и по кнопке. Разбор YAML и
+# `bash -n` блоков run всех workflow, shellcheck и bash -n скриптов ci/, py_compile ci/*.py, сторожа сети, паритета и тестового стенда.
+# Без секретов и без доступа к коду игры; 20-30 с. Те же шаги перед пушем в wip: `bash ci/precheck.sh`.
+name: Selfcheck
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: selfcheck
+  cancel-in-progress: true
+
+jobs:
+  selfcheck:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Python yaml module
+        run: python3 -c 'import yaml' 2>/dev/null || python3 -m pip install --quiet --disable-pip-version-check pyyaml
+      - name: Self-check of the CI scripts and workflows
+        run: bash ci/precheck.sh

@@ -29,7 +29,7 @@ permissions:
 
 jobs:
   post:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     # Общая очередь с pages.yml: два деплоя Pages сразу не идут
     concurrency:

@@ -66,7 +66,7 @@ permissions:
 jobs:
   dispatch:
     if: ${{ inputs.what != 'client' && inputs.what != 'preview' && inputs.what != 'balance' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 3
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -114,7 +114,7 @@ jobs:
   # темой `feat: release <версия>` проверки пуша пропускают (client.yml, шаг Changed parts), так что петли нет: пуш не выпускает.
   client:
     if: ${{ inputs.what == 'client' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     concurrency:
       group: release-client
@@ -258,7 +258,7 @@ jobs:
   # balance-transfer (сторож ci/guard-test-vps.py). Отказ сервера (код на тесте и в бою различается и т.п.) - красный прогон.
   balance:
     if: ${{ inputs.what == 'balance' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     concurrency:
       group: balance-transfer
@@ -289,7 +289,7 @@ jobs:
   # уже в том виде, в каком выйдут к игрокам; кода, данных игроков и секретов в ней нет.
   preview:
     if: ${{ inputs.what == 'preview' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: read

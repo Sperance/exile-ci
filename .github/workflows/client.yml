@@ -106,7 +106,7 @@ env:
 jobs:
   # Что затронуто и будет ли релиз: от этого зависят тяжёлые job ниже.
   changes:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: read
@@ -289,7 +289,7 @@ jobs:
     needs: changes
     # Перед релизом - всегда (TEST-01): релиз не выходит без словарей и тестов core
     if: ${{ needs.changes.outputs.stores != 'true' && needs.changes.outputs.cache != 'true' && needs.changes.outputs.skip_core != 'true' && (needs.changes.outputs.core == 'true' || needs.changes.outputs.app == 'true' || needs.changes.outputs.release == 'true') }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     concurrency:
       group: client-core${{ needs.changes.outputs.suffix }}
@@ -316,7 +316,7 @@ jobs:
     needs: changes
     # При правке app (Android-модули), перед релизом и по ручному запуску; правка только core или сервера сторожей app не трогает
     if: ${{ needs.changes.outputs.stores != 'true' && needs.changes.outputs.cache != 'true' && needs.changes.outputs.skip_app != 'true' && (needs.changes.outputs.app == 'true' || needs.changes.outputs.release == 'true') }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     concurrency:
       group: client-app-fast${{ needs.changes.outputs.suffix }}
@@ -339,7 +339,7 @@ jobs:
   app:
     needs: changes
     if: ${{ needs.changes.outputs.stores != 'true' && needs.changes.outputs.cache != 'true' && needs.changes.outputs.skip_app != 'true' && (needs.changes.outputs.app == 'true' || needs.changes.outputs.release == 'true') }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     concurrency:
       group: client-app${{ needs.changes.outputs.suffix }}
@@ -373,7 +373,7 @@ jobs:
     name: ${{ matrix.name }}
     needs: changes
     if: ${{ needs.changes.outputs.ui == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     concurrency:
       group: client-${{ matrix.name }}${{ needs.changes.outputs.suffix }}
@@ -444,7 +444,7 @@ jobs:
   release-apk:
     needs: changes
     if: ${{ needs.changes.outputs.release == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     concurrency:
       group: client-release-apk${{ needs.changes.outputs.suffix }}
@@ -486,7 +486,7 @@ jobs:
   release-aab:
     needs: changes
     if: ${{ needs.changes.outputs.release == 'true' || needs.changes.outputs.stores == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     concurrency:
       group: client-release-aab${{ needs.changes.outputs.suffix }}
@@ -525,7 +525,7 @@ jobs:
   release-rustore:
     needs: changes
     if: ${{ needs.changes.outputs.release == 'true' || needs.changes.outputs.stores == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     concurrency:
       group: client-release-rustore${{ needs.changes.outputs.suffix }}
@@ -566,7 +566,7 @@ jobs:
   sign:
     needs: [ changes, release-apk, release-aab, release-rustore ]
     if: ${{ !cancelled() && (needs.changes.outputs.release == 'true' || needs.changes.outputs.stores == 'true') && needs.release-aab.result == 'success' && needs.release-rustore.result == 'success' && (needs.changes.outputs.stores == 'true' || needs.release-apk.result == 'success') }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
       contents: read
@@ -659,7 +659,7 @@ jobs:
   emulator:
     needs: [ changes, minified ]
     if: ${{ needs.changes.outputs.ui == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
     concurrency:
       group: client-emulator${{ needs.changes.outputs.suffix }}
@@ -749,7 +749,7 @@ jobs:
     needs: changes
     # Контракт зависит от core и закреплённого сервера; перед релизом - всегда
     if: ${{ needs.changes.outputs.stores != 'true' && needs.changes.outputs.cache != 'true' && needs.changes.outputs.skip_server != 'true' && (needs.changes.outputs.core == 'true' || needs.changes.outputs.release == 'true') }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
     concurrency:
       group: client-client-server${{ needs.changes.outputs.suffix }}
@@ -792,7 +792,7 @@ jobs:
   mark-green:
     needs: [ changes, core, app-fast, app, emulator, client-server ]
     if: ${{ !cancelled() && needs.changes.outputs.shots != 'true' && needs.changes.outputs.stores != 'true' && needs.changes.outputs.cache != 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     env:
       TREE: ${{ needs.changes.outputs.tree }}
@@ -828,7 +828,7 @@ jobs:
     # Пакеты магазинов собираются до публикации: сломанный вариант сборки не даёт выпустить версию в одном канале и не выпустить в другом
     needs: [ changes, core, app-fast, app, minified, release-apk, release-aab, release-rustore, sign, emulator, client-server ]
     if: ${{ !cancelled() && needs.changes.outputs.release == 'true' && needs.sign.result == 'success' && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     outputs:
       tag: ${{ steps.version.outputs.tag }}
@@ -991,7 +991,7 @@ jobs:
   qa-apk:
     needs: [ changes, core, app-fast, app, minified, emulator, client-server ]
     if: ${{ !cancelled() && needs.changes.outputs.qa == 'true' && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     concurrency:
       group: client-qa-apk
@@ -1035,7 +1035,7 @@ jobs:
   qa-sign:
     needs: [ changes, qa-apk ]
     if: ${{ !cancelled() && needs.qa-apk.result == 'success' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
       contents: read
@@ -1087,7 +1087,7 @@ jobs:
   qa-release:
     needs: [ changes, qa-sign ]
     if: ${{ !cancelled() && needs.qa-sign.result == 'success' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
       contents: write
@@ -1175,7 +1175,7 @@ jobs:
   publish-play:
     needs: [ changes, release, sign ]
     if: ${{ !cancelled() && (needs.release.result == 'success' || needs.changes.outputs.stores == 'true') && needs.sign.result == 'success' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 75
     permissions:
       contents: read
@@ -1231,7 +1231,7 @@ jobs:
   publish-rustore:
     needs: [ changes, release, sign ]
     if: ${{ !cancelled() && (needs.release.result == 'success' || needs.changes.outputs.stores == 'true') && needs.sign.result == 'success' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 75
     permissions:
       contents: write
@@ -1314,7 +1314,7 @@ jobs:
   store-status:
     needs: [ changes, release, publish-play, publish-rustore ]
     if: ${{ !cancelled() && needs.release.result == 'success' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       actions: write
@@ -1339,7 +1339,7 @@ jobs:
     # После релиза версии в этом прогоне и по ручному режиму cache (тогда release пропущен); работает только при смене ключа или в режиме cache,
     # иначе проверяет ключ и завершается
     if: ${{ !cancelled() && (needs.release.result == 'success' || needs.changes.outputs.cache == 'true') }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     concurrency:
       group: gradle-cache
@@ -1470,7 +1470,7 @@ jobs:
   gradle-toolchain:
     needs: [ changes, gradle-cache ]
     if: ${{ !cancelled() && needs.gradle-cache.result != 'skipped' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     concurrency:
       group: gradle-cache

@@ -90,7 +90,7 @@ env:
 jobs:
   run:
     if: ${{ (github.event_name == 'workflow_dispatch' && contains(fromJSON('["status","logs","restart","backup","prune","upgrade","reboot"]'), inputs.command)) || github.event.schedule == '35 0 * * *' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     concurrency:
       group: vps
@@ -134,7 +134,7 @@ jobs:
 
   test:
     if: ${{ github.event_name == 'workflow_dispatch' && contains(fromJSON('["test-status","test-reset"]'), inputs.command) && vars.TEST_SERVER_URL != '' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     concurrency:
       group: vps-test
@@ -180,7 +180,7 @@ jobs:
   test-base:
     needs: test
     if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && vars.TEST_SERVER_URL != '' && (inputs.command == 'test-base' || (inputs.command == 'test-reset' && needs.test.result == 'success')) }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     concurrency:
       group: balance-transfer
@@ -205,7 +205,7 @@ jobs:
 
   art:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.command == 'art' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
       contents: write
@@ -280,7 +280,7 @@ jobs:
 
   art-backup:
     if: ${{ (github.event.schedule == '27 3 * * *' || inputs.command == 'art-backup') }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
       contents: write
@@ -339,7 +339,7 @@ jobs:
   # Часовой присмотр: только сообщает (Issue «[VPS] Сервер требует внимания» в ExileForge, ci/vps_health.py), ничего не чинит
   health:
     if: ${{ (github.event.schedule == '17 * * * *' || inputs.command == 'health') }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     concurrency:
       group: vps-health
@@ -379,7 +379,7 @@ jobs:
   # CI для восстановления (SEAL_AGE_RECIPIENT), - в prerelease db-<дата UTC> закрытого ExileForge; хранятся 4 последних
   db-export:
     if: ${{ (github.event.schedule == '50 0 * * 0' || inputs.command == 'db-export') }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     concurrency:
       group: vps-db
@@ -429,7 +429,7 @@ jobs:
   # снимает свежую копию в backups/pre. Источник - копия на VPS или недельный релиз db-<дата> (CI расшифровывает его ключом SEAL).
   restore:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.command == 'restore' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     concurrency:
       group: vps-db
@@ -486,7 +486,7 @@ jobs:
   # Зеркало кода вне GitHub: полные копии трёх репозиториев (все ветки и теги) git bundle'ами - на VPS, 4 последних
   repo-mirror:
     if: ${{ (github.event.schedule == '10 1 * * 1' || inputs.command == 'repo-mirror') }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
