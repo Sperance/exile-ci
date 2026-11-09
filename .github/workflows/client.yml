@@ -42,10 +42,11 @@
 # Зелёные деревья: пуш (и ручной push) после успешных ворот кладёт в кэш Actions пустую метку `client-green-<дерево>-<ворота>` (дерево -
 # ci/green-tree.sh: код без RELEASE_NOTES.md и номера версии). Режим release ищет метки и пропускает ворота, чей код уже был зелёным;
 # метки нет - ворота идут как обычно. Метка живёт в кэше Actions (до 7 суток без обращений).
-# Тестовая сборка (flavor qa, vars.TEST_SERVER_URL): после зелёных ворот пуша (режим push), если код клиента менялся и sha - голова рабочей ветки,
+# Тестовая сборка (flavor qa, vars.TEST_SERVER_URL): после зелёных ворот пуша (режим push), если менялся код клиента или пин backend/ (любой файл,
+# кроме .md, audit/, .claude/ и номера версии; ci/test-stand.py code-changed - пуш только с документами сборку не запускает) и sha - голова рабочей ветки,
 # job `qa-apk` собирает qa-вариант (R8, одноразовый ключ), `qa-sign` подписывает его ключом релиза, `qa-release` публикует предрелиз qa-<число
 # коммитов> (ExileForge-qa.apk, update.json с mandatory=true и подпись), оставляет 5 новейших и запускает server.yml deploy-test на сервере,
-# закреплённом в клиенте. Переменная пуста - все три job'а пропускаются зелёными. Секреты те же, что у выпуска; новых нет.
+# закреплённом в клиенте (передаёт ему sha клиента и тег qa: по ним deploy-test записывает, что стоит на тесте, - ci/test-stand.sh). Переменная пуста - все три job'а пропускаются зелёными. Секреты те же, что у выпуска; новых нет.
 name: Client
 
 on:
@@ -65,6 +66,9 @@ on:
       force_breaking:
         type: boolean
         default: false
+      skip_test:
+        type: boolean
+        default: false
   workflow_dispatch:
     inputs:
       mode:
@@ -81,6 +85,10 @@ on:
         default: false
       force_breaking:
         description: 'release mode: owner-approved break for the server deploy after the release (set by Release -> client)'
+        type: boolean
+        default: false
+      skip_test:
+        description: 'release mode: the release went out without the test stand (set by Release -> client); the balance of the test stand is not carried to prod'
         type: boolean
         default: false
 
@@ -111,6 +119,7 @@ jobs:
       sha: ${{ steps.target.outputs.sha }}
       core: ${{ steps.diff.outputs.core }}
       app: ${{ steps.diff.outputs.app }}
+      code: ${{ steps.diff.outputs.code }}
       tree: ${{ steps.green.outputs.tree }}
       skip_core: ${{ steps.green.outputs.skip_core }}
       skip_app: ${{ steps.green.outputs.skip_app }}
@@ -168,17 +177,18 @@ jobs:
         run: |
           if [ "$EVENT" = repository_dispatch ] && git log -1 --format=%s "$SHA" | grep -qE '^feat: release [0-9]+\.[0-9]+\.[0-9]+$'; then
             echo "commit of the release number: the release run checks it, the push run does nothing"
-            core=false; app=false
+            core=false; app=false; code=false
           elif [ "$EVENT" != repository_dispatch ] || [[ ! $BEFORE =~ ^[0-9a-f]{40}$ || $BEFORE =~ ^0+$ ]] || ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
-            core=true; app=true
+            core=true; app=true; code=true
           else
             files=$(git diff --name-only "$BEFORE" "$SHA")
             # app: оболочка и Android-модули (platform, ui-kit, feature/*) и сборочные файлы любого модуля
             grep -qE '^(app|platform|ui-kit|feature)/|(^|/)build\.gradle\.kts$' <<<"$files" && app=true || app=false
             grep -qE '^(core/|backend$|scripts/client_server_test\.py$|gradle/|[^/]+\.gradle\.kts$|gradle\.properties$)' <<<"$files" && core=true || core=false
+            code=$(python3 -I ../ci/test-stand.py code-changed . "$BEFORE" "$SHA")
           fi
-          echo "core=$core app=$app"
-          { echo "core=$core"; echo "app=$app"; } >> "$GITHUB_OUTPUT"
+          echo "core=$core app=$app code=$code"
+          { echo "core=$core"; echo "app=$app"; echo "code=$code"; } >> "$GITHUB_OUTPUT"
       # Зелёное дерево: в режиме release ворота, чей код уже прошёл на пуше, пропускаются (метки кладёт job `mark-green`). Не нашли
       # метку или поиск не удался - ворота идут как обычно.
       - name: Green trees
@@ -251,12 +261,13 @@ jobs:
           SHA: ${{ steps.target.outputs.sha }}
           CORE: ${{ steps.diff.outputs.core }}
           APP: ${{ steps.diff.outputs.app }}
+          CODE: ${{ steps.diff.outputs.code }}
         run: |
           build=false
           if [ -z "$TEST_SERVER_URL" ]; then
             echo "TEST_SERVER_URL is not set: no test build"
-          elif [ "$MODE" != push ] || { [ "$CORE" != true ] && [ "$APP" != true ]; }; then
-            echo "not a push with client code changes: no test build"
+          elif [ "$MODE" != push ] || { [ "$CORE" != true ] && [ "$APP" != true ] && [ "$CODE" != true ]; }; then
+            echo "not a push with client code or server pin changes: no test build"
           else
             . ../ci/branches.env
             head=$(GH_TOKEN="$HEAD_TOKEN" bash ../ci/retry.sh read gh api "repos/$CLIENT_REPO/git/ref/heads/$CLIENT_BRANCH" --jq .object.sha)
@@ -931,8 +942,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           FORCE: ${{ inputs.force_breaking || false }}
+          SKIP_TEST: ${{ inputs.skip_test || false }}
           TAG: ${{ steps.version.outputs.tag }}
-        run: bash ../ci/retry.sh once gh workflow run server.yml -R "$GITHUB_REPOSITORY" --ref main -f mode=deploy -f force_breaking="$FORCE" -f version="${TAG#v}"
+        run: bash ../ci/retry.sh once gh workflow run server.yml -R "$GITHUB_REPOSITORY" --ref main -f mode=deploy -f force_breaking="$FORCE" -f skip_test="$SKIP_TEST" -f version="${TAG#v}"
       # Пост с заметками в группу Telegram (telegram.yml). Не запустился - релиз не держит: повторить можно через Release → telegram.
       - if: steps.version.outputs.exists == 'false'
         name: Announce in Telegram
@@ -1148,7 +1160,7 @@ jobs:
         run: |
           pin=$(git -C src ls-tree "$SHA" backend | awk '{print $3}')
           [[ $pin =~ ^[0-9a-f]{40}$ ]] || { echo "::error::the client commit pins no server in backend/"; exit 1; }
-          bash ci/retry.sh once gh workflow run server.yml -R "$GITHUB_REPOSITORY" --ref main -f mode=deploy-test -f sha="$pin"
+          bash ci/retry.sh once gh workflow run server.yml -R "$GITHUB_REPOSITORY" --ref main -f mode=deploy-test -f sha="$pin" -f client_sha="$SHA" -f qa_tag="$TAG"
       - name: Encrypted log
         if: failure()
         uses: ./.github/actions/upload-log

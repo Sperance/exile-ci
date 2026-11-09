@@ -19,8 +19,13 @@
 #   workflow_dispatch deploy-test     - тестовый сервер (второй проект на том же VPS, /opt/exileforge-test): job `deploy-test` выкатывает уже
 #                                       проверенный образ закреплённого в клиенте sha (его запускает job `qa-release` client.yml после
 #                                       предрелиза qa-<n>); ключ DEPLOY_SSH_KEY_TEST привязан к update.sh тестового проекта, боевой деплой
-#                                       этот режим не затрагивает; без vars.TEST_SERVER_URL job пропускается зелёным;
+#                                       этот режим не затрагивает; без vars.TEST_SERVER_URL job пропускается зелёным. После удачного выката job пишет,
+#                                       что стоит на тесте (ci/test-stand.sh: prerelease `stand-<UTC>` с stand.json: sha клиента, закреплённый
+#                                       сервер, образ, время) - по записи Release решает, на тесте ли голова. Первый выкат теста (записей ещё нет)
+#                                       один раз переносит боевой слепок баланса на тест (job `test-base`, ci/balance-transfer.sh prod-to-test);
 #   workflow_call (check-wip.yml)     - режим check-wip: проверки, панель и совместимость на текущем wip сервера, БЕЗ образа и деплоя.
+# После выката сервера с выпуском клиента (job `deploy`, вход version) job `balance` переносит слепок баланса и текстов клиента теста в бой
+# (test-to-prod; отказ, если код различается, - красный); без этого переноса выкат идёт, когда выпуск мимо теста (вход skip_test).
 # После выката (job `deploy`): коммит отмечается тегом server-deployed/<sha> в этом репозитории (от него считаются «с прошлого выката»:
 # вайпы игровых коллекций в check-wip, Issues серверных коммитов); пост «Важное» (вход version - номер выпуска клиента для заголовка);
 # без выпуска клиента (Release → server, вход version пуст) - ещё пост новых пунктов «[сервер]» заметок в «Обновления»
@@ -34,7 +39,7 @@
 # `deploy <sha> <sha256:дайджест>`: update.sh тянет образ по неизменяемому дайджесту, а не по тегу, и сверяет метку sha образа.
 # Журналы шифруются age (открытый ключ vars.LOG_AGE_RECIPIENT, ci/crypt.sh).
 # Trivy (зависимости и образ сервера) здесь не идёт: раз в неделю его гоняет задача `scan` maintenance.yml.
-# Секреты: SOURCE_TOKEN, DEPLOY_HOST, DEPLOY_SSH_KEY, GH_ISSUES_TOKEN (deploy-test: DEPLOY_SSH_KEY_TEST вместо DEPLOY_SSH_KEY). Переменные: VPS_HOST_KEY, LOG_AGE_RECIPIENT, TEST_SERVER_URL (только deploy-test).
+# Секреты: SOURCE_TOKEN, DEPLOY_HOST, DEPLOY_SSH_KEY, GH_ISSUES_TOKEN (deploy-test: DEPLOY_SSH_KEY_TEST вместо DEPLOY_SSH_KEY; оба ключа - только jobs `balance` и `test-base`). Переменные: VPS_HOST_KEY, LOG_AGE_RECIPIENT, TEST_SERVER_URL (только deploy-test).
 # Пакету в GHCR выдан доступ этого репозитория (Package settings - Manage Actions access - Write).
 name: Server
 
@@ -55,6 +60,15 @@ on:
       version:
         type: string
         default: ''
+      client_sha:
+        type: string
+        default: ''
+      qa_tag:
+        type: string
+        default: ''
+      skip_test:
+        type: boolean
+        default: false
   workflow_dispatch:
     inputs:
       mode:
@@ -73,6 +87,18 @@ on:
         description: 'Client release version when the deploy follows a release (heading of the important post); empty - server alone'
         required: false
         default: ''
+      client_sha:
+        description: 'deploy-test: client commit of the test build (client.yml qa-release sets it); the test stand record keeps it'
+        required: false
+        default: ''
+      qa_tag:
+        description: 'deploy-test: tag qa-<n> of the test build (record only)'
+        required: false
+        default: ''
+      skip_test:
+        description: 'deploy after a client release: the release went out without the test stand (Release -> client with skip_test), so the test balance is not carried to prod'
+        type: boolean
+        default: false
 
 # Чужой код здесь не исполняется: триггеров pull_request нет, токен job'ов по умолчанию только читает.
 permissions:
@@ -413,6 +439,8 @@ jobs:
     if: ${{ !cancelled() && needs.resolve.result == 'success' && (needs.resolve.outputs.mode == 'deploy' || (needs.resolve.outputs.mode == 'rebuild' && needs.mark.result == 'success')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    outputs:
+      deployed: ${{ steps.client.outputs.ready == 'true' }}
     concurrency:
       group: deploy
       cancel-in-progress: false
@@ -566,11 +594,14 @@ jobs:
     if: ${{ needs.resolve.outputs.mode == 'deploy-test' && vars.TEST_SERVER_URL != '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    outputs:
+      first: ${{ steps.record.outputs.first }}
     concurrency:
       group: deploy-test
       cancel-in-progress: false
     permissions:
-      contents: read
+      # Запись о выкате - новый prerelease stand-<UTC> (ci/test-stand.sh)
+      contents: write
       packages: read
     env:
       SHA: ${{ needs.resolve.outputs.sha }}
@@ -623,6 +654,28 @@ jobs:
           # Ключ теста на VPS привязан к update.sh проекта /opt/exileforge-test: боевую установку эта команда достать не может
           printf '%s\n' "$GH_ISSUES_TOKEN" | VPS_HOST=$HOST VPS_KEY_FILE="$RUNNER_TEMP/key" bash ci/quiet.sh deploy-test \
             bash ci/vps-ssh.sh "deploy $IMAGE_SHA $DIGEST"
+      # Что стоит на тесте: Release читает эту запись (клиент выпускается, только если его голова уже на стенде). Пишется только после удачного
+      # выката. Нет записи до этого выката - выкат первый, job `test-base` один раз ставит на тест боевой слепок баланса.
+      - name: Record the test stand
+        id: record
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CLIENT_SHA: ${{ inputs.client_sha }}
+          QA_TAG: ${{ inputs.qa_tag }}
+          IMAGE_SHA: ${{ steps.image.outputs.sha }}
+        run: |
+          code=0
+          bash ci/test-stand.sh fetch "$RUNNER_TEMP/previous.json" || code=$?
+          first=false
+          case $code in 0) ;; 3) first=true ;; *) exit "$code" ;; esac
+          python3 -I ci/test-stand.py record "$RUNNER_TEMP/stand.json" "$CLIENT_SHA" "$SHA" "$IMAGE_SHA" "$QA_TAG"
+          bash ci/test-stand.sh publish "$RUNNER_TEMP/stand.json"
+          echo "first=$first" >> "$GITHUB_OUTPUT"
+      - name: Keep the ten newest stand records
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: bash ci/quiet.sh stand-cleanup python3 ci/cleanup.py stand-releases
       - name: Encrypted log
         if: failure()
         uses: ./.github/actions/upload-log
@@ -631,6 +684,68 @@ jobs:
       - name: Forget the key
         if: always()
         run: rm -f "$RUNNER_TEMP/key"
+
+  # Один раз при первом выкате теста: боевой слепок баланса и текстов клиента - базой теста (update.sh balance-export на бою -> balance-import на тесте).
+  # Свои правки теста база не затирает; провал виден красным, повтор - VPS → test-base. Оба ключа VPS - только через действие balance-transfer
+  # (сторож ci/guard-test-vps.py).
+  test-base:
+    needs: deploy-test
+    if: ${{ needs.deploy-test.result == 'success' && needs.deploy-test.outputs.first == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: balance-transfer
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/balance-transfer
+        with:
+          direction: prod-to-test
+          host: ${{ secrets.DEPLOY_HOST }}
+          prod-key: ${{ secrets.DEPLOY_SSH_KEY }}
+          test-key: ${{ secrets.DEPLOY_SSH_KEY_TEST }}
+          host-key: ${{ vars.VPS_HOST_KEY }}
+          log-recipient: ${{ vars.LOG_AGE_RECIPIENT }}
+      - name: Encrypted log
+        if: failure()
+        uses: ./.github/actions/upload-log
+        with:
+          name: test-base-log
+
+  # Выпуск клиента переносит баланс и тексты клиента теста в бой после выката сервера этого выпуска (вход version). Бой выпускает слепок новой
+  # версией баланса (журнал и откат как у панели) и отказывает, если код сервера на тесте и в бою различается - красный прогон, выкат уже
+  # состоялся, повторить перенос можно Release → balance. Выпуск мимо теста (вход skip_test) баланс не переносит.
+  balance:
+    needs: deploy
+    if: ${{ !cancelled() && needs.deploy.result == 'success' && needs.deploy.outputs.deployed == 'true' && inputs.version != '' && inputs.skip_test != true }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: balance-transfer
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/balance-transfer
+        with:
+          direction: test-to-prod
+          host: ${{ secrets.DEPLOY_HOST }}
+          prod-key: ${{ secrets.DEPLOY_SSH_KEY }}
+          test-key: ${{ secrets.DEPLOY_SSH_KEY_TEST }}
+          host-key: ${{ vars.VPS_HOST_KEY }}
+          log-recipient: ${{ vars.LOG_AGE_RECIPIENT }}
+      - name: Encrypted log
+        if: failure()
+        uses: ./.github/actions/upload-log
+        with:
+          name: balance-log
 
   # Архив кэша Gradle сессий агента собирается под закреплённый в клиенте сервер. Деплой, изменивший файлы сборки сервера, сразу
   # пересобирает архив под голову ветки сервера (client.yml, режим cache с server_head) - сессии не докачивают зависимости.

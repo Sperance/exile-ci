@@ -1,23 +1,36 @@
 # Единая точка запуска: один выбор вместо двух workflow. Ничего не собирает сам, а запускает нужный режим server.yml / client.yml в этом
 # же репозитории (токену хватает actions: write). Что выбирать, ассистент пишет в конце каждой задачи рядом с Server-Update / Server-Wipe.
 #
-#   server          - выкатить сервер: деплой головы рабочей ветки, чей образ уже проверен пушем (server.yml mode=deploy). Вайп коллекций
+#   server          - выкатить сервер: деплой того сервера, что стоит на тесте (запись последнего удачного deploy-test, ci/test-stand.sh), если
+#                     его образ уже проверен пушем (server.yml mode=deploy); с skip_test - головы рабочей ветки сервера. Вайп коллекций
 #                     делает сам сервер при старте по CollectionSchemas;
-#   server-rebuild  - сервер заново: проверки, образ и деплой (server.yml mode=rebuild), если образ головы не собрался или не проверен;
+#   server-rebuild  - сервер заново: проверки, образ и деплой (server.yml mode=rebuild) того же сервера (с теста; с skip_test - головы), если
+#                     образ не собрался или не проверен;
 #   client          - ВЫПУСК: накопительный, пуши в рабочие ветки сами ничего не выпускают и не выкатывают. Поле bump (patch - x.y.z+1,
 #                     minor - x.y+1.0, от последнего выпущенного тега v<версия> здесь): job `client` берёт голову рабочей ветки
 #                     клиента, коммитом `feat: release <версия>` ставит versionCode/versionName в app/build.gradle.kts и переименовывает
 #                     `## Следующая версия` в RELEASE_NOTES.md (нет раздела или он пуст - ошибка), затем запускает client.yml mode=release
 #                     на этом коммите (до коммита - стоп, если голова сервера по коду не закреплена в клиенте, её образ не
 #                     проверен или сторож деплоя ci/deploy-guard.py --candidate против выката: новый клиент не играл бы на сервере
-#                     после выката, или выкат отрезал бы сборки каналов без force_breaking): все проверки (кроме уже зелёных на том же коде), релиз, закрытие Issues по трейлерам `Issue: #N` (клиент) и `Refs Sperance/ExileForge#N` (сервер), выкат сервера (деплой после релиза запускает
-#                     client.yml сам), выкладка в магазины. Коммит делает EXILEFORGE_TOKEN (Contents: write на ExileForge);
+#                     после выката, или выкат отрезал бы сборки каналов без force_breaking; а также если голова клиента ещё не на тесте: тестовый
+#                     стенд стоит на другом коде клиента или другом закреплённом сервере - коммиты без кода (версия, заметки, .md) не мешают;
+#                     с skip_test это не проверяется): все проверки (кроме уже зелёных на том же коде), релиз, закрытие Issues по трейлерам `Issue: #N` (клиент) и `Refs Sperance/ExileForge#N` (сервер), выкат сервера (деплой после релиза запускает
+#                     client.yml сам) и после него перенос баланса и «Текстов клиента» теста в бой (как Release balance; отказ - красный
+#                     прогон server.yml, job `balance`), выкладка в магазины. Коммит делает EXILEFORGE_TOKEN (Contents: write на ExileForge);
+#   balance         - только баланс: по SSH слепок опубликованного баланса и «Текстов клиента» теста (update.sh balance-export ключом теста)
+#                     уходит в бой (balance-import ключом боя): бой выпускает его новой версией баланса с записью журнала и откатом. Отказ, если код
+#                     сервера на тесте и в бою различается, - красный прогон, ответ сервера в зашифрованном артефакте balance-log;
+
 #   client-shots    - UI-тесты и картинки магазина (StoreShotsTest), без релиза (client.yml mode=shots);
 #   telegram        - пост о последнем релизе в тему «Обновления» группы Telegram заново (telegram.yml): пост той же версии правится;
 #   important       - пост IMPORTANT.md головы сервера в тему «Важное» (telegram-important.yml), если этот текст ещё не выходил;
 #   server-notes    - пост новых пунктов «[сервер]» заметок в тему «Обновления» заново (telegram-server-notes.yml): то, что не вышло при выкате сервера;
 #   preview         - ничего не выпускает: сводка накопленного в итоге прогона (заметки по разделам, текст «Важного», Issues к закрытию, вайпы,
 #                     обязательность, совет bump по трейлерам `Bump: minor`); нажимать перед client. Итог прогона публичен: в нём заметки и «Важное».
+#
+# skip_test (client, server, server-rebuild): выпуск без проверки теста - голова клиента не обязана стоять на тесте, сервер выкатывается с головы
+# рабочей ветки, а не с теста, баланс теста в бой не переносится; в итоге прогона красная строка «выпущено мимо теста». Без skip_test итог прогона
+# показывает, сколько голова живёт на тесте, и число открытых Issues с меткой `test` в ExileForge (выпуск они не блокируют).
 #
 # Накопление: заметки клиента (RELEASE_NOTES.md, подразделы «Новое / Изменения / Исправления / Техническое») и «Важное» сервера
 # (IMPORTANT.md, темы `### …`) копятся до выпуска; Issues и обязательность читаются по коммитам клиента и сервера с прошлого выпуска.
@@ -28,9 +41,9 @@ on:
   workflow_dispatch:
     inputs:
       what:
-        description: 'server - deploy checked head; server-rebuild - checks, image and deploy; client - cumulative release: version commit, checks, release, server deploy (bump below); client-shots - UI tests and store images only; telegram - post the latest release to the Telegram group again; important - post the new IMPORTANT.md of the server; server-notes - post the new server note lines again; preview - summary of what the release would contain, nothing is released'
+        description: 'server - deploy checked head; server-rebuild - checks, image and deploy; client - cumulative release: version commit, checks, release, server deploy, balance of the test stand to prod (bump below); balance - only the balance and client texts of the test stand to prod; client-shots - UI tests and store images only; telegram - post the latest release to the Telegram group again; important - post the new IMPORTANT.md of the server; server-notes - post the new server note lines again; preview - summary of what the release would contain, nothing is released'
         type: choice
-        options: [ server, server-rebuild, client, client-shots, telegram, important, server-notes, preview ]
+        options: [ server, server-rebuild, client, balance, client-shots, telegram, important, server-notes, preview ]
         default: server
       bump:
         description: 'client only: patch - next patch version, minor - next minor version (x.y+1.0)'
@@ -41,6 +54,10 @@ on:
         description: 'client only: owner-approved break - the server deploy after the release may cut older builds of the store channels'
         type: boolean
         default: false
+      skip_test:
+        description: 'server, server-rebuild, client: release without the test stand (the head need not be on the test, the server head is deployed, the test balance is not carried); the summary says it was released past the test'
+        type: boolean
+        default: false
 
 permissions:
   actions: write
@@ -48,18 +65,43 @@ permissions:
 
 jobs:
   dispatch:
-    if: ${{ inputs.what != 'client' && inputs.what != 'preview' }}
+    if: ${{ inputs.what != 'client' && inputs.what != 'preview' && inputs.what != 'balance' }}
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      # Сервер выкатывается тот, что стоит на тесте (запись ci/test-stand.sh), с skip_test - голова рабочей ветки (sha пуст). Записи нет и skip_test
+      # не отмечен - отказ: на тест ещё ничего не выкатывали.
+      - name: Server to deploy
+        id: stand
+        if: ${{ inputs.what == 'server' || inputs.what == 'server-rebuild' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUES_TOKEN: ${{ secrets.EXILEFORGE_TOKEN }}
+          SKIP_TEST: ${{ inputs.skip_test }}
+        run: |
+          code=0
+          bash ci/test-stand.sh fetch "$RUNNER_TEMP/stand.json" || code=$?
+          [ "$code" -eq 0 ] || [ "$code" -eq 3 ] || exit "$code"
+          file=-; sha=
+          if [ "$code" -eq 0 ]; then file="$RUNNER_TEMP/stand.json"; sha=$(python3 -I -c 'import json, sys; print(json.load(open(sys.argv[1]))["server"])' "$file"); fi
+          if [ "$SKIP_TEST" = true ]; then sha=
+          elif [ -z "$sha" ]; then echo "::error::no deploy to the test stand is recorded yet: wait for the test deploy of a client push (or tick skip_test)"; exit 1
+          fi
+          issues=$(GH_TOKEN=$ISSUES_TOKEN bash ci/test-stand.sh test-issues 2>/dev/null) || issues='?'
+          python3 -I ci/test-stand.py report "$file" na "${issues//[[:space:]]/}" "$SKIP_TEST" "$GITHUB_STEP_SUMMARY"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
       - name: Start the selected workflow
         env:
           GH_TOKEN: ${{ github.token }}
           WHAT: ${{ inputs.what }}
+          SERVER_SHA: ${{ steps.stand.outputs.sha }}
         run: |
           case "$WHAT" in
-            server)         bash ci/retry.sh once gh workflow run server.yml -R "$GITHUB_REPOSITORY" --ref main -f mode=deploy ;;
-            server-rebuild) bash ci/retry.sh once gh workflow run server.yml -R "$GITHUB_REPOSITORY" --ref main -f mode=rebuild ;;
+            server)         bash ci/retry.sh once gh workflow run server.yml -R "$GITHUB_REPOSITORY" --ref main -f mode=deploy -f sha="$SERVER_SHA" ;;
+            server-rebuild) bash ci/retry.sh once gh workflow run server.yml -R "$GITHUB_REPOSITORY" --ref main -f mode=rebuild -f sha="$SERVER_SHA" ;;
             client-shots)   bash ci/retry.sh once gh workflow run client.yml -R "$GITHUB_REPOSITORY" --ref main -f mode=shots ;;
             telegram)       bash ci/retry.sh once gh workflow run telegram.yml -R "$GITHUB_REPOSITORY" --ref main ;;
             important)      bash ci/retry.sh once gh workflow run telegram-important.yml -R "$GITHUB_REPOSITORY" --ref main ;;
@@ -115,6 +157,31 @@ jobs:
           bash ci/server-diff.sh srv "$pin" "$head" || { echo "::error::the server head $head has code the client does not pin ($pin): pin it in ExileForge (backend/, API_REVISION by its rules) and press Release again"; exit 1; }
           bash ci/checked-image.sh "$IMAGE" srv "$head" >/dev/null || { echo "::error::the server head $head has no checked image: wait for its push checks (or start Server with mode push) and press Release again"; exit 1; }
           echo "server $head: pinned and checked"
+      # Голова клиента обязана уже стоять на тесте (запись последнего удачного deploy-test, ci/test-stand.sh): код клиента после коммита стенда не менялся
+      # (версия, заметки, .md не в счёт), закреплённый сервер тот же. Итог (сколько голова живёт на тесте, открытые Issues `test`) - в сводке всегда и
+      # выпуск не блокирует. skip_test пропускает проверку, в сводке красная строка.
+      - name: Head of the client is on the test stand
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUES_TOKEN: ${{ secrets.EXILEFORGE_TOKEN }}
+          SKIP_TEST: ${{ inputs.skip_test }}
+        run: |
+          code=0
+          bash ci/test-stand.sh fetch "$RUNNER_TEMP/stand.json" || code=$?
+          [ "$code" -eq 0 ] || [ "$code" -eq 3 ] || exit "$code"
+          file=-; state=off; reason="no deploy to the test stand is recorded"
+          if [ "$code" -eq 0 ]; then
+            file="$RUNNER_TEMP/stand.json"
+            python3 -I ci/test-stand.py check "$file" src srv "$(git -C src rev-parse HEAD)" "$RUNNER_TEMP/check.txt"
+            grep -qx 'on_test=true' "$RUNNER_TEMP/check.txt" && state=on
+            reason=$(sed -n 's/^reason=//p' "$RUNNER_TEMP/check.txt")
+          fi
+          issues=$(GH_TOKEN=$ISSUES_TOKEN bash ci/test-stand.sh test-issues 2>/dev/null) || issues='?'
+          python3 -I ci/test-stand.py report "$file" "$state" "${issues//[[:space:]]/}" "$SKIP_TEST" "$GITHUB_STEP_SUMMARY"
+          if [ "$state" != on ] && [ "$SKIP_TEST" != true ]; then
+            echo "::error::the head is not on the test stand yet ($reason): wait for the test build of the last push, or tick skip_test"
+            exit 1
+          fi
       # Тот же сторож, что у деплоя (ci/deploy-guard.py), до коммита версии: выпуск не начинается, если новый клиент не будет играть
       # на сервере после выката или сервер не посчитает свою эпоху (это не одобряется), или если выкат отрежет сборки каналов магазинов
       # без force_breaking. Исходники сторожа - Protocol.kt и Content.kt головы сервера (по коду она равна закреплённой).
@@ -177,14 +244,44 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           SHA: ${{ steps.commit.outputs.sha }}
           FORCE: ${{ inputs.force_breaking }}
+          SKIP_TEST: ${{ inputs.skip_test }}
         run: |
-          bash ci/retry.sh once gh workflow run client.yml -R "$GITHUB_REPOSITORY" --ref main -f mode=release -f sha="$SHA" -f force_breaking="$FORCE"
+          bash ci/retry.sh once gh workflow run client.yml -R "$GITHUB_REPOSITORY" --ref main -f mode=release -f sha="$SHA" -f force_breaking="$FORCE" -f skip_test="$SKIP_TEST"
           echo "started: release of ${{ steps.version.outputs.version }} at $SHA"
       - name: Encrypted log
         if: failure()
         uses: ./.github/actions/upload-log
         with:
           name: release-start-log
+
+  # Release → balance: слепок баланса и текстов клиента теста - в бой (ci/balance-transfer.sh test-to-prod). Оба ключа VPS - только через действие
+  # balance-transfer (сторож ci/guard-test-vps.py). Отказ сервера (код на тесте и в бою различается и т.п.) - красный прогон.
+  balance:
+    if: ${{ inputs.what == 'balance' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: balance-transfer
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/balance-transfer
+        with:
+          direction: test-to-prod
+          host: ${{ secrets.DEPLOY_HOST }}
+          prod-key: ${{ secrets.DEPLOY_SSH_KEY }}
+          test-key: ${{ secrets.DEPLOY_SSH_KEY_TEST }}
+          host-key: ${{ vars.VPS_HOST_KEY }}
+          log-recipient: ${{ vars.LOG_AGE_RECIPIENT }}
+      - name: Encrypted log
+        if: failure()
+        uses: ./.github/actions/upload-log
+        with:
+          name: balance-log
 
   # Предпросмотр накопленного без выпуска: те же исходники и диапазоны, что у выпуска (голова рабочей ветки клиента, коммиты клиента и
   # закреплённых серверов с прошлого тега), итог - markdown в сводке прогона (ci/release_state.py preview): совет bump, обязательность,
