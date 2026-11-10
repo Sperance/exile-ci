@@ -6,8 +6,8 @@
 #                     делает сам сервер при старте по CollectionSchemas;
 #   server-rebuild  - сервер заново: проверки, образ и деплой (server.yml mode=rebuild) того же сервера (с теста; с skip_test - головы), если
 #                     образ не собрался или не проверен;
-#   client          - ВЫПУСК: накопительный, пуши в рабочие ветки сами ничего не выпускают и не выкатывают. Поле bump (patch - x.y.z+1,
-#                     minor - x.y+1.0, от последнего выпущенного тега v<версия> здесь): job `client` берёт голову рабочей ветки
+#   client          - ВЫПУСК: накопительный, пуши в рабочие ветки сами ничего не выпускают и не выкатывают. Поле bump (minor - x.y+1.0, по умолчанию: выпуск
+#                     с теста всегда minor; patch - x.y.z+1, только вручную для срочного; от последнего выпущенного тега v<версия> здесь): job `client` берёт голову рабочей ветки
 #                     клиента, коммитом `feat: release <версия>` ставит versionCode/versionName в app/build.gradle.kts и переименовывает
 #                     `## Следующая версия` в RELEASE_NOTES.md (нет раздела или он пуст - ошибка), затем запускает client.yml mode=release
 #                     на этом коммите (до коммита - стоп, если голова сервера по коду не закреплена в клиенте, её образ не
@@ -46,10 +46,10 @@ on:
         options: [ server, server-rebuild, client, balance, client-shots, telegram, important, server-notes, preview ]
         default: server
       bump:
-        description: 'client only: patch - next patch version, minor - next minor version (x.y+1.0)'
+        description: 'client only: minor - next minor version (x.y+1.0), the release from the test build; patch - next patch version (x.y.z+1), only by hand for an urgent fix'
         type: choice
-        options: [ patch, minor ]
-        default: patch
+        options: [ minor, patch ]
+        default: minor
       force_breaking:
         description: 'client only: owner-approved break - the server deploy after the release may cut older builds of the store channels'
         type: boolean

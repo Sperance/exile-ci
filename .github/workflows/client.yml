@@ -148,6 +148,7 @@ jobs:
           python3 -I ci/guard-parity.py
           python3 -I ci/guard-test-vps.py
           python3 -I ci/guard-releases.py
+          python3 -I ci/guard-test-version.py
       - name: Target commit
         id: target
         env:
@@ -252,7 +253,7 @@ jobs:
           { echo "pending=$pending"; echo "stores=$stores"; echo "tag=v$version"; } >> "$GITHUB_OUTPUT"
           echo "v$version: release pending=$pending, stores=$stores"
       # Тестовая сборка: только пуш с изменённым кодом клиента, sha которого - голова рабочей ветки, и только при заданном адресе тестового
-      # сервера. Версия: <следующий patch>-test.<число коммитов ветки>+<sha7>; число коммитов - и versionCode, и номер предрелиза qa-<n>.
+      # сервера. Версия: <последний боевой тег + k patch>_test, k - порядковый номер тестового обновления после тега (ci/qa-files.py version: прошлая версия - из qa-latest, повтор той же сборки - из её предрелиза qa-<n>); число коммитов ветки - и versionCode, и номер предрелиза qa-<n>, в строку версии не входит.
       - name: Test build target
         id: qa
         working-directory: src
@@ -280,7 +281,9 @@ jobs:
               code=$(git rev-list --count "$SHA")
               last=$(bash ../ci/retry.sh read gh release list -R "$GITHUB_REPOSITORY" --limit 300 --json tagName --jq '.[].tagName' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1 || true)
               [ -n "$last" ] || { echo "::error::no released version to number the test build from"; exit 1; }
-              python3 ../ci/qa-files.py version "$last" "$code" "${SHA:0:7}" "$GITHUB_OUTPUT"
+              previous=$(bash ../ci/retry.sh read gh release download qa-latest -R "$GITHUB_REPOSITORY" -p update.json -O - 2>/dev/null | python3 -I -c 'import json, sys; print(json.load(sys.stdin)["versionName"])' 2>/dev/null || true)
+              same=$(bash ../ci/retry.sh read gh release view "qa-$code" -R "$GITHUB_REPOSITORY" --json body --jq .body 2>/dev/null | sed -n 's/^Test build \([^ ]*\) .*/\1/p' | head -1 || true)
+              python3 ../ci/qa-files.py version "$last" "$code" "${SHA:0:7}" "${previous:--}" "${same:--}" "$GITHUB_OUTPUT"
               echo "code=$code" >> "$GITHUB_OUTPUT"
               build=true
               echo "test build $code"
@@ -1036,10 +1039,11 @@ jobs:
           TEST_SERVER_URL: ${{ vars.TEST_SERVER_URL }}
           QA_NAME: ${{ needs.changes.outputs.qa_name }}
           QA_CODE: ${{ needs.changes.outputs.qa_code }}
+          QA_SHA: ${{ needs.changes.outputs.sha }}
         run: |
           . ../ci/build-tasks.env
           eval "$(bash ../ci/build-keystore.sh)"
-          bash ../ci/quiet.sh qa-apk bash gradlew --profile "$QA_APK_TASK" -x "$QA_APK_SKIP" "-PqaServerUrl=$TEST_SERVER_URL" "-PqaVersionName=$QA_NAME" "-PqaVersionCode=$QA_CODE"
+          bash ../ci/quiet.sh qa-apk bash gradlew --profile "$QA_APK_TASK" -x "$QA_APK_SKIP" "-PqaServerUrl=$TEST_SERVER_URL" "-PqaVersionName=$QA_NAME" "-PqaVersionCode=$QA_CODE" "-PqaSha=${QA_SHA:0:7}"
       - name: Encrypted build profile
         working-directory: src
         run: |
@@ -1178,7 +1182,7 @@ jobs:
           prev=$(bash ci/retry.sh read gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq '.[] | select(.prerelease) | .tag_name' | grep -E '^qa-[0-9]+$' | sort -t- -k2 -n | tail -1 || true)
           old=-
           if [ -n "$prev" ]; then
-            short=$(bash ci/retry.sh read gh release view "$prev" -R "$GITHUB_REPOSITORY" --json body --jq .body | sed -n 's/.*+\([0-9a-f]\{7\}\).*/\1/p' | head -1)
+            short=$(bash ci/retry.sh read gh release view "$prev" -R "$GITHUB_REPOSITORY" --json body --jq .body | sed -n -e 's/.*commit \([0-9a-f]\{7\}\).*/\1/p' -e 's/.*+\([0-9a-f]\{7\}\) .*/\1/p' | head -1)
             [ -z "$short" ] || old=$(git -C src rev-parse --verify --quiet "$short^{commit}" || echo -)
           fi
           python3 -I ci/qa-files.py plan src "$old" "$SHA" "$RUNNER_TEMP/plan.txt"
@@ -1192,12 +1196,13 @@ jobs:
         run: |
           . ../ci/build-tasks.env
           bash ../ci/seal.sh -d ../sealed/qa.enc ../signed
-          python3 ../ci/qa-files.py release "../signed/$QA_APK" "$QA_NAME" "$QA_CODE" ../qa "$RUNNER_TEMP/plan.txt"
+          python3 ../ci/qa-files.py release "../signed/$QA_APK" "$QA_NAME" "$QA_CODE" ../qa "$RUNNER_TEMP/plan.txt" "${SHA:0:7}"
           bash ../ci/sign-update.sh ../qa/update.json
       - if: steps.head.outputs.current == 'true'
         name: Private prerelease with the R8 map
         env:
           GH_TOKEN: ${{ secrets.EXILEFORGE_TOKEN }}
+          SOURCE_TOKEN: ${{ secrets.SOURCE_TOKEN }}
         run: |
           . ci/build-tasks.env
           python3 ci/verify-map.py "signed/$QA_APK" "signed/$QA_MAPPING"
@@ -1208,7 +1213,15 @@ jobs:
           # (TestBuildLedger: у Issue - самая новая сборка, что его называет; повторная починка после замечания автора уходит в новую сборку).
           base=$QA_BASE; [ "$base" = - ] && base=
           issues=$(python3 -I ci/release_state.py issues --cli src --srv src/backend --base "$base" --head "$SHA" --repo "$CLIENT_REPO" | tr -s ' ' ',')
-          notes=$(printf 'R8 mapping of test build %s\n<!-- issues: %s -->' "$QA_NAME" "$issues")
+          # История обновлений теста (#1085): запись этой сборки - новые пункты «Следующей версии» с прошлой тестовой сборки с номерами Issues и пункты
+          # Test-Plan - едет маркером <!-- test-update: base64 --> в тело ЭТОГО приватного предрелиза; тестовый сервер читает его тем же ключом, что номера
+          # Issues выше. В публичный exile-ci и его журналы пункты не попадают (старые блобы RELEASE_NOTES.md докачиваются с ключом чтения, он замаскирован).
+          basic=$(printf 'x-access-token:%s' "$SOURCE_TOKEN" | base64 -w0)
+          echo "::add-mask::$basic"
+          export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="http.https://github.com/.extraheader" GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $basic"
+          python3 -I ci/test-history.py record src "$QA_BASE" "$SHA" "$QA_NAME" "$QA_CODE" "$RUNNER_TEMP/plan.txt" "$RUNNER_TEMP/test-update.json"
+          marker=$(python3 -I ci/test-history.py marker "$RUNNER_TEMP/test-update.json")
+          notes=$(printf 'R8 mapping of test build %s\n<!-- issues: %s -->\n%s' "$QA_NAME" "$issues" "$marker")
           if bash ci/retry.sh read gh release view "$TAG" -R "$CLIENT_REPO" >/dev/null 2>&1; then
             bash ci/retry.sh idem gh release upload "$TAG" mapping.txt.gz -R "$CLIENT_REPO" --clobber
             bash ci/retry.sh idem gh release edit "$TAG" -R "$CLIENT_REPO" --notes "$notes"

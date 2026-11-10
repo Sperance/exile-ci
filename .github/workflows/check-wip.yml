@@ -16,6 +16,7 @@
 #      ci/guard-test-vps.py - job тестового стенда с боевым ключом деплоя или путём /opt/exileforge;
 #      ci/guard-edge.py - Caddy боя к игре боя не по псевдониму exileforge-prod-game или блок теста не на exileforge-test-game (deploy/test сервера);
 #      ci/guard-releases.py - gh release create без --prerelease (выпуск игрока - с пометкой «# player-release» над командой);
+#      ci/guard-test-version.py - формат версии теста x.y.z_test (клиент и сервер теста), что читает TestVersion: смена формата не ломает молча карты падений и проверку исправлений;
 #   4. record: сводка времён job'ов и сторож замедления (ci/check-wip-timing.py: wall прогона > 1,4 медианы последних 10 успешных - предупреждение, не падение);
 #      оба зелёные - на sha клиента и sha сервера кладётся commit status «check-wip» = success (ci/check-wip-status.sh); упал любой
 #      - failure. Отметку читает хук pre-push репозиториев: пуш в рабочую ветку без зелёного check-wip на этом sha отклоняется.
@@ -141,6 +142,7 @@ jobs:
           python3 -I ci/guard-parity.py --client-precheck "$RUNNER_TEMP/precheck-client.sh" --server-precheck "$RUNNER_TEMP/precheck-server.sh"
           python3 -I ci/guard-test-vps.py
           python3 -I ci/guard-releases.py
+          python3 -I ci/guard-test-version.py
           python3 -I ci/guard-edge.py --snippet "$RUNNER_TEMP/Caddyfile.snippet" --install "$RUNNER_TEMP/install.sh"
       - name: One rules version per release
         env:

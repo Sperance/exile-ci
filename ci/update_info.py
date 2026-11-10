@@ -36,12 +36,14 @@ def wire_constants():
     return int(api), int(rules), int(schema)
 
 
-def write(out, code, name, apk, notes, mandatory):
+def write(out, code, name, apk, notes, mandatory, commit=None):
     api, rules, schema = wire_constants()
     with open(os.path.join(out, apk), "rb") as file:
         sha256 = hashlib.sha256(file.read()).hexdigest()
     size = os.path.getsize(os.path.join(out, apk))
     info = {"versionCode": code, "versionName": name, "apiRevision": api, "rules": rules, "contentSchema": schema,
             "apk": apk, "size": size, "sha256": sha256, "notes": notes, "mandatory": mandatory}
+    if commit:
+        info["commit"] = commit
     with open(os.path.join(out, "update.json"), "w", encoding="utf-8", newline="\n") as file:
         file.write(json.dumps(info, ensure_ascii=False) + "\n")
