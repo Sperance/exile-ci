@@ -687,9 +687,14 @@ jobs:
           [[ $TEST_VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+_test$ ]] || { echo "::error::no test server version to announce"; exit 1; }
           install -m 600 /dev/null "$RUNNER_TEMP/key" && printf '%s\n' "$KEY" > "$RUNNER_TEMP/key"
           # Ключ теста на VPS привязан к update.sh проекта /opt/exileforge-test: боевую установку эта команда достать не может.
-          # Третье слово - показываемая версия теста: update.sh кладёт её в .env как TEST_SERVER_VERSION
-          printf '%s\n' "$GH_ISSUES_TOKEN" | VPS_HOST=$HOST VPS_KEY_FILE="$RUNNER_TEMP/key" bash ci/quiet.sh deploy-test \
-            bash ci/vps-ssh.sh "deploy $IMAGE_SHA $DIGEST $TEST_VERSION"
+          # Третье слово - показываемая версия теста: update.sh кладёт её в .env как TEST_SERVER_VERSION. update.sh на VPS, ещё не знающий
+          # третьего слова, отвергает команду: тогда выкат идёт прежней командой из двух слов, а сводка просит обновить update.sh теста.
+          if ! printf '%s\n' "$GH_ISSUES_TOKEN" | VPS_HOST=$HOST VPS_KEY_FILE="$RUNNER_TEMP/key" bash ci/quiet.sh deploy-test \
+            bash ci/vps-ssh.sh "deploy $IMAGE_SHA $DIGEST $TEST_VERSION"; then
+            echo "::warning::deploy with the test version failed - retrying without it; update update.sh and compose.yaml of the test stand from deploy/test"
+            printf '%s\n' "$GH_ISSUES_TOKEN" | VPS_HOST=$HOST VPS_KEY_FILE="$RUNNER_TEMP/key" bash ci/quiet.sh deploy-test-legacy \
+              bash ci/vps-ssh.sh "deploy $IMAGE_SHA $DIGEST"
+          fi
       # Что стоит на тесте: Release читает эту запись (клиент выпускается, только если его голова уже на стенде). Пишется только после удачного
       # выката. Нет записи до этого выката - выкат первый, job `test-base` один раз ставит на тест боевой слепок баланса.
       # Выкат теста не увёл адрес боя на тест (общий Caddy, голое имя game ведёт и на тест): index.json боя без поля stand - иначе красное.
