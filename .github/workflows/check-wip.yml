@@ -14,6 +14,7 @@
 #      Там же сторожа самого exile-ci (шаг «CI scripts guards»): ci/guard-network.py - голый gh, curl, git или urlopen вне ci/retry.sh и ci/net.py,
 #      ci/guard-parity.py - шаг CI без строки в ci/precheck-map.txt или шаг precheck из карты, которого нет в scripts/precheck.sh обоих репозиториев,
 #      ci/guard-test-vps.py - job тестового стенда с боевым ключом деплоя или путём /opt/exileforge;
+#      ci/guard-edge.py - Caddy боя к игре боя не по псевдониму exileforge-prod-game или блок теста не на exileforge-test-game (deploy/test сервера);
 #      ci/guard-releases.py - gh release create без --prerelease (выпуск игрока - с пометкой «# player-release» над командой);
 #   4. record: сводка времён job'ов и сторож замедления (ci/check-wip-timing.py: wall прогона > 1,4 медианы последних 10 успешных - предупреждение, не падение);
 #      оба зелёные - на sha клиента и sha сервера кладётся commit status «check-wip» = success (ci/check-wip-status.sh); упал любой
@@ -134,10 +135,13 @@ jobs:
           python3 -c 'import yaml' 2>/dev/null || python3 -m pip install --quiet --disable-pip-version-check pyyaml
           bash ci/retry.sh read git -C cli show "$CLIENT:scripts/precheck.sh" > "$RUNNER_TEMP/precheck-client.sh"
           bash ci/retry.sh read git -C srv show "$SERVER:scripts/precheck.sh" > "$RUNNER_TEMP/precheck-server.sh"
+          bash ci/retry.sh read git -C srv show "$SERVER:deploy/test/Caddyfile.snippet" > "$RUNNER_TEMP/Caddyfile.snippet"
+          bash ci/retry.sh read git -C srv show "$SERVER:deploy/test/install.sh" > "$RUNNER_TEMP/install.sh"
           python3 -I ci/guard-network.py
           python3 -I ci/guard-parity.py --client-precheck "$RUNNER_TEMP/precheck-client.sh" --server-precheck "$RUNNER_TEMP/precheck-server.sh"
           python3 -I ci/guard-test-vps.py
           python3 -I ci/guard-releases.py
+          python3 -I ci/guard-edge.py --snippet "$RUNNER_TEMP/Caddyfile.snippet" --install "$RUNNER_TEMP/install.sh"
       - name: One rules version per release
         env:
           GITHUB_TOKEN: ${{ github.token }}

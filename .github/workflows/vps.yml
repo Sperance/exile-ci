@@ -359,6 +359,7 @@ jobs:
           VPS_HOST_KEY: ${{ vars.VPS_HOST_KEY }}
           LOG_AGE_RECIPIENT: ${{ vars.LOG_AGE_RECIPIENT }}
           EXILEFORGE_TOKEN: ${{ secrets.EXILEFORGE_TOKEN }}
+          SERVER_URL: ${{ vars.SERVER_URL }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           [[ -n $HOST && -n $KEY && -n $EXILEFORGE_TOKEN ]] || { echo '::error::DEPLOY_HOST, DEPLOY_SSH_KEY or EXILEFORGE_TOKEN is not set'; exit 1; }
@@ -368,6 +369,8 @@ jobs:
           code=0
           VPS_HOST=$HOST VPS_KEY_FILE="$tmp/key" timeout 300 bash ci/vps-ssh.sh health </dev/null >"$tmp/out.txt" 2>&1 || code=$?
           rm -f "$tmp/key"
+          # Адрес боя не отдаёт тестовый стенд (ci/prod-route.sh): строка route идёт в тот же разбор, что и проверки update.sh
+          ((code)) || bash ci/prod-route.sh "$SERVER_URL" >>"$tmp/out.txt" || true
           python3 ci/vps_health.py "$tmp/out.txt" "$code"
           bash ci/encrypt-log.sh "$tmp/out.txt" logs/vps-health.log.enc
           rm -f "$tmp/out.txt"

@@ -62,6 +62,7 @@ guards() {
     python3 -I ci/guard-parity.py || code=1
     python3 -I ci/guard-test-vps.py || code=1
     python3 -I ci/guard-releases.py || code=1
+    python3 -I ci/guard-edge.py || code=1
     return "$code"
 }
 

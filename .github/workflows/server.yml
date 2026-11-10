@@ -670,6 +670,11 @@ jobs:
             bash ci/vps-ssh.sh "deploy $IMAGE_SHA $DIGEST"
       # Что стоит на тесте: Release читает эту запись (клиент выпускается, только если его голова уже на стенде). Пишется только после удачного
       # выката. Нет записи до этого выката - выкат первый, job `test-base` один раз ставит на тест боевой слепок баланса.
+      # Выкат теста не увёл адрес боя на тест (общий Caddy, голое имя game ведёт и на тест): index.json боя без поля stand - иначе красное.
+      - name: Prod address still serves prod
+        env:
+          SERVER_URL: ${{ vars.SERVER_URL }}
+        run: bash ci/prod-route.sh "$SERVER_URL"
       - name: Record the test stand
         id: record
         env:
