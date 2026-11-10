@@ -147,6 +147,7 @@ jobs:
           python3 -I ci/guard-network.py
           python3 -I ci/guard-parity.py
           python3 -I ci/guard-test-vps.py
+          python3 -I ci/guard-releases.py
       - name: Target commit
         id: target
         env:
@@ -935,6 +936,7 @@ jobs:
           if bash ../ci/retry.sh read gh release view "$TAG" -R "$CLIENT_REPO" >/dev/null 2>&1; then
             bash ../ci/retry.sh idem gh release upload "$TAG" mapping.txt.gz mapping-play.txt.gz mapping-rustore.txt.gz -R "$CLIENT_REPO" --clobber
           else
+            # player-release
             bash ../ci/retry.sh once gh release create "$TAG" mapping.txt.gz mapping-play.txt.gz mapping-rustore.txt.gz -R "$CLIENT_REPO" --target "$SHA" --title "ExileForge ${TAG#v}" --notes "R8 mapping of ${TAG#v}"
           fi
           # Карты хранятся у 10 последних релизов v*: у старших ассеты mapping*.txt* удаляются (сам релиз и тег остаются)
@@ -957,6 +959,7 @@ jobs:
           APK: ${{ steps.files.outputs.apk }}
         run: |
           sig=(); [ -s update.json.sig ] && sig=(update.json.sig)
+          # player-release
           bash ../ci/retry.sh once gh release create "$TAG" "$APK" update.json "${sig[@]}" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "ExileForge ${TAG#v}" --notes-file RELEASE_NOTES.md --latest
       # Сервер с новым API ждёт этот релиз: опубликовали - сразу запускаем его деплой (магазины ждут сервер, job'ы publish-* стартуют
       # после этого job'а), он выкатит проверенный образ головы рабочей ветки сервера. Закрытие Issues и пост идут уже после запуска.

@@ -14,6 +14,7 @@
 #      Там же сторожа самого exile-ci (шаг «CI scripts guards»): ci/guard-network.py - голый gh, curl, git или urlopen вне ci/retry.sh и ci/net.py,
 #      ci/guard-parity.py - шаг CI без строки в ci/precheck-map.txt или шаг precheck из карты, которого нет в scripts/precheck.sh обоих репозиториев,
 #      ci/guard-test-vps.py - job тестового стенда с боевым ключом деплоя или путём /opt/exileforge;
+#      ci/guard-releases.py - gh release create без --prerelease (выпуск игрока - с пометкой «# player-release» над командой);
 #   4. record: сводка времён job'ов и сторож замедления (ci/check-wip-timing.py: wall прогона > 1,4 медианы последних 10 успешных - предупреждение, не падение);
 #      оба зелёные - на sha клиента и sha сервера кладётся commit status «check-wip» = success (ci/check-wip-status.sh); упал любой
 #      - failure. Отметку читает хук pre-push репозиториев: пуш в рабочую ветку без зелёного check-wip на этом sha отклоняется.
@@ -136,6 +137,7 @@ jobs:
           python3 -I ci/guard-network.py
           python3 -I ci/guard-parity.py --client-precheck "$RUNNER_TEMP/precheck-client.sh" --server-precheck "$RUNNER_TEMP/precheck-server.sh"
           python3 -I ci/guard-test-vps.py
+          python3 -I ci/guard-releases.py
       - name: One rules version per release
         env:
           GITHUB_TOKEN: ${{ github.token }}

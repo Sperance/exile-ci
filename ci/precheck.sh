@@ -5,7 +5,7 @@
 #   shell    `bash -n` каждого ci/**.sh и shellcheck (уровень error), если он есть на машине
 #   python   компиляция (синтаксис) каждого ci/**.py
 #   guards   сторожа публичного репозитория: ci/guard-network.py (голая сеть вне retry.sh и net.py), ci/guard-parity.py (карта «шаг CI -> шаг precheck»),
-#            ci/guard-test-vps.py (тестовый стенд без боевых ключей)
+#            ci/guard-test-vps.py (тестовый стенд без боевых ключей), ci/guard-releases.py (служебный релиз только предрелизом)
 # В конце печатается таблица времён шагов; любой упавший шаг даёт код 1, остальные шаги всё равно идут.
 set -uo pipefail
 
@@ -61,6 +61,7 @@ guards() {
     python3 -I ci/guard-network.py || code=1
     python3 -I ci/guard-parity.py || code=1
     python3 -I ci/guard-test-vps.py || code=1
+    python3 -I ci/guard-releases.py || code=1
     return "$code"
 }
 
