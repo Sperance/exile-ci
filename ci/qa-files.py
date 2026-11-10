@@ -27,6 +27,8 @@ APK_NAME = "ExileForge-qa.apk"
 NOTES_TITLE = "Тестовая сборка"
 PLAN_TITLE = "Что проверить:"
 PLAN_TRAILER = re.compile(r"^Test-Plan:[ \t]*(.+?)[ \t]*$", re.M | re.I)
+PLAN_ITEM_LIMIT = 200
+PLAN_ITEMS_LIMIT = 30
 SHA = re.compile(r"^[0-9a-f]{40}$")
 FALLBACK_COMMITS = 30
 
@@ -57,8 +59,9 @@ def plan(clone, old, new, target):
         update_info.fail("the commits of the test build could not be read")
     items = []
     for message in done.stdout.split("\0"):
-        for item in PLAN_TRAILER.findall(message):
-            if item not in items:
+        for raw in PLAN_TRAILER.findall(message):
+            item = " ".join(raw.split())[:PLAN_ITEM_LIMIT]
+            if item and item not in items and len(items) < PLAN_ITEMS_LIMIT:
                 items.append(item)
     with open(target, "w", encoding="utf-8") as out:
         out.write("\n".join(items) + ("\n" if items else ""))
