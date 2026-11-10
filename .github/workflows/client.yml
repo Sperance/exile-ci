@@ -44,9 +44,9 @@
 # метки нет - ворота идут как обычно. Метка живёт в кэше Actions (до 7 суток без обращений).
 # Тестовая сборка (flavor qa, vars.TEST_SERVER_URL): после зелёных ворот пуша (режим push), если менялся код клиента или пин backend/ (любой файл,
 # кроме .md, audit/, .claude/ и номера версии; ci/test-stand.py code-changed - пуш только с документами сборку не запускает) и sha - голова рабочей ветки,
-# job `qa-apk` собирает qa-вариант (R8, одноразовый ключ), `qa-sign` подписывает его ключом релиза, `qa-release` готовит файлы предрелиза qa-<число
+# job `qa-apk` собирает qa-вариант (R8, одноразовый ключ; карта R8 едет запечатанной вместе с APK), `qa-sign` подписывает его ключом релиза, `qa-release` готовит файлы предрелиза qa-<число
 # коммитов> (ExileForge-qa.apk, update.json с mandatory=true и подпись; заметки - номер сборки и пункты «что проверить» из трейлеров `Test-Plan:`), запечатывает
-# их и запускает server.yml deploy-test на сервере, закреплённом в клиенте (передаёт ему sha клиента, тег qa и номер своего прогона: по ним deploy-test
+# их, кладёт карту R8 (mapping.txt.gz после ci/verify-map.py) в приватный предрелиз qa-<n> ExileForge (хранятся карты 5 новейших) и запускает server.yml deploy-test на сервере, закреплённом в клиенте (передаёт ему sha клиента, тег qa и номер своего прогона: по ним deploy-test
 # записывает, что стоит на тесте, - ci/test-stand.sh, а job `qa-publish` ПОСЛЕ удачного выката публикует предрелиз, оставляет 5 новейших и ведёт qa-latest). Переменная пуста - все три job'а пропускаются зелёными. Секреты те же, что у выпуска; новых нет.
 name: Client
 
@@ -1040,7 +1040,7 @@ jobs:
         working-directory: src
         run: |
           . ../ci/build-tasks.env
-          bash ../ci/seal.sh --transit ../sealed/unsigned-qa.enc "$QA_APK"
+          bash ../ci/seal.sh --transit ../sealed/unsigned-qa.enc "$QA_APK" "$QA_MAPPING"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: unsigned-qa
@@ -1087,7 +1087,9 @@ jobs:
           bash ci/seal.sh -d sealed/unsigned-qa.enc unsigned
           bash ci/quiet.sh sign-qa bash ci/sign.sh apk "unsigned/$QA_APK" "signed/$QA_APK"
           mkdir -p out
-          (cd signed && bash "$GITHUB_WORKSPACE/ci/seal.sh" --transit "$GITHUB_WORKSPACE/out/qa.enc" "$QA_APK")
+          mkdir -p "signed/$(dirname "$QA_MAPPING")"
+          cp "unsigned/$QA_MAPPING" "signed/$QA_MAPPING"
+          (cd signed && bash "$GITHUB_WORKSPACE/ci/seal.sh" --transit "$GITHUB_WORKSPACE/out/qa.enc" "$QA_APK" "$QA_MAPPING")
           rm -f "$RUNNER_TEMP/release.jks"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -1177,6 +1179,24 @@ jobs:
           bash ../ci/seal.sh -d ../sealed/qa.enc ../signed
           python3 ../ci/qa-files.py release "../signed/$QA_APK" "$QA_NAME" "$QA_CODE" ../qa "$RUNNER_TEMP/plan.txt"
           bash ../ci/sign-update.sh ../qa/update.json
+      - if: steps.head.outputs.current == 'true'
+        name: Private prerelease with the R8 map
+        env:
+          GH_TOKEN: ${{ secrets.EXILEFORGE_TOKEN }}
+        run: |
+          . ci/build-tasks.env
+          python3 ci/verify-map.py "signed/$QA_APK" "signed/$QA_MAPPING"
+          cp "signed/$QA_MAPPING" mapping.txt
+          gzip -9 -f mapping.txt
+          if bash ci/retry.sh read gh release view "$TAG" -R "$CLIENT_REPO" >/dev/null 2>&1; then
+            bash ci/retry.sh idem gh release upload "$TAG" mapping.txt.gz -R "$CLIENT_REPO" --clobber
+          else
+            bash ci/retry.sh once gh release create "$TAG" mapping.txt.gz -R "$CLIENT_REPO" --target "$SHA" --prerelease --latest=false --title "ExileForge test ${TAG#qa-}" --notes "R8 mapping of test build $QA_NAME"
+          fi
+          bash ci/retry.sh read gh api --paginate "repos/$CLIENT_REPO/releases?per_page=100" --jq '.[] | select(.tag_name | test("^qa-[0-9]+$")) | [(.tag_name | ltrimstr("qa-") | tonumber), .tag_name, ([.assets[] | select(.name | startswith("mapping")) | .id] | join(" "))] | @tsv' \
+            | sort -rn | tail -n +6 | while IFS=$'\t' read -r _ old ids; do
+                for id in $ids; do bash ci/retry.sh idem gh api -X DELETE "repos/$CLIENT_REPO/releases/assets/$id" >/dev/null || echo "::warning::mapping of $old was not deleted"; done
+              done
       - if: steps.head.outputs.current == 'true'
         name: Seal the files for the publication after the test deploy
         run: bash ci/seal.sh --transit sealed-out/qa-publish.enc qa
