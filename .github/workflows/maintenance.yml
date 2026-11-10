@@ -189,14 +189,14 @@ jobs:
     concurrency:
       group: cleanup-caches
       cancel-in-progress: false
-    env:
-      GITHUB_TOKEN: ${{ github.token }}
-      PUBLIC_NOTES: ${{ runner.temp }}/caches.txt
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
       - name: Trim the Actions cache
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PUBLIC_NOTES: ${{ runner.temp }}/caches.txt
         run: |
           code=0
           bash ci/quiet.sh cleanup-caches python3 ci/cleanup.py caches || code=$?

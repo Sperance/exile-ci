@@ -15,6 +15,7 @@ import sys
 import yaml
 
 EXPRESSION = re.compile(r"\$\{\{.*?\}\}", re.S)
+RUNNER = re.compile(r"\brunner\.")
 
 
 def run_blocks(document):
@@ -23,6 +24,15 @@ def run_blocks(document):
         for index, step in enumerate(body.get("steps") or []):
             if isinstance(step.get("run"), str) and step.get("shell", "bash") in ("bash", "bash -e {0}"):
                 yield f"{job}/{step.get('name') or f'step {index + 1}'}", step["run"]
+
+
+def runner_in_job_env(document):
+    scopes = {"workflow": document.get("env") or {}}
+    scopes.update({job: body.get("env") or {} for job, body in (document.get("jobs") or {}).items() if isinstance(body, dict)})
+    for scope, env in scopes.items():
+        for name, value in env.items() if isinstance(env, dict) else []:
+            if any(RUNNER.search(expression) for expression in EXPRESSION.findall(str(value))):
+                yield f"{scope}/env.{name}"
 
 
 def main():
@@ -39,6 +49,9 @@ def main():
             print(f"::error file={relative}::YAML does not parse: {str(error).splitlines()[0]}")
             problems += 1
             continue
+        for label in runner_in_job_env(document):
+            print(f"::error file={relative}::{label}: the runner context is not available in env above the steps, the workflow would not start; set it on the step")
+            problems += 1
         for label, script in run_blocks(document):
             blocks += 1
             result = subprocess.run(["bash", "-n"], input=EXPRESSION.sub("EXPR", script), capture_output=True, text=True, check=False)
