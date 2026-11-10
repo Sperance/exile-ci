@@ -1039,7 +1039,7 @@ jobs:
         run: |
           . ../ci/build-tasks.env
           eval "$(bash ../ci/build-keystore.sh)"
-          bash ../ci/quiet.sh qa-apk bash gradlew --profile "$QA_APK_TASK" "-PqaServerUrl=$TEST_SERVER_URL" "-PqaVersionName=$QA_NAME" "-PqaVersionCode=$QA_CODE"
+          bash ../ci/quiet.sh qa-apk bash gradlew --profile "$QA_APK_TASK" -x "$QA_APK_SKIP" "-PqaServerUrl=$TEST_SERVER_URL" "-PqaVersionName=$QA_NAME" "-PqaVersionCode=$QA_CODE"
       - name: Encrypted build profile
         working-directory: src
         run: |
