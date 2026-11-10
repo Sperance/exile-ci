@@ -1011,6 +1011,7 @@ jobs:
 
   # Тестовая сборка клиента (flavor qa, сервер из vars.TEST_SERVER_URL): после зелёных ворот пуша, если код менялся и sha - голова рабочей
   # ветки (выход qa job'а changes). Сборка идёт без секретов, как release-apk: одноразовый ключ, URL тестового сервера и версия - свойствами Gradle.
+  # Профиль Gradle (--profile) кладётся зашифрованным артефактом qa-apk-profile на 7 дней - замер, на что уходит время сборки.
   qa-apk:
     needs: [ changes, core, app-fast, app, minified, emulator, client-server ]
     if: ${{ !cancelled() && needs.changes.outputs.qa == 'true' && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') }}
@@ -1035,7 +1036,17 @@ jobs:
         run: |
           . ../ci/build-tasks.env
           eval "$(bash ../ci/build-keystore.sh)"
-          bash ../ci/quiet.sh qa-apk bash gradlew "$QA_APK_TASK" "-PqaServerUrl=$TEST_SERVER_URL" "-PqaVersionName=$QA_NAME" "-PqaVersionCode=$QA_CODE"
+          bash ../ci/quiet.sh qa-apk bash gradlew --profile "$QA_APK_TASK" "-PqaServerUrl=$TEST_SERVER_URL" "-PqaVersionName=$QA_NAME" "-PqaVersionCode=$QA_CODE"
+      - name: Encrypted build profile
+        working-directory: src
+        run: |
+          mkdir -p ../profile
+          tar -czf "$RUNNER_TEMP/qa-profile.tgz" -C build/reports profile
+          bash ../ci/encrypt-log.sh "$RUNNER_TEMP/qa-profile.tgz" ../profile/qa-apk-profile.tgz.enc
+      - uses: ./.github/actions/upload-log
+        with:
+          name: qa-apk-profile
+          path: profile
       - name: Seal the unsigned package
         working-directory: src
         run: |
