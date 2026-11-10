@@ -52,8 +52,8 @@ netcall() {
     local attempt=0 code out err kind text delay command=${1##*/}
     out=$(mktemp) err=$(mktemp)
     while :; do
-        "$@" >"$out" 2>"$err" </dev/null
-        code=$?
+        code=0
+        "$@" >"$out" 2>"$err" </dev/null || code=$?
         if ((code == 0)); then text=$(cat "$out"); else text=$(cat "$out" "$err"); fi
         kind=$(netcall_class "$mode" "$code" "$text" "$command") || kind=""
         if [[ -z $kind ]] || ((attempt >= ${#NET_DELAYS[@]})); then
