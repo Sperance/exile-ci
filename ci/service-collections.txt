@@ -30,5 +30,7 @@ UiOverride
 ClientWindow
 ChannelState
 ReleaseBuild
+TestBuild
+TestUpdateEntry
 ClientSeen
 MemoryKills

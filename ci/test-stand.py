@@ -3,8 +3,13 @@
 
     python3 -I ci/test-stand.py code-changed <клон клиента> <от> <до>
         -> true | false: менялся ли между коммитами код (не .md, не audit/, не .claude/, не номер версии в app/build.gradle.kts); неизвестное «от» - true
-    python3 -I ci/test-stand.py record <файл> <коммит клиента или пусто> <закреплённый сервер> <коммит образа> <тег qa-<n> или пусто>
-        -> JSON состояния стенда (время выката - сейчас); публикует его ci/test-stand.sh
+    python3 -I ci/test-stand.py record <файл> <коммит клиента или пусто> <закреплённый сервер> <коммит образа> <тег qa-<n> или пусто> [<коммит последнего выката боя> <k> <версия x.y.z_test>]
+        -> JSON состояния стенда (время выката - сейчас; база боя, k и версия теста - если заданы); публикует его ci/test-stand.sh
+    python3 -I ci/test-stand.py version <версия образа последнего выката боя x.y.z> <коммит этого выката> <прошлый stand.json|-> <коммит образа теста> <файл вывода>
+        -> name=<x.y.z+k>_test, k=, base=: версия сервера теста - последняя выкаченная боевая версия + k patch, k - порядковый номер тестового обновления
+           сервера после выката боя (другой образ при той же базе - k прошлой записи + 1, тот же образ - то же число, новая база - 1)
+    python3 -I ci/test-stand.py image-version
+        -> версия сервера из меток образа (ответ docker buildx imagetools inspect --format '{{json .}}' - в stdin); код 1 - метки с версией нет
     python3 -I ci/test-stand.py check <stand.json> <клон клиента> <клон сервера> <голова клиента> <файл вывода>
         -> on_test=true|false и reason= (стоит ли голова на стенде: после коммита стенда менялись только .md, версия и заметки, пин сервера
            тот же или отличается только .md вне образа - ci/server-diff.sh)
@@ -31,6 +36,9 @@ VERSION_FILE = "app/build.gradle.kts"
 VERSION_FIELDS = re.compile(r'(versionCode\s*=\s*)\d+|(versionName\s*=\s*)"[^"]*"')
 DOC_PREFIXES = ("audit/", ".claude/")
 SHA = re.compile(r"^[0-9a-f]{40}$")
+PROD_VERSION = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
+TEST_SERVER = re.compile(r"^\d+\.\d+\.\d+_test$")
+VERSION_LABEL = "org.opencontainers.image.version"
 
 
 def fail(message):
@@ -69,15 +77,61 @@ def code_changed(directory, old, new):
     return bool(code_files(directory, old, new))
 
 
-def record(target, client, pin, image, tag):
+def record(target, client, pin, image, tag, base="", k="", version=""):
     for label, value in (("pinned server", pin), ("server image", image)):
         if not SHA.match(value):
             fail(f"{label} '{value}' is not a commit")
     if client and not SHA.match(client):
         fail(f"client commit '{client}' is not a commit")
     state = {"client": client, "server": pin, "image": image, "qa": tag, "deployedAt": int(time.time())}
+    if base:
+        if not (SHA.match(base) and k.isdigit() and TEST_SERVER.match(version)):
+            fail("the prod base, k or the test server version of the record is malformed")
+        state.update({"base": base, "k": int(k), "version": version})
     with open(target, "w", encoding="utf-8") as out:
         json.dump(state, out, sort_keys=True)
+
+
+def test_server_version(prod, base, previous, image, target):
+    found = PROD_VERSION.match(prod)
+    if not found or not SHA.match(base) or not SHA.match(image):
+        fail("the prod server version, its commit or the test image commit is malformed")
+    major, minor, patch = (int(part) for part in found.groups())
+    state = read_json(previous) or {}
+    k = 1
+    if state.get("base") == base and isinstance(state.get("k"), int) and state["k"] >= 1:
+        k = state["k"] if state.get("image") == image else state["k"] + 1
+    name = f"{major}.{minor}.{patch + k}_test"
+    print(f"test server version: k={k}")
+    with open(target, "a", encoding="utf-8") as out:
+        out.write(f"name={name}\nk={k}\nbase={base}\n")
+
+
+def labels_of(node):
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key.lower() == "labels" and isinstance(value, dict) and VERSION_LABEL in value:
+                return value
+            found = labels_of(value)
+            if found:
+                return found
+    elif isinstance(node, list):
+        for value in node:
+            found = labels_of(value)
+            if found:
+                return found
+    return None
+
+
+def image_version():
+    try:
+        labels = labels_of(json.load(sys.stdin))
+    except ValueError:
+        labels = None
+    version = str((labels or {}).get(VERSION_LABEL, ""))
+    if not PROD_VERSION.match(version):
+        fail("the image carries no server version label")
+    print(version)
 
 
 def server_same_image(script_dir, server_dir, old, new):
@@ -194,8 +248,12 @@ def main():
     command, args = sys.argv[1], sys.argv[2:]
     if command == "code-changed" and len(args) == 3:
         print("true" if code_changed(*args) else "false")
-    elif command == "record" and len(args) == 5:
+    elif command == "record" and len(args) in (5, 8):
         record(*args)
+    elif command == "version" and len(args) == 5:
+        test_server_version(*args)
+    elif command == "image-version" and not args:
+        image_version()
     elif command == "check" and len(args) == 5:
         check(*args)
     elif command == "report" and len(args) == 5 and args[1] in ("on", "off", "na", "disabled"):
@@ -207,7 +265,7 @@ def main():
     elif command == "state-block" and len(args) == 3:
         state_block(*args)
     else:
-        fail("usage: test-stand.py code-changed|record|check|report|live-extract|live-check|state-block (see the header)")
+        fail("usage: test-stand.py code-changed|record|version|image-version|check|report|live-extract|live-check|state-block (see the header)")
 
 
 main()

@@ -21,7 +21,7 @@
 #                                       предрелиз qa-<n> и постоянный qa-latest публикует job `qa-publish` ПОСЛЕ удачного выката); ключ DEPLOY_SSH_KEY_TEST привязан к update.sh тестового проекта, боевой деплой
 #                                       этот режим не затрагивает; без vars.TEST_SERVER_URL job пропускается зелёным. После удачного выката job пишет,
 #                                       что стоит на тесте (ci/test-stand.sh: prerelease `stand-<UTC>` с stand.json: sha клиента, закреплённый
-#                                       сервер, образ, время) - по записи Release решает, на тесте ли голова. Первый выкат теста (записей ещё нет)
+#                                       сервер, образ, время, база боя и k версии теста) - по записи Release решает, на тесте ли голова. Первый выкат теста (записей ещё нет)
 #                                       один раз переносит боевой слепок баланса на тест (job `test-base`, ci/balance-transfer.sh prod-to-test);
 #   workflow_call (check-wip.yml)     - режим check-wip: проверки, панель и совместимость на текущем wip сервера, БЕЗ образа и деплоя.
 # После выката сервера с выпуском клиента (job `deploy`, вход version) job `balance` переносит слепок баланса и текстов клиента теста в бой
@@ -137,6 +137,7 @@ jobs:
           python3 -I ci/guard-parity.py
           python3 -I ci/guard-test-vps.py
           python3 -I ci/guard-releases.py
+          python3 -I ci/guard-test-version.py
       - name: Target commit
         id: target
         env:
@@ -652,6 +653,24 @@ jobs:
           done
           echo "::error::no checked image for the pinned server ${SHA:0:12}: its push run has not finished or failed; after fixing use Release -> server-rebuild"
           exit 1
+      # Версия сервера теста (#1084): x.y.z_test = версия сервера, выкаченного на бой последним (метка образа коммита из метки server-deployed/<sha>, а не живой
+      # сервер), + k patch; k - порядковый номер тестового обновления сервера после того выката (ci/test-stand.py version: другой образ - k записи о прошлом
+      # выкате теста + 1, тот же образ - то же число, новый выкат боя - 1). Нет записи о выкате боя или метки образа - красное: версия не должна врать молча.
+      - name: Test server version
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          bash ci/retry.sh read gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/server-deployed/" --paginate --jq '.[].ref' > "$RUNNER_TEMP/deployed.txt"
+          base=$(python3 -I ci/release_state.py baseline --srv server --head "$SHA" --deployed "$RUNNER_TEMP/deployed.txt")
+          [[ $base =~ ^[0-9a-f]{40}$ ]] || { echo "::error::no record of a prod server deploy: the test server version cannot be numbered"; exit 1; }
+          found=$(bash ci/checked-image.sh "$IMAGE" server "$base") || { echo "::error::no checked image of the last prod deploy: the test server version cannot be numbered"; exit 1; }
+          read -r _ prod_digest <<<"$found"
+          prod=$(bash ci/image-version.sh "$IMAGE" "$prod_digest")
+          code=0
+          bash ci/test-stand.sh fetch "$RUNNER_TEMP/previous.json" || code=$?
+          case $code in 0) previous="$RUNNER_TEMP/previous.json" ;; 3) previous=- ;; *) exit "$code" ;; esac
+          python3 -I ci/test-stand.py version "$prod" "$base" "$previous" "${{ steps.image.outputs.sha }}" "$GITHUB_OUTPUT"
       - name: Update the test server on the VPS
         env:
           HOST: ${{ secrets.DEPLOY_HOST }}
@@ -659,15 +678,18 @@ jobs:
           GH_ISSUES_TOKEN: ${{ secrets.GH_ISSUES_TOKEN }}
           DIGEST: ${{ steps.image.outputs.digest }}
           IMAGE_SHA: ${{ steps.image.outputs.sha }}
+          TEST_VERSION: ${{ steps.version.outputs.name }}
           VPS_HOST_KEY: ${{ vars.VPS_HOST_KEY }}
         run: |
           [[ -n $HOST && -n $KEY ]] || { echo "::error::DEPLOY_HOST or DEPLOY_SSH_KEY_TEST is not set"; exit 1; }
           [[ $DIGEST =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::no image digest to deploy"; exit 1; }
           [[ $IMAGE_SHA =~ ^[0-9a-f]{40}$ ]] || { echo "::error::no commit of the image to deploy"; exit 1; }
+          [[ $TEST_VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+_test$ ]] || { echo "::error::no test server version to announce"; exit 1; }
           install -m 600 /dev/null "$RUNNER_TEMP/key" && printf '%s\n' "$KEY" > "$RUNNER_TEMP/key"
-          # Ключ теста на VPS привязан к update.sh проекта /opt/exileforge-test: боевую установку эта команда достать не может
+          # Ключ теста на VPS привязан к update.sh проекта /opt/exileforge-test: боевую установку эта команда достать не может.
+          # Третье слово - показываемая версия теста: update.sh кладёт её в .env как TEST_SERVER_VERSION
           printf '%s\n' "$GH_ISSUES_TOKEN" | VPS_HOST=$HOST VPS_KEY_FILE="$RUNNER_TEMP/key" bash ci/quiet.sh deploy-test \
-            bash ci/vps-ssh.sh "deploy $IMAGE_SHA $DIGEST"
+            bash ci/vps-ssh.sh "deploy $IMAGE_SHA $DIGEST $TEST_VERSION"
       # Что стоит на тесте: Release читает эту запись (клиент выпускается, только если его голова уже на стенде). Пишется только после удачного
       # выката. Нет записи до этого выката - выкат первый, job `test-base` один раз ставит на тест боевой слепок баланса.
       # Выкат теста не увёл адрес боя на тест (общий Caddy, голое имя game ведёт и на тест): index.json боя без поля stand - иначе красное.
@@ -682,12 +704,15 @@ jobs:
           CLIENT_SHA: ${{ inputs.client_sha }}
           QA_TAG: ${{ inputs.qa_tag }}
           IMAGE_SHA: ${{ steps.image.outputs.sha }}
+          TEST_BASE: ${{ steps.version.outputs.base }}
+          TEST_K: ${{ steps.version.outputs.k }}
+          TEST_VERSION: ${{ steps.version.outputs.name }}
         run: |
           code=0
           bash ci/test-stand.sh fetch "$RUNNER_TEMP/previous.json" || code=$?
           first=false
           case $code in 0) ;; 3) first=true ;; *) exit "$code" ;; esac
-          python3 -I ci/test-stand.py record "$RUNNER_TEMP/stand.json" "$CLIENT_SHA" "$SHA" "$IMAGE_SHA" "$QA_TAG"
+          python3 -I ci/test-stand.py record "$RUNNER_TEMP/stand.json" "$CLIENT_SHA" "$SHA" "$IMAGE_SHA" "$QA_TAG" "$TEST_BASE" "$TEST_K" "$TEST_VERSION"
           bash ci/test-stand.sh publish "$RUNNER_TEMP/stand.json"
           echo "first=$first" >> "$GITHUB_OUTPUT"
       - name: Keep the ten newest stand records
@@ -758,7 +783,7 @@ jobs:
           code=${TAG#qa-}
           sig=(); [ -s files/qa/update.json.sig ] && sig=(files/qa/update.json.sig)
           bash ci/retry.sh once gh release create "$TAG" files/qa/ExileForge-qa.apk files/qa/update.json "${sig[@]}" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
-            --prerelease --latest=false --title "ExileForge test $code" --notes "Test build $name for the test server. Newest qa-* wins."
+            --prerelease --latest=false --title "ExileForge test $code" --notes "Test build $name (commit ${CLIENT_SHA:0:7}) for the test server. Newest qa-* wins."
           echo "published $TAG"
           if bash ci/retry.sh read gh release view qa-latest -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             bash ci/retry.sh idem gh release upload qa-latest files/qa/ExileForge-qa.apk files/qa/update.json "${sig[@]}" -R "$GITHUB_REPOSITORY" --clobber
