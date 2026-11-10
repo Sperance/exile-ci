@@ -64,6 +64,12 @@ guards() {
     return "$code"
 }
 
+netcall_errors() {
+    local said
+    said=$(bash -c 'set -euo pipefail; . ci/retry.sh; netcall once bash -c "echo refused >&2; exit 1"' 2>&1) && return 1
+    [[ $said == *refused* ]] || { echo "netcall under set -e drops the error text of a failed call" >&2; return 1; }
+}
+
 python3 -c 'import yaml' 2>/dev/null || { echo "precheck: python3 needs the yaml module (pip install pyyaml)" >&2; exit 2; }
 
 step syntax python3 -I ci/check-syntax.py
@@ -71,6 +77,7 @@ step shell-syntax shell_syntax
 step shell-lint shell_lint
 step python python_compile
 step guards guards
+step netcall netcall_errors
 
 echo "== timings"
 total=0
