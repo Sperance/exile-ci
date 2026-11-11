@@ -109,11 +109,41 @@ def check_deploy_test_sends_build():
         fail("ci/test-build.sh accepts a malformed issue list: only digits and commas go to the test stand")
 
 
+def check_stand_files():
+    root = os.path.join(HERE, "..")
+    document = yaml.safe_load(open(os.path.join(root, ".github", "workflows", "server.yml"), encoding="utf-8"))
+    job = document["jobs"]["deploy-test"]
+    steps = job["steps"]
+    sends = [i for i, step in enumerate(steps) if "ci/stand-files.sh send" in (step.get("run") if isinstance(step.get("run"), str) else "")]
+    deploys = [i for i, step in enumerate(steps) if step.get("name") == "Update the test server on the VPS"]
+    if not sends or not deploys or sends[0] > deploys[0]:
+        fail("deploy-test does not send `stand-files` (ci/stand-files.sh send) before the deploy step: the test stand files would drift from deploy/ of the server")
+    checkout = [step for step in steps if isinstance(step.get("with"), dict) and step["with"].get("path") == "server"]
+    sparse = checkout[0]["with"].get("sparse-checkout", "") if checkout else ""
+    script = open(os.path.join(HERE, "stand-files.sh"), encoding="utf-8").read()
+    found = re.search(r"^NAMES=\(([^)]*)\)$", script, re.MULTILINE)
+    names = found.group(1).split() if found else []
+    if not names or "update.sh" not in names or len(set(names)) != len(names):
+        fail("ci/stand-files.sh has no valid NAMES list")
+    for name in names:
+        wanted = "deploy/update.sh" if name == "update.sh" else f"deploy/test/{name}"
+        if wanted not in sparse.split():
+            fail(f"the pinned server checkout of deploy-test does not fetch {wanted}: stand-files cannot ship it")
+    if any(re.search(r"\.env|secrets?|authorized_keys|Caddyfile|\.key|\.pem", name) for name in names):
+        fail("the stand files allowlist names a secret, key or Caddyfile: the test stand must never get those from CI")
+    if "--update-sh" in sys.argv:
+        path = sys.argv[sys.argv.index("--update-sh") + 1]
+        match = re.search(r"^STAND_FILES=\(([^)]*)\)$", open(path, encoding="utf-8").read(), re.MULTILINE)
+        if not match or match.group(1).split() != names:
+            fail(f"STAND_FILES of deploy/update.sh of the server differs from NAMES of ci/stand-files.sh ({' '.join(names)})")
+
+
 def main():
     check_client_versions()
     check_server_versions()
     check_prod_fallback()
     check_deploy_test_sends_build()
+    check_stand_files()
     print("test version format: ok")
 
 

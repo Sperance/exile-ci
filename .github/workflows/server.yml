@@ -645,6 +645,11 @@ jobs:
           filter: blob:none
           sparse-checkout: |
             rules/src/main/kotlin/com/sperance/exileforge/rules/wire/Protocol.kt
+            deploy/update.sh
+            deploy/test/compose.yaml
+            deploy/test/compose.override.yaml
+            deploy/test/verify.sh
+            deploy/test/mongo-health.js
           sparse-checkout-cone-mode: false
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
@@ -675,6 +680,18 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           SERVER_URL: ${{ vars.SERVER_URL }}
         run: bash ci/test-server-version.sh version server "$SHA" "${{ steps.image.outputs.sha }}" "$GITHUB_OUTPUT"
+      # Файлы стенда теста (update.sh, compose, verify, mongo-health) CI кладёт сам ДО выката: ключ теста привязан к update.sh, и команда stand-files принимает
+      # только архив с точным списком имён и сверенным sha256 (ci/stand-files.sh, сторож ci/guard-test-version.py). Старый update.sh теста команду отвергает -
+      # предупреждение «нужна разовая установка», выкат идёт дальше. Содержимое файлов в журнал не выводится.
+      - name: Refresh the test stand files
+        env:
+          HOST: ${{ secrets.DEPLOY_HOST }}
+          KEY: ${{ secrets.DEPLOY_SSH_KEY_TEST }}
+          VPS_HOST_KEY: ${{ vars.VPS_HOST_KEY }}
+        run: |
+          [[ -n $HOST && -n $KEY ]] || { echo "::error::DEPLOY_HOST or DEPLOY_SSH_KEY_TEST is not set"; exit 1; }
+          install -m 600 /dev/null "$RUNNER_TEMP/key" && printf '%s\n' "$KEY" > "$RUNNER_TEMP/key"
+          VPS_HOST=$HOST VPS_KEY_FILE="$RUNNER_TEMP/key" bash ci/stand-files.sh send server
       - name: Update the test server on the VPS
         env:
           HOST: ${{ secrets.DEPLOY_HOST }}
