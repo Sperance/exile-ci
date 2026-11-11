@@ -63,9 +63,24 @@ def check_server_versions():
                 fail(f"the test server version for prod {prod} is not {wanted}: ServerVersion of the server reads x.y.z_test")
 
 
+def check_prod_fallback():
+    stand = os.path.join(HERE, "test-stand.py")
+    commit = "d" * 40
+    code, out = python(stand, "prod-live", stdin='{"version": "1.91.56", "commit": "%s", "revision": 145}' % commit)
+    if code != 0 or out.strip() != f"1.91.56 {commit}":
+        fail("the live prod manifest does not give the base of the test server version: deploy-test without a prod deploy mark would stall")
+    code, _ = python(stand, "prod-live", stdin="not json")
+    if code == 0:
+        fail("a broken live prod manifest must not give a test server version")
+    flow = open(os.path.join(HERE, "..", ".github", "workflows", "server.yml"), encoding="utf-8").read()
+    if "no record of a prod server deploy: the test server version cannot be numbered" in flow:
+        fail("deploy-test fails without a prod deploy mark: the test server must fall back to the live prod manifest or its own image version")
+
+
 def main():
     check_client_versions()
     check_server_versions()
+    check_prod_fallback()
     print("test version format: ok")
 
 

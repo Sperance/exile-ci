@@ -660,13 +660,26 @@ jobs:
         id: version
         env:
           GH_TOKEN: ${{ github.token }}
+          SERVER_URL: ${{ vars.SERVER_URL }}
         run: |
+          # Боевая база: отметка последнего выката боя (server-deployed/<sha>) и версия его образа; нет отметки или образа - живой
+          # SERVER_URL/static/index.json боя (версия и коммит); бой молчит - тест выкатывается с версией своего образа и предупреждением.
           bash ci/retry.sh read gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/server-deployed/" --paginate --jq '.[].ref' > "$RUNNER_TEMP/deployed.txt"
           base=$(python3 -I ci/release_state.py baseline --srv server --head "$SHA" --deployed "$RUNNER_TEMP/deployed.txt")
-          [[ $base =~ ^[0-9a-f]{40}$ ]] || { echo "::error::no record of a prod server deploy: the test server version cannot be numbered"; exit 1; }
-          found=$(bash ci/checked-image.sh "$IMAGE" server "$base") || { echo "::error::no checked image of the last prod deploy: the test server version cannot be numbered"; exit 1; }
-          read -r _ prod_digest <<<"$found"
-          prod=$(bash ci/image-version.sh "$IMAGE" "$prod_digest")
+          prod=""
+          if [[ $base =~ ^[0-9a-f]{40}$ ]] && found=$(bash ci/checked-image.sh "$IMAGE" server "$base"); then
+            read -r _ prod_digest <<<"$found"
+            prod=$(bash ci/image-version.sh "$IMAGE" "$prod_digest") || prod=""
+          fi
+          if [[ -z $prod && -n $SERVER_URL ]]; then
+            echo "::warning::no record of a prod server deploy: the test server version is counted from the live prod manifest"
+            live=$(bash ci/retry.sh read curl -fsS --max-time 20 "${SERVER_URL%/}/static/index.json" | python3 -I ci/test-stand.py prod-live) || live=""
+            read -r prod base <<<"$live"
+          fi
+          if [[ -z $prod || ! $base =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::warning::the prod server version is unknown: the test server keeps the version of its image this time"
+            exit 0
+          fi
           code=0
           bash ci/test-stand.sh fetch "$RUNNER_TEMP/previous.json" || code=$?
           case $code in 0) previous="$RUNNER_TEMP/previous.json" ;; 3) previous=- ;; *) exit "$code" ;; esac
@@ -684,13 +697,13 @@ jobs:
           [[ -n $HOST && -n $KEY ]] || { echo "::error::DEPLOY_HOST or DEPLOY_SSH_KEY_TEST is not set"; exit 1; }
           [[ $DIGEST =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::no image digest to deploy"; exit 1; }
           [[ $IMAGE_SHA =~ ^[0-9a-f]{40}$ ]] || { echo "::error::no commit of the image to deploy"; exit 1; }
-          [[ $TEST_VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+_test$ ]] || { echo "::error::no test server version to announce"; exit 1; }
+          [[ -z $TEST_VERSION || $TEST_VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+_test$ ]] || { echo "::error::malformed test server version"; exit 1; }
           install -m 600 /dev/null "$RUNNER_TEMP/key" && printf '%s\n' "$KEY" > "$RUNNER_TEMP/key"
           # Ключ теста на VPS привязан к update.sh проекта /opt/exileforge-test: боевую установку эта команда достать не может.
           # Третье слово - показываемая версия теста: update.sh кладёт её в .env как TEST_SERVER_VERSION. update.sh на VPS, ещё не знающий
           # третьего слова, отвергает команду: тогда выкат идёт прежней командой из двух слов, а сводка просит обновить update.sh теста.
           if ! printf '%s\n' "$GH_ISSUES_TOKEN" | VPS_HOST=$HOST VPS_KEY_FILE="$RUNNER_TEMP/key" bash ci/quiet.sh deploy-test \
-            bash ci/vps-ssh.sh "deploy $IMAGE_SHA $DIGEST $TEST_VERSION"; then
+            bash ci/vps-ssh.sh "deploy $IMAGE_SHA $DIGEST${TEST_VERSION:+ $TEST_VERSION}"; then
             echo "::warning::deploy with the test version failed - retrying without it; update update.sh and compose.yaml of the test stand from deploy/test"
             printf '%s\n' "$GH_ISSUES_TOKEN" | VPS_HOST=$HOST VPS_KEY_FILE="$RUNNER_TEMP/key" bash ci/quiet.sh deploy-test-legacy \
               bash ci/vps-ssh.sh "deploy $IMAGE_SHA $DIGEST"
@@ -717,7 +730,11 @@ jobs:
           bash ci/test-stand.sh fetch "$RUNNER_TEMP/previous.json" || code=$?
           first=false
           case $code in 0) ;; 3) first=true ;; *) exit "$code" ;; esac
-          python3 -I ci/test-stand.py record "$RUNNER_TEMP/stand.json" "$CLIENT_SHA" "$SHA" "$IMAGE_SHA" "$QA_TAG" "$TEST_BASE" "$TEST_K" "$TEST_VERSION"
+          if [[ -n $TEST_VERSION ]]; then
+            python3 -I ci/test-stand.py record "$RUNNER_TEMP/stand.json" "$CLIENT_SHA" "$SHA" "$IMAGE_SHA" "$QA_TAG" "$TEST_BASE" "$TEST_K" "$TEST_VERSION"
+          else
+            python3 -I ci/test-stand.py record "$RUNNER_TEMP/stand.json" "$CLIENT_SHA" "$SHA" "$IMAGE_SHA" "$QA_TAG"
+          fi
           bash ci/test-stand.sh publish "$RUNNER_TEMP/stand.json"
           echo "first=$first" >> "$GITHUB_OUTPUT"
       - name: Keep the ten newest stand records

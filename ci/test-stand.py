@@ -107,6 +107,19 @@ def test_server_version(prod, base, previous, image, target):
         out.write(f"name={name}\nk={k}\nbase={base}\n")
 
 
+def prod_live():
+    try:
+        manifest = json.load(sys.stdin)
+    except ValueError:
+        manifest = None
+    version = str(manifest.get("version", "")) if isinstance(manifest, dict) else ""
+    commit = str(manifest.get("commit", "")) if isinstance(manifest, dict) else ""
+    if not (PROD_VERSION.match(version) and SHA.match(commit)):
+        print("::warning::the prod manifest has no server version or commit")
+        sys.exit(4)
+    print(f"{version} {commit}")
+
+
 def labels_of(node):
     if isinstance(node, dict):
         for key, value in node.items():
@@ -254,6 +267,8 @@ def main():
         test_server_version(*args)
     elif command == "image-version" and not args:
         image_version()
+    elif command == "prod-live" and not args:
+        prod_live()
     elif command == "check" and len(args) == 5:
         check(*args)
     elif command == "report" and len(args) == 5 and args[1] in ("on", "off", "na", "disabled"):
@@ -265,7 +280,7 @@ def main():
     elif command == "state-block" and len(args) == 3:
         state_block(*args)
     else:
-        fail("usage: test-stand.py code-changed|record|version|image-version|check|report|live-extract|live-check|state-block (see the header)")
+        fail("usage: test-stand.py code-changed|record|version|image-version|prod-live|check|report|live-extract|live-check|state-block (see the header)")
 
 
 main()
