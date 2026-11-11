@@ -10,8 +10,9 @@
         -> ExileForge-qa.apk и update.json той же формы, что у релиза (ci/update_info.py), mandatory всегда true; sha7 - поле commit (номер сборки и
            коммит в строку версии не входят)
 
-Заметки публичной тестовой сборки (и update.json, откуда их берёт приложение: другого источника у обновления нет) - только номер сборки и пункты
-«что проверить»; раздел `## Следующая версия` RELEASE_NOTES.md в публичный предрелиз не попадает (будущие возможности до выхода не видны).
+Заметки публичной тестовой сборки (и update.json, откуда их берёт приложение: другого источника у обновления нет) - номер сборки, изменения с прошлой
+тестовой сборки из записи истории (ci/test-history.py) по подразделам `### Новое`, `### Изменения`, `### Исправления`, `### Техническое` (как в релизе;
+«Техническое» приложение показывает только персоналу) и пункты «что проверить» подразделом `### Что проверить`.
 Содержимое кода в журнал не выводится. Ошибки - строкой ::error:: и код 1.
 """
 import json
@@ -27,7 +28,7 @@ import update_info
 
 APK_NAME = "ExileForge-qa.apk"
 NOTES_TITLE = "Тестовая сборка"
-PLAN_TITLE = "Что проверить:"
+PLAN_TITLE = "### Что проверить"
 PLAN_TRAILER = re.compile(r"^Test-Plan:[ \t]*(.+?)[ \t]*$", re.M | re.I)
 PLAN_ITEM_LIMIT = 200
 PLAN_ITEMS_LIMIT = 30
@@ -87,19 +88,26 @@ def changes_of(history_file):
         return []
     with open(history_file, encoding="utf-8") as source:
         entries = json.load(source).get("notes", [])
-    return [entry["text"] for entry in entries if not entry.get("check")]
+    return [(entry.get("section", ""), entry["text"]) for entry in entries if not entry.get("check")]
+
+
+def section_rank(section):
+    return notes.SECTIONS.index(section) if section in notes.SECTIONS else -1
 
 
 def notes_of(name, plan_file, history_file=None):
     items = [line.strip() for line in open(plan_file, encoding="utf-8").read().splitlines() if line.strip()] if plan_file and plan_file != "-" else []
     changes = changes_of(history_file)
     lines = [f"{NOTES_TITLE} {name}"]
-    if changes:
-        lines += ["", *[f"- {change}" for change in changes]]
+    for section in sorted({section for section, _ in changes}, key=section_rank):
+        lines += [""]
+        if section:
+            lines += [f"### {section}"]
+        lines += [f"- {text}" for title, text in changes if title == section]
     if items:
         lines += ["", PLAN_TITLE, *[f"- {item}" for item in items]]
     text = "\n".join(lines)
-    missing = [change for change in changes if f"- {change}" not in text]
+    missing = [text_of for _, text_of in changes if f"- {text_of}" not in text]
     if missing:
         update_info.fail(f"update notes lost {len(missing)} change(s) of the test history")
     return text
