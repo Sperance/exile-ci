@@ -5,7 +5,8 @@
         -> JSON записи {"version", "build", "notes": [{"text", "issues", "check", "section"}]}: новые пункты `## Следующая версия` RELEASE_NOTES.md с прошлой
            тестовой сборки, каждый с подразделом (`section`: Новое, Изменения, Исправления, Техническое; пусто - пункт вне подразделов; прежняя приставка
            «Техническое: » снимается, пункт уходит в подраздел «Техническое»; пункты сервера несут метку «[сервер]»; номера Issues - трейлеры `Issue: #N` коммита,
-           что добавил пункт) и пункты Test-Plan с check=true
+           что добавил пункт) и пункты Test-Plan с check=true; нет новых пунктов, а с прошлой тестовой сборки в клиенте или закреплённом сервере есть
+           коммиты feat:/fix:/refactor:/perf: - ошибка (сборка только из ci:/docs:/style:/test:/chore: служебная и проходит без заметок)
     python3 -I ci/test-history.py marker <файл записи>
         -> строка `<!-- test-update: <base64> -->` для тела приватного предрелиза
 
@@ -26,6 +27,8 @@ NOTES_PATH = "RELEASE_NOTES.md"
 SHA = re.compile(r"^[0-9a-f]{40}$")
 ISSUE_TRAILER = re.compile(r"^Issue: #(\d+)", re.MULTILINE)
 FALLBACK_COMMITS = 30
+SERVER_PATH = "backend"
+GAME_TYPES = re.compile(r"^(feat|fix|refactor|perf)(\([^)]*\))?!?:", re.IGNORECASE)
 ITEM_LIMIT = 300
 ITEMS_LIMIT = 80
 SPLIT = "\x00"
@@ -71,6 +74,39 @@ def commits(clone, old, new):
     return found
 
 
+def subjects(clone, old, new):
+    out = git(clone, "log", "--format=%s", f"{old}..{new}")
+    return None if out is None else [line for line in out.splitlines() if line.strip()]
+
+
+def pinned(clone, ref):
+    out = git(clone, "rev-parse", "--verify", "--quiet", f"{ref}:{SERVER_PATH}")
+    return out.strip() if out and SHA.match(out.strip()) else None
+
+
+def game_commits(clone, old, new):
+    found = [subject for subject in subjects(clone, old, new) or [] if GAME_TYPES.match(subject)]
+    server_old, server_new = pinned(clone, old), pinned(clone, new)
+    if server_old and server_new and server_old != server_new:
+        server = os.path.join(clone, SERVER_PATH)
+        listed = subjects(server, server_old, server_new)
+        if listed is None:
+            git(server, "fetch", "--quiet", "origin", server_old, server_new)
+            listed = subjects(server, server_old, server_new)
+        if listed is None:
+            print("::warning::the commits of the pinned server could not be read: only client commits were checked for update notes")
+        found += [subject for subject in listed or [] if GAME_TYPES.match(subject)]
+    return found
+
+
+def guard_notes(clone, old, new, fresh):
+    if fresh or not SHA.match(old):
+        return
+    game = game_commits(clone, old, new)
+    if game:
+        fail(f"the test build has {len(game)} feat/fix/refactor/perf commit(s) since the previous test build but no new item in RELEASE_NOTES.md: add the player notes under the next version section")
+
+
 def record(clone, old, new, name, code, plan_file, target):
     if not SHA.match(new):
         fail(f"commit '{new}' is not a sha")
@@ -88,6 +124,7 @@ def record(clone, old, new, name, code, plan_file, target):
                 known.add(key)
                 issues_of[key] = numbers
     fresh = [(section, item) for section, item in present if notes.normalize(item) not in before]
+    guard_notes(clone, old, new, fresh)
     entries = [{"text": item, "issues": issues_of.get(notes.normalize(item), []), "check": False, "section": section} for section, item in fresh[:ITEMS_LIMIT]]
     plan = [line.strip() for line in open(plan_file, encoding="utf-8").read().splitlines() if line.strip()] if plan_file != "-" else []
     entries += [{"text": item, "issues": [], "check": True, "section": ""} for item in plan]
