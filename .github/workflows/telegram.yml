@@ -68,7 +68,7 @@ jobs:
         env:
           TAG: ${{ steps.release.outputs.tag }}
         run: |
-          pip install --quiet --disable-pip-version-check pillow==11.0.0
+          bash ci/retry.sh read pip install --quiet --disable-pip-version-check pillow==11.0.0
           cp -r legal site
           python3 ci/telegram/banner.py "${TAG#v}" "site/banner/$TAG.png"
       - id: pages

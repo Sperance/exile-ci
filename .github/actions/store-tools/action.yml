@@ -8,4 +8,4 @@ runs:
       with:
         python-version: '3.12'
     - shell: bash
-      run: pip install --quiet --disable-pip-version-check google-auth==2.35.0 requests==2.32.3 cryptography==43.0.3
+      run: bash "${{ github.action_path }}/../../../ci/retry.sh" read pip install --quiet --disable-pip-version-check google-auth==2.35.0 requests==2.32.3 cryptography==43.0.3

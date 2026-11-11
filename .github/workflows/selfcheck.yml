@@ -24,6 +24,6 @@ jobs:
         with:
           persist-credentials: false
       - name: Python yaml module
-        run: python3 -c 'import yaml' 2>/dev/null || python3 -m pip install --quiet --disable-pip-version-check pyyaml
+        run: python3 -c 'import yaml' 2>/dev/null || bash ci/retry.sh read python3 -m pip install --quiet --disable-pip-version-check pyyaml
       - name: Self-check of the CI scripts and workflows
         run: bash ci/precheck.sh

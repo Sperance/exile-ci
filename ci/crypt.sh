@@ -13,7 +13,8 @@ AGE_RECIPIENT_RE='^age1[a-z0-9]{50,}$'
 # ensure_age: age нет в образе раннера - ставится из пакетов Ubuntu (подписанные архивы apt), один раз за job.
 ensure_age() {
     command -v age >/dev/null 2>&1 && return 0
-    { sudo apt-get update -qq && sudo apt-get install -y -qq age; } >/dev/null 2>&1 || { echo "::error::cannot install age"; return 1; }
+    . "$(dirname "${BASH_SOURCE[0]}")/retry.sh"
+    { netcall read sudo apt-get update -qq && netcall read sudo apt-get install -y -qq age; } >/dev/null 2>&1 || { echo "::error::cannot install age"; return 1; }
 }
 
 # crypt_recipient <имя переменной> -> 0, если значение задано и похоже на открытый ключ age; 1 - не задано; ошибка - неверное значение

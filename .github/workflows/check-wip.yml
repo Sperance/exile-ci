@@ -207,7 +207,7 @@ jobs:
           CLIENT: ${{ needs.resolve.outputs.client }}
           SERVER: ${{ needs.resolve.outputs.server }}
         run: |
-          python3 -c 'import yaml' 2>/dev/null || python3 -m pip install --quiet --disable-pip-version-check pyyaml
+          python3 -c 'import yaml' 2>/dev/null || bash ci/retry.sh read python3 -m pip install --quiet --disable-pip-version-check pyyaml
           bash ci/retry.sh read git -C cli show "$CLIENT:scripts/precheck.sh" > "$RUNNER_TEMP/precheck-client.sh"
           bash ci/retry.sh read git -C srv show "$SERVER:scripts/precheck.sh" > "$RUNNER_TEMP/precheck-server.sh"
           bash ci/retry.sh read git -C srv show "$SERVER:deploy/test/Caddyfile.snippet" > "$RUNNER_TEMP/Caddyfile.snippet"

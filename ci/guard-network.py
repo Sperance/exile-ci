@@ -4,7 +4,8 @@
     python3 -I ci/guard-network.py [корень репозитория]
 
 Ищет в .github/workflows/*.yml, .github/actions/*/action.yml (блоки run), ci/**/*.sh и ci/**/*.py:
-  bash: gh (api, release, issue, label, workflow, run, pr, repo), curl, wget, git clone|fetch|ls-remote|pull|push без `bash ci/retry.sh <режим>` или `netcall <режим>` перед ним;
+  bash: gh (api, release, issue, label, workflow, run, pr, repo), curl, wget, git clone|fetch|ls-remote|pull|push, установка пакетов (apt-get update|install,
+        npm install|ci, pip install, playwright install|install-deps) без `bash ci/retry.sh <режим>` или `netcall <режим>` перед ним;
   python: импорт urllib.request, http.client, requests, urllib3, httpx, вызовы .get|.post|.put|.patch|.delete|.request на объекте http или session,
           subprocess и os.system с curl, wget, gh, git clone|fetch|ls-remote|pull|push (нужен net.run).
 Допущенное - строка в ci/net-allowlist.txt: `путь | подстрока строки или * | причина`; запись без причины или без совпадения (устарела) - тоже красная.
@@ -18,7 +19,7 @@ import sys
 
 import yaml
 
-COMMAND = re.compile(r"(?<![\w./$-])(gh (?:api|release|issue|label|workflow|run|pr|repo)\b|curl\b|wget\b|git (?:-C \S+ )?(?:clone|ls-remote|fetch|pull|push)\b)")
+COMMAND = re.compile(r"(?<![\w./$-])(gh (?:api|release|issue|label|workflow|run|pr|repo)\b|curl\b|wget\b|git (?:-C \S+ )?(?:clone|ls-remote|fetch|pull|push)\b|(?:sudo )?apt-get (?:update|install)\b|npm (?:install|ci)\b|(?:python3 -m )?pip install\b|node \S*playwright/cli\.js install(?:-deps)?\b)")
 CONTEXT_OK = re.compile(r"(^\s*|\$\(|\|\| |&& |; |\| |\{ |! |\bthen |\bif |\bdo |`|\w+=\S* |\w+=\"[^\"]*\" |\bsh -c '|\brun: |quiet\.sh [\w-]+ |\)\s+)$")
 SKIP_LINE = re.compile(r"^\s*(#|echo\b|printf\b)")
 WRAPPED = re.compile(r"(retry\.sh|netcall) (read|idem|once) $")

@@ -18,8 +18,8 @@
 # Старый `retry <команда>` - для чтения сразу после пуша: хранилище Git на GitHub отдаёт его с отставанием, «не найдено» изредка верно лишь через секунды.
 
 NET_DELAYS=(5 10 20)
-NET_NOT_SENT='could not resolve host|no such host|name or service not known|temporary failure in name resolution|connection refused|failed to connect|couldn.t connect|network is unreachable|tls handshake timeout|ssl connection timeout|dial tcp .*(refused|timeout)'
-NET_TRANSIENT='http 5[0-9][0-9]|returned error: 5[0-9][0-9]|error: 5[0-9][0-9]|bad gateway|service unavailable|gateway time-?out|internal server error|timed out|timeout|connection reset|reset by peer|unexpected disconnect|early eof|rpc failed|remote end hung up|broken pipe|unexpected eof|stream error|server closed|tls: |empty reply|transfer closed|operation too slow|http/2 stream'
+NET_NOT_SENT='could not resolve host|temporary failure resolving|no such host|name or service not known|temporary failure in name resolution|connection refused|failed to connect|couldn.t connect|network is unreachable|tls handshake timeout|ssl connection timeout|dial tcp .*(refused|timeout)'
+NET_TRANSIENT='http 5[0-9][0-9]|failed to fetch|unable to fetch some archives|hash sum mismatch|returned error: 5[0-9][0-9]|error: 5[0-9][0-9]|bad gateway|service unavailable|gateway time-?out|internal server error|timed out|timeout|connection reset|reset by peer|unexpected disconnect|early eof|rpc failed|remote end hung up|broken pipe|unexpected eof|stream error|server closed|tls: |empty reply|transfer closed|operation too slow|http/2 stream'
 
 netcall_class() {
     local mode=$1 code=$2 text=$3 command=$4

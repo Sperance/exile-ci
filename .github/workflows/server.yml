@@ -141,7 +141,7 @@ jobs:
           persist-credentials: false
       - name: CI scripts guards
         run: |
-          python3 -c 'import yaml' 2>/dev/null || python3 -m pip install --quiet --disable-pip-version-check pyyaml
+          python3 -c 'import yaml' 2>/dev/null || bash ci/retry.sh read python3 -m pip install --quiet --disable-pip-version-check pyyaml
           python3 -I ci/guard-network.py
           python3 -I ci/guard-parity.py
           python3 -I ci/guard-test-vps.py
@@ -263,10 +263,10 @@ jobs:
           dir=build/panel-check
           if [ "$CACHE_HIT" != true ]; then
             mkdir -p "$dir"
-            npm install --no-save --no-audit --no-fund --prefix "$dir" playwright@1.55.0
-            node "$dir/node_modules/playwright/cli.js" install chromium
+            bash ../ci/retry.sh read npm install --no-save --no-audit --no-fund --prefix "$dir" playwright@1.55.0
+            bash ../ci/retry.sh read node "$dir/node_modules/playwright/cli.js" install chromium
           fi
-          node "$dir/node_modules/playwright/cli.js" install-deps chromium
+          bash ../ci/retry.sh read node "$dir/node_modules/playwright/cli.js" install-deps chromium
           echo "PANEL_CHECK_PLAYWRIGHT=$PWD/$dir/node_modules/playwright" >> "$GITHUB_ENV"
       - name: Browser check of the panel charts
         working-directory: server
