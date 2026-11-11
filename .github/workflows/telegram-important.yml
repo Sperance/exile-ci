@@ -9,6 +9,7 @@
 # поста нет. Сбой Telegram - предупреждение, тег не ставится, повтор - Release → important.
 # Секреты: TELEGRAM_BOT_TOKEN, SOURCE_TOKEN (чтение IMPORTANT.md приватного сервера).
 name: Telegram important
+run-name: Telegram important ${{ inputs.caller }}
 
 on:
   workflow_dispatch:
@@ -19,6 +20,10 @@ on:
         default: ''
       version:
         description: 'client release version for the heading (e.g. 0.26.0); empty - heading without a version'
+        required: false
+        default: ''
+      caller:
+        description: 'Marker of the run that waits for this one (ci/dispatch-wait.sh sets it); empty - started by hand'
         required: false
         default: ''
 

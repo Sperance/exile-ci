@@ -42,6 +42,7 @@
 # Секреты: SOURCE_TOKEN, DEPLOY_HOST, DEPLOY_SSH_KEY, GH_ISSUES_TOKEN (deploy-test: DEPLOY_SSH_KEY_TEST вместо DEPLOY_SSH_KEY; оба ключа - только jobs `balance` и `test-base`). Переменные: VPS_HOST_KEY, LOG_AGE_RECIPIENT, TEST_SERVER_URL (только deploy-test).
 # Пакету в GHCR выдан доступ этого репозитория (Package settings - Manage Actions access - Write).
 name: Server
+run-name: Server ${{ inputs.mode || github.event.action }} ${{ inputs.caller }}
 
 on:
   repository_dispatch:
@@ -106,6 +107,10 @@ on:
         description: 'deploy after a client release: the release went out without the test stand (Release -> client with skip_test), so the test balance is not carried to prod'
         type: boolean
         default: false
+      caller:
+        description: 'Marker of the run that waits for this one (ci/dispatch-wait.sh sets it); empty - started by hand'
+        required: false
+        default: ''
 
 # Чужой код здесь не исполняется: триггеров pull_request нет, токен job'ов по умолчанию только читает.
 permissions:

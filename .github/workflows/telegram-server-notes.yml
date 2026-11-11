@@ -7,9 +7,15 @@
 # Сбой Telegram - предупреждение, теги не ставятся, повтор - Release → server-notes.
 # Секреты: TELEGRAM_BOT_TOKEN, SOURCE_TOKEN (чтение RELEASE_NOTES.md приватного клиента).
 name: Telegram server notes
+run-name: Telegram server notes ${{ inputs.caller }}
 
 on:
   workflow_dispatch:
+    inputs:
+      caller:
+        description: 'Marker of the run that waits for this one (ci/dispatch-wait.sh sets it); empty - started by hand'
+        required: false
+        default: ''
 
 permissions:
   # Теги вышедших пунктов

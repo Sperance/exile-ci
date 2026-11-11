@@ -50,6 +50,7 @@
 # Проверка секретов, токенов и доступов CI без вывода значений: только «есть / работает / нет». Запуск - вручную
 # (workflow_dispatch) или правкой этого файла (на пуш в main запускается только эта задача). Ничего не меняет, кроме проверочных метки и черновика релиза в ExileForge (сразу удаляются).
 name: Maintenance
+run-name: Maintenance ${{ inputs.task || github.event_name }} ${{ inputs.caller }}
 
 on:
   schedule:
@@ -64,6 +65,10 @@ on:
         type: choice
         options: [ store-status, cleanup, caches, scan, outdated, doctor ]
         default: store-status
+      caller:
+        description: 'Marker of the run that waits for this one (ci/dispatch-wait.sh sets it); empty - started by hand'
+        required: false
+        default: ''
   push:
     branches: [ main ]
     paths: [ .github/workflows/maintenance.yml ]

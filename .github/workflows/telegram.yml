@@ -9,6 +9,7 @@
 # пост правится; номер можно задать и вручную (вход message_id). Сбой Telegram - предупреждение, workflow зелёный.
 # Секрет TELEGRAM_BOT_TOKEN: бот - участник группы, которому можно писать в тему (в закрытую тему - админ).
 name: Telegram
+run-name: Telegram ${{ inputs.tag }} ${{ inputs.caller }}
 
 on:
   workflow_dispatch:
@@ -19,6 +20,10 @@ on:
         default: ''
       message_id:
         description: 'number of the post of this version already in the topic (last number of its link); empty - from the cache'
+        required: false
+        default: ''
+      caller:
+        description: 'Marker of the run that waits for this one (ci/dispatch-wait.sh sets it); empty - started by hand'
         required: false
         default: ''
 

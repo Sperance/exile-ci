@@ -49,6 +49,7 @@
 # их, кладёт карту R8 (mapping.txt.gz после ci/verify-map.py) в приватный предрелиз qa-<n> ExileForge (хранятся карты 5 новейших) и запускает server.yml deploy-test на сервере, закреплённом в клиенте (передаёт ему sha клиента, тег qa и номер своего прогона: по ним deploy-test
 # записывает, что стоит на тесте, - ci/test-stand.sh, а job `qa-publish` ПОСЛЕ удачного выката публикует предрелиз, оставляет 5 новейших и ведёт qa-latest). Переменная пуста - все три job'а пропускаются зелёными. Секреты те же, что у выпуска; новых нет.
 name: Client
+run-name: Client ${{ inputs.mode || github.event.action }} ${{ inputs.caller }}
 
 on:
   repository_dispatch:
@@ -92,6 +93,10 @@ on:
         description: 'release mode: the release went out without the test stand (set by Release -> client); the balance of the test stand is not carried to prod'
         type: boolean
         default: false
+      caller:
+        description: 'Marker of the run that waits for this one (ci/dispatch-wait.sh sets it); empty - started by hand'
+        required: false
+        default: ''
 
 # Чужой код здесь не исполняется: триггеров pull_request нет, токен job'ов по умолчанию только читает.
 permissions:
