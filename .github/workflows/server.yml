@@ -699,6 +699,22 @@ jobs:
             printf '%s\n' "$GH_ISSUES_TOKEN" | VPS_HOST=$HOST VPS_KEY_FILE="$RUNNER_TEMP/key" bash ci/quiet.sh deploy-test-legacy \
               bash ci/vps-ssh.sh "deploy $IMAGE_SHA $DIGEST"
           fi
+      # Список Issue тестовой сборки идёт на тест тем же защищённым путём, что и выкат (ci/test-build.sh): сервер теста не зависит от чтения GitHub.
+      # Нет номера сборки (ручной выкат) - шаг ничего не делает; старый update.sh теста команду отвергает - предупреждение, не провал.
+      - name: Send the test build issues to the test server
+        if: ${{ inputs.qa_tag != '' }}
+        env:
+          HOST: ${{ secrets.DEPLOY_HOST }}
+          READ_TOKEN: ${{ secrets.SOURCE_TOKEN }}
+          QA_TAG: ${{ inputs.qa_tag }}
+          CLIENT_REPO: Sperance/ExileForge
+          VPS_HOST_KEY: ${{ vars.VPS_HOST_KEY }}
+        run: |
+          if ! GH_TOKEN="$READ_TOKEN" bash ci/retry.sh read gh api "repos/$CLIENT_REPO/releases/tags/$QA_TAG" --jq '.body // ""' > "$RUNNER_TEMP/qa-body.txt"; then
+            echo "::warning::the release $QA_TAG of the client could not be read: the test server reads the issue list from GitHub itself"
+            exit 0
+          fi
+          VPS_HOST=$HOST VPS_KEY_FILE="$RUNNER_TEMP/key" bash ci/test-build.sh send "$QA_TAG" "$RUNNER_TEMP/qa-body.txt"
       # Что стоит на тесте: Release читает эту запись (клиент выпускается, только если его голова уже на стенде). Пишется только после удачного
       # выката. Нет записи до этого выката - выкат первый, job `test-base` один раз ставит на тест боевой слепок баланса.
       # Выкат теста не увёл адрес боя на тест (общий Caddy, голое имя game ведёт и на тест): index.json боя без поля stand - иначе красное.

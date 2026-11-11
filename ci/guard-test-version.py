@@ -91,10 +91,29 @@ def check_deploy_test_never_stalls():
         fail("ci/test-server-version.sh lost the fallback to the live prod manifest (test-stand.py prod-live)")
 
 
+def check_deploy_test_sends_build():
+    root = os.path.join(HERE, "..")
+    document = yaml.safe_load(open(os.path.join(root, ".github", "workflows", "server.yml"), encoding="utf-8"))
+    steps = document["jobs"]["deploy-test"]["steps"]
+    names = [step.get("name", "") for step in steps]
+    sends = [i for i, step in enumerate(steps) if "ci/test-build.sh send" in (step.get("run") if isinstance(step.get("run"), str) else "")]
+    deploys = [i for i, name in enumerate(names) if name == "Update the test server on the VPS"]
+    if not sends or not deploys or sends[0] < deploys[0]:
+        fail("deploy-test does not send `test-build <qa> <issues>` (ci/test-build.sh send) after the deploy step: the test server would depend on reading GitHub for the fix-verification list")
+    body = "x\n<!-- issues: 1082,1083 -->\ny"
+    done = subprocess.run(["bash", os.path.join(HERE, "test-build.sh"), "issues"], capture_output=True, text=True, input=body, check=False)
+    if done.returncode != 0 or done.stdout.strip() != "1082,1083":
+        fail("ci/test-build.sh does not read the <!-- issues: --> marker of the qa release body")
+    bad = subprocess.run(["bash", os.path.join(HERE, "test-build.sh"), "issues"], capture_output=True, text=True, input="<!-- issues: 1; rm -->", check=False)
+    if bad.returncode == 0:
+        fail("ci/test-build.sh accepts a malformed issue list: only digits and commas go to the test stand")
+
+
 def main():
     check_client_versions()
     check_server_versions()
     check_prod_fallback()
+    check_deploy_test_sends_build()
     print("test version format: ok")
 
 
