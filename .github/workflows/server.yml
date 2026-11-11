@@ -664,37 +664,16 @@ jobs:
           done
           echo "::error::no checked image for the pinned server ${SHA:0:12}: its push run has not finished or failed; after fixing use Release -> server-rebuild"
           exit 1
-      # Версия сервера теста (#1084): x.y.z_test = версия сервера, выкаченного на бой последним (метка образа коммита из метки server-deployed/<sha>, а не живой
-      # сервер), + k patch; k - порядковый номер тестового обновления сервера после того выката (ci/test-stand.py version: другой образ - k записи о прошлом
-      # выкате теста + 1, тот же образ - то же число, новый выкат боя - 1). Нет записи о выкате боя или метки образа - красное: версия не должна врать молча.
+      # Версия сервера теста (#1084): x.y.z_test = версия сервера, выкаченного на бой последним (метка образа коммита из метки server-deployed/<sha>), + k patch;
+      # k - порядковый номер тестового обновления сервера после того выката (ci/test-stand.py version: другой образ - k записи о прошлом выкате теста + 1, тот же
+      # образ - то же число, новый выкат боя - 1). Нет метки выката боя или образа - живой манифест боя, нет и его - версия образа с предупреждением, но не красное.
+      # Логика в ci/test-server-version.sh: тот же файл гоняет сухой прогон check-wip.yml (job deploy-test-dry), чтобы они не разошлись.
       - name: Test server version
         id: version
         env:
           GH_TOKEN: ${{ github.token }}
           SERVER_URL: ${{ vars.SERVER_URL }}
-        run: |
-          # Боевая база: отметка последнего выката боя (server-deployed/<sha>) и версия его образа; нет отметки или образа - живой
-          # SERVER_URL/static/index.json боя (версия и коммит); бой молчит - тест выкатывается с версией своего образа и предупреждением.
-          bash ci/retry.sh read gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/server-deployed/" --paginate --jq '.[].ref' > "$RUNNER_TEMP/deployed.txt"
-          base=$(python3 -I ci/release_state.py baseline --srv server --head "$SHA" --deployed "$RUNNER_TEMP/deployed.txt")
-          prod=""
-          if [[ $base =~ ^[0-9a-f]{40}$ ]] && found=$(bash ci/checked-image.sh "$IMAGE" server "$base"); then
-            read -r _ prod_digest <<<"$found"
-            prod=$(bash ci/image-version.sh "$IMAGE" "$prod_digest") || prod=""
-          fi
-          if [[ -z $prod && -n $SERVER_URL ]]; then
-            echo "::warning::no record of a prod server deploy: the test server version is counted from the live prod manifest"
-            live=$(bash ci/retry.sh read curl -fsS --max-time 20 "${SERVER_URL%/}/static/index.json" | python3 -I ci/test-stand.py prod-live) || live=""
-            read -r prod base <<<"$live"
-          fi
-          if [[ -z $prod || ! $base =~ ^[0-9a-f]{40}$ ]]; then
-            echo "::warning::the prod server version is unknown: the test server keeps the version of its image this time"
-            exit 0
-          fi
-          code=0
-          bash ci/test-stand.sh fetch "$RUNNER_TEMP/previous.json" || code=$?
-          case $code in 0) previous="$RUNNER_TEMP/previous.json" ;; 3) previous=- ;; *) exit "$code" ;; esac
-          python3 -I ci/test-stand.py version "$prod" "$base" "$previous" "${{ steps.image.outputs.sha }}" "$GITHUB_OUTPUT"
+        run: bash ci/test-server-version.sh version server "$SHA" "${{ steps.image.outputs.sha }}" "$GITHUB_OUTPUT"
       - name: Update the test server on the VPS
         env:
           HOST: ${{ secrets.DEPLOY_HOST }}
@@ -741,11 +720,7 @@ jobs:
           bash ci/test-stand.sh fetch "$RUNNER_TEMP/previous.json" || code=$?
           first=false
           case $code in 0) ;; 3) first=true ;; *) exit "$code" ;; esac
-          if [[ -n $TEST_VERSION ]]; then
-            python3 -I ci/test-stand.py record "$RUNNER_TEMP/stand.json" "$CLIENT_SHA" "$SHA" "$IMAGE_SHA" "$QA_TAG" "$TEST_BASE" "$TEST_K" "$TEST_VERSION"
-          else
-            python3 -I ci/test-stand.py record "$RUNNER_TEMP/stand.json" "$CLIENT_SHA" "$SHA" "$IMAGE_SHA" "$QA_TAG"
-          fi
+          bash ci/test-server-version.sh record "$RUNNER_TEMP/stand.json" "$CLIENT_SHA" "$SHA" "$IMAGE_SHA" "$QA_TAG"
           bash ci/test-stand.sh publish "$RUNNER_TEMP/stand.json"
           echo "first=$first" >> "$GITHUB_OUTPUT"
       - name: Keep the ten newest stand records

@@ -17,6 +17,8 @@
 #      ci/guard-edge.py - Caddy боя к игре боя не по псевдониму exileforge-prod-game или блок теста не на exileforge-test-game (deploy/test сервера);
 #      ci/guard-releases.py - gh release create без --prerelease (выпуск игрока - с пометкой «# player-release» над командой);
 #      ci/guard-test-version.py - формат версии теста x.y.z_test (клиент и сервер теста), что читает TestVersion: смена формата не ломает молча карты падений и проверку исправлений;
+#   3a. test-dry-run: сухой прогон вычисления версий теста на свежих данных GitHub (ci/test-server-version.sh - тот же код, что у deploy-test сервера, и ci/qa-version.sh - как у тестовой
+#      сборки клиента) без выкладки и записи; красное тут - красное и у настоящего deploy-test, поэтому оно роняет и статус check-wip;
 #   4. record: сводка времён job'ов и сторож замедления (ci/check-wip-timing.py: wall прогона > 1,4 медианы последних 10 успешных - предупреждение, не падение);
 #      оба зелёные - на sha клиента и sha сервера кладётся commit status «check-wip» = success (ci/check-wip-status.sh); упал любой
 #      - failure. Отметку читает хук pre-push репозиториев: пуш в рабочую ветку без зелёного check-wip на этом sha отклоняется.
@@ -111,6 +113,77 @@ jobs:
       contents: write
       actions: write
 
+  # Сухой прогон вычисления версий теста на свежих данных GitHub: ТОЧНО тот же код, что у deploy-test (ci/test-server-version.sh) и у шага «Test build target»
+  # client.yml (ci/qa-version.sh), без выкладки: метки server-deployed, образ боя, живой манифест боя и запись о стенде только читаются, во временный файл
+  # считается и запись о выкате (ci/test-stand.py record). Права только на чтение, publish не вызывается. Красное здесь - красное и у настоящего deploy-test.
+  # Образ берётся у головы рабочей ветки сервера (у wip образа нет: check-wip его не собирает); нет проверенного образа - предупреждение, считается по sha головы.
+  test-dry-run:
+    needs: resolve
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: read
+    env:
+      IMAGE: ghcr.io/sperance/ktor-bestgame
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Both repositories with the working branches
+        env:
+          TOKEN: ${{ secrets.SOURCE_TOKEN }}
+        run: |
+          . ci/branches.env
+          bash ci/quiet.sh clone-client bash ci/retry.sh read git clone -q --filter=blob:none --no-checkout "https://x-access-token:$TOKEN@github.com/$CLIENT_REPO.git" cli
+          bash ci/quiet.sh clone-server bash ci/retry.sh read git clone -q --filter=blob:none --no-checkout "https://x-access-token:$TOKEN@github.com/$SERVER_REPO.git" srv
+      - name: Test server version and stand record (dry run)
+        env:
+          SERVER_URL: ${{ vars.SERVER_URL }}
+          CLIENT: ${{ needs.resolve.outputs.client }}
+          SERVER: ${{ needs.resolve.outputs.server }}
+        run: |
+          . ci/branches.env
+          head=$(git -C srv rev-parse "origin/$SERVER_BRANCH")
+          if found=$(bash ci/checked-image.sh "$IMAGE" srv "$head"); then
+            read -r image _ <<<"$found"
+          else
+            echo "::warning::the working branch head ${head:0:12} has no checked image: the dry run counts from the head itself"
+            image=$head
+          fi
+          out="$RUNNER_TEMP/test-version.txt"
+          : > "$out"
+          bash ci/test-server-version.sh version srv "$head" "$image" "$out"
+          name="" k="" base=""
+          while IFS== read -r key value; do
+            case $key in name) name=$value ;; k) k=$value ;; base) base=$value ;; esac
+          done < "$out"
+          TEST_VERSION=$name TEST_K=$k TEST_BASE=$base bash ci/test-server-version.sh record "$RUNNER_TEMP/stand.json" "$CLIENT" "$SERVER" "$image" qa-0
+          echo "test server version (dry run): ${name:-kept from its image}"
+          echo "- test server version: \`${name:-kept from its image}\` (dry run, nothing written)" >> "$GITHUB_STEP_SUMMARY"
+      - name: Test client version (dry run)
+        env:
+          CLIENT: ${{ needs.resolve.outputs.client }}
+        run: |
+          out="$RUNNER_TEMP/qa-version.txt"
+          : > "$out"
+          bash ci/qa-version.sh cli "$CLIENT" "$out"
+          name=$(sed -n 's/^name=//p' "$out")
+          [[ $name =~ ^[0-9]+\.[0-9]+\.[0-9]+_test$ ]] || { echo "::error::the test client version is malformed"; exit 1; }
+          echo "test client version (dry run): $name"
+          echo "- test client version: \`$name\` (dry run, nothing written)" >> "$GITHUB_STEP_SUMMARY"
+      - name: Encrypted log
+        if: failure()
+        uses: ./.github/actions/upload-log
+        with:
+          name: test-dry-run-log
+
   guards:
     needs: resolve
     runs-on: ubuntu-24.04
@@ -177,7 +250,7 @@ jobs:
           name: guards-log
 
   record:
-    needs: [ resolve, server, client, guards ]
+    needs: [ resolve, server, client, guards, test-dry-run ]
     if: ${{ !cancelled() && needs.resolve.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -207,7 +280,7 @@ jobs:
           READ_TOKEN: ${{ secrets.SOURCE_TOKEN }}
           CLIENT: ${{ needs.resolve.outputs.client }}
           SERVER: ${{ needs.resolve.outputs.server }}
-          GREEN: ${{ needs.server.result == 'success' && needs.client.result == 'success' && needs.guards.result == 'success' }}
+          GREEN: ${{ needs.server.result == 'success' && needs.client.result == 'success' && needs.guards.result == 'success' && needs.test-dry-run.result == 'success' }}
           URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           . ci/branches.env

@@ -51,6 +51,7 @@ client/gradle-toolchain* => ci-only: архив JDK и Android SDK для сес
 check-wip/resolve* => ci-only: головы wip обоих репозиториев и закрепление сервера в клиенте
 check-wip/server => ci-only: вызывает server.yml в режиме check-wip, шаги этого workflow выше
 check-wip/client => ci-only: вызывает client.yml в режиме check-wip, шаги этого workflow выше
+check-wip/test-dry-run* => ci-only: сухой прогон версий теста на свежих данных GitHub (метки выката, образ в ghcr, записи стенда), в сессии этих данных нет
 check-wip/guards => ci-only: сторожа накопления заметок, важного текста и вайпов смотрят историю и теги обоих репозиториев
 check-wip/guards/uses:actions/checkout => ci-only: инфраструктура Actions
 check-wip/guards/Both repositories with the working branches => ci-only: клоны обоих репозиториев для сторожей
