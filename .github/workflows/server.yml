@@ -818,7 +818,8 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
-      - name: Still the head of the working branch
+      # Сборка теста приходит с пуша (голова рабочей ветки клиента) или из Check wip (голова wip клиента): годится голова любой из двух
+      - name: Still the head of the working branch or wip
         id: head
         env:
           GH_TOKEN: ${{ github.token }}
@@ -827,8 +828,9 @@ jobs:
           . ci/branches.env
           [[ $TAG =~ ^qa-[0-9]+$ ]] || { echo "::error::'$TAG' is not a test build tag"; exit 1; }
           head=$(GH_TOKEN="$HEAD_TOKEN" bash ci/retry.sh read gh api "repos/$CLIENT_REPO/git/ref/heads/$CLIENT_BRANCH" --jq .object.sha)
+          wip=$(GH_TOKEN="$HEAD_TOKEN" bash ci/retry.sh read gh api "repos/$CLIENT_REPO/git/ref/heads/$WIP_BRANCH" --jq .object.sha 2>/dev/null || true)
           current=true
-          [ "$head" = "$CLIENT_SHA" ] || { echo "a newer push owns the test build: nothing is published"; current=false; }
+          [ "$head" = "$CLIENT_SHA" ] || [ "$wip" = "$CLIENT_SHA" ] || { echo "::warning::${CLIENT_SHA:0:12} is the head of neither the working branch nor wip: a newer push owns the test build, $TAG is not published"; current=false; }
           if bash ci/retry.sh read gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then echo "$TAG is already published"; current=false; fi
           echo "current=$current" >> "$GITHUB_OUTPUT"
       - if: steps.head.outputs.current == 'true'
