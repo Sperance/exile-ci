@@ -48,6 +48,11 @@
 # коммитов> (ExileForge-qa.apk, update.json с mandatory=true и подпись; заметки - номер сборки и пункты «что проверить» из трейлеров `Test-Plan:`), запечатывает
 # их, кладёт карту R8 (mapping.txt.gz после ci/verify-map.py) в приватный предрелиз qa-<n> ExileForge (хранятся карты 5 новейших) и запускает server.yml deploy-test на сервере, закреплённом в клиенте (передаёт ему sha клиента, тег qa и номер своего прогона: по ним deploy-test
 # записывает, что стоит на тесте, - ci/test-stand.sh, а job `qa-publish` ПОСЛЕ удачного выката публикует предрелиз, оставляет 5 новейших и ведёт qa-latest). Переменная пуста - все три job'а пропускаются зелёными. Секреты те же, что у выпуска; новых нет.
+# Запуск других workflow (server.yml deploy и deploy-test, telegram.yml, maintenance.yml store-status) - только через ci/dispatch-wait.sh: вызывающий job ждёт итог запущенного
+# прогона и краснеет, если тот красный (постов в Telegram это не касается: DISPATCH_WAIT_SOFT, предупреждение со ссылкой). Запущенный workflow объявляет вход `caller` и несёт его в run-name.
+# Тупики: `release` (группа release) ждёт server.yml deploy (группы deploy, balance-transfer) и через его refresh-cache - client.yml cache (client-changes-cache, gradle-cache): общих групп
+# и взаимных ожиданий нет, gradle-cache этого прогона стартует только после `release`; `qa-release` (группа client-qa-release) ждёт server.yml deploy-test (группа deploy-test), чей
+# qa-publish скачивает артефакт ещё идущего прогона qa_run (артефакт готов, как только загружен); `store-status` ждёт maintenance.yml store-status (своя группа).
 name: Client
 run-name: Client ${{ inputs.mode || github.event.action }} ${{ inputs.caller }}
 
@@ -861,7 +866,8 @@ jobs:
     needs: [ changes, core, app-fast, app, minified, release-apk, release-aab, release-rustore, sign, emulator, client-server ]
     if: ${{ !cancelled() && needs.changes.outputs.release == 'true' && needs.sign.result == 'success' && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    # Включает ожидание деплоя сервера (до ~25 мин), переноса баланса (15) и обновления кэша Gradle (до 90)
+    timeout-minutes: 180
     outputs:
       tag: ${{ steps.version.outputs.tag }}
     permissions:
@@ -969,24 +975,15 @@ jobs:
           sig=(); [ -s update.json.sig ] && sig=(update.json.sig)
           # player-release
           bash ../ci/retry.sh once gh release create "$TAG" "$APK" update.json "${sig[@]}" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "ExileForge ${TAG#v}" --notes-file RELEASE_NOTES.md --latest
-      # Сервер с новым API ждёт этот релиз: опубликовали - сразу запускаем его деплой (магазины ждут сервер, job'ы publish-* стартуют
-      # после этого job'а), он выкатит проверенный образ головы рабочей ветки сервера. Закрытие Issues и пост идут уже после запуска.
-      - if: steps.version.outputs.exists == 'false'
-        name: Trigger the server deploy
-        env:
-          GH_TOKEN: ${{ github.token }}
-          FORCE: ${{ inputs.force_breaking || false }}
-          SKIP_TEST: ${{ inputs.skip_test || false }}
-          TAG: ${{ steps.version.outputs.tag }}
-        run: bash ../ci/retry.sh once gh workflow run server.yml -R "$GITHUB_REPOSITORY" --ref main -f mode=deploy -f force_breaking="$FORCE" -f skip_test="$SKIP_TEST" -f version="${TAG#v}"
-      # Пост с заметками в группу Telegram (telegram.yml). Не запустился - релиз не держит: повторить можно через Release → telegram.
+      # Пост с заметками в группу Telegram (telegram.yml). Не запустился или упал - релиз не держит (предупреждение со ссылкой): повторить можно через Release → telegram.
       - if: steps.version.outputs.exists == 'false'
         name: Announce in Telegram
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.version.outputs.tag }}
-        run: bash ../ci/retry.sh once gh workflow run telegram.yml -R "$GITHUB_REPOSITORY" --ref main -f tag="$TAG"
+          DISPATCH_WAIT_SOFT: '1'
+        run: bash ../ci/dispatch-wait.sh telegram.yml main -f tag="$TAG"
       # Issues, что чинит релиз: коммиты клиента с прошлого релиза, что называют трейлером `Issue: #N`, и коммиты сервера между
       # закреплёнными в клиенте серверами прошлого и этого релиза с трейлером `Refs <репо клиента>#N` (история backend/ нужна целиком) -
       # Issue получает метку версии и закрывается выполненным, без комментария; игра увидит это синхронизацией сервера.
@@ -1014,6 +1011,19 @@ jobs:
           bash ci/quiet.sh report-direct python3 ci/store-status.py direct update.json || code=$?
           cat "$PUBLIC_NOTES" 2>/dev/null || true
           exit $code
+      # Сервер с новым API ждёт этот релиз: деплой проверенного образа головы рабочей ветки сервера (server.yml, режим deploy) запускается последним шагом
+      # job'а, когда пост, Issues и отчёт канала уже сделаны, и job ДОЖИДАЕТСЯ его итога: красный деплой, баланс или обновление кэша - красный release
+      # (job'ы publish-* и gradle-cache после него не стартуют). Тупика нет: job держит группу `release`, деплой сервера идёт в группах deploy и
+      # balance-transfer, обновление кэша - client.yml cache в группах client-changes-cache и gradle-cache (ни одна не общая с `release`; gradle-cache
+      # этого же прогона стартует только после release).
+      - if: steps.version.outputs.exists == 'false'
+        name: Deploy the server and wait for it
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORCE: ${{ inputs.force_breaking || false }}
+          SKIP_TEST: ${{ inputs.skip_test || false }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: bash ../ci/dispatch-wait.sh server.yml main -f mode=deploy -f force_breaking="$FORCE" -f skip_test="$SKIP_TEST" -f version="${TAG#v}"
       - name: Encrypted log
         if: failure()
         uses: ./.github/actions/upload-log
@@ -1138,7 +1148,8 @@ jobs:
     needs: [ changes, qa-sign ]
     if: ${{ !cancelled() && needs.qa-sign.result == 'success' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    # Включает ожидание deploy-test сервера: образ до 12 мин, выкат 25, публикация qa-publish 15 и test-base 15
+    timeout-minutes: 90
     permissions:
       contents: write
       actions: write
@@ -1249,13 +1260,13 @@ jobs:
           retention-days: 2
           if-no-files-found: error
       - if: steps.head.outputs.current == 'true'
-        name: Trigger the test server deploy
+        name: Deploy the test server and wait for it
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           pin=$(git -C src ls-tree "$SHA" backend | awk '{print $3}')
           [[ $pin =~ ^[0-9a-f]{40}$ ]] || { echo "::error::the client commit pins no server in backend/"; exit 1; }
-          bash ci/retry.sh once gh workflow run server.yml -R "$GITHUB_REPOSITORY" --ref main -f mode=deploy-test -f sha="$pin" -f client_sha="$SHA" -f qa_tag="$TAG" -f qa_run="$GITHUB_RUN_ID"
+          bash ci/dispatch-wait.sh server.yml main -f mode=deploy-test -f sha="$pin" -f client_sha="$SHA" -f qa_tag="$TAG" -f qa_run="$GITHUB_RUN_ID"
       - name: Encrypted log
         if: failure()
         uses: ./.github/actions/upload-log
@@ -1410,14 +1421,18 @@ jobs:
     needs: [ changes, release, publish-play, publish-rustore ]
     if: ${{ !cancelled() && needs.release.result == 'success' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 25
     permissions:
       actions: write
+      contents: read
     steps:
-      - name: Run the store status task
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Run the store status task and wait for it
         env:
           GH_TOKEN: ${{ github.token }}
-        run: bash ci/retry.sh once gh workflow run maintenance.yml -R "$GITHUB_REPOSITORY" --ref main -f task=store-status
+        run: bash ci/dispatch-wait.sh maintenance.yml main -f task=store-status
 
   # Архивы для облачных сессий агента - prerelease `gradle-cache` приватного ExileForge (не latest: игра, update.json и релизы
   # версий его не видят); сессия распаковывает их хуками .claude/hooks/gradle-cache.sh и toolchain.sh клиента:

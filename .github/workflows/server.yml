@@ -41,6 +41,10 @@
 # Trivy (зависимости и образ сервера) здесь не идёт: раз в неделю его гоняет задача `scan` maintenance.yml.
 # Секреты: SOURCE_TOKEN, DEPLOY_HOST, DEPLOY_SSH_KEY, GH_ISSUES_TOKEN (deploy-test: DEPLOY_SSH_KEY_TEST вместо DEPLOY_SSH_KEY; оба ключа - только jobs `balance` и `test-base`). Переменные: VPS_HOST_KEY, LOG_AGE_RECIPIENT, TEST_SERVER_URL (только deploy-test).
 # Пакету в GHCR выдан доступ этого репозитория (Package settings - Manage Actions access - Write).
+# Запуск других workflow (telegram-important.yml, telegram-server-notes.yml, client.yml cache) - только через ci/dispatch-wait.sh: вызывающий job ждёт итог запущенного прогона и краснеет,
+# если тот красный (посты в Telegram - DISPATCH_WAIT_SOFT, предупреждение со ссылкой). Запущенный workflow объявляет вход `caller` и несёт его в run-name. Тупиков нет: `deploy` (группа deploy)
+# ждёт telegram-important / telegram-server-notes (свои группы); `refresh-cache` (без группы) ждёт client.yml cache (client-changes-cache, gradle-cache), а тот не ждёт ни этот прогон, ни
+# release клиента (job `release` держит группу `release`, которой у cache нет; gradle-cache прогона release стартует только после `release`).
 name: Server
 run-name: Server ${{ inputs.mode || github.event.action }} ${{ inputs.caller }}
 
@@ -458,7 +462,8 @@ jobs:
     needs: [ resolve, image, mark ]
     if: ${{ !cancelled() && needs.resolve.result == 'success' && (needs.resolve.outputs.mode == 'deploy' || (needs.resolve.outputs.mode == 'rebuild' && needs.mark.result == 'success')) }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    # Включает ожидание постов в Telegram (telegram-important, telegram-server-notes)
+    timeout-minutes: 30
     outputs:
       deployed: ${{ steps.client.outputs.ready == 'true' }}
     concurrency:
@@ -593,9 +598,10 @@ jobs:
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
+          DISPATCH_WAIT_SOFT: '1'
         run: |
-          bash ci/retry.sh once gh workflow run telegram-important.yml -R "$GITHUB_REPOSITORY" --ref main -f sha="$SHA" -f version="$VERSION"
-          [ -n "$VERSION" ] || bash ci/retry.sh once gh workflow run telegram-server-notes.yml -R "$GITHUB_REPOSITORY" --ref main
+          bash ci/dispatch-wait.sh telegram-important.yml main -f sha="$SHA" -f version="$VERSION"
+          [ -n "$VERSION" ] || bash ci/dispatch-wait.sh telegram-server-notes.yml main
       - name: Encrypted log
         if: failure()
         uses: ./.github/actions/upload-log
@@ -900,7 +906,8 @@ jobs:
     needs: [ resolve, deploy ]
     if: ${{ !cancelled() && needs.deploy.result == 'success' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    # Включает ожидание client.yml cache (job gradle-cache до 90 минут)
+    timeout-minutes: 110
     permissions:
       contents: read
       actions: write
@@ -923,5 +930,5 @@ jobs:
           sums() { files "$1" | while read -r f; do git -C srv show "$1:$f" | sha256sum; done | sha256sum | cut -c1-16; }
           now=$(sums "$SHA"); old=$(sums "$pin")
           if [ "$now" = "$old" ]; then echo "build files unchanged since the client pin: archive stays"; exit 0; fi
-          bash ci/retry.sh once gh workflow run client.yml -R "$GITHUB_REPOSITORY" -f mode=cache -f server_head=true
-          echo "server build files changed since the client pin: client.yml cache started with the server head"
+          echo "server build files changed since the client pin: client.yml cache starts with the server head"
+          bash ci/dispatch-wait.sh client.yml main -f mode=cache -f server_head=true

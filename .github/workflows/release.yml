@@ -35,6 +35,9 @@
 # Накопление: заметки клиента (RELEASE_NOTES.md, подразделы «Новое / Изменения / Исправления / Техническое») и «Важное» сервера
 # (IMPORTANT.md, темы `### …`) копятся до выпуска; Issues и обязательность читаются по коммитам клиента и сервера с прошлого выпуска.
 # Release → server сам выкладывает новые пункты «[сервер]» в «Обновления» и закрывает Issues серверных коммитов (метка «сервер <дата>»).
+# Запущенные workflow ДОЖИДАЮТСЯ (ci/dispatch-wait.sh): job кнопки заканчивается тогда, когда закончился запущенный прогон, и краснеет, если тот красный; в итоге кнопки видно, как всё прошло.
+# Поэтому timeout-minutes job'ов покрывает весь запущенный прогон. Тупиков нет: у release.yml нет concurrency-групп запущенных workflow, job `client` держит только release-client,
+# а client.yml mode=release / server.yml / telegram*.yml такой группы не используют; job `dispatch` групп не держит.
 name: Release
 
 on:
@@ -67,7 +70,8 @@ jobs:
   dispatch:
     if: ${{ inputs.what != 'client' && inputs.what != 'preview' && inputs.what != 'balance' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 3
+    # Ждёт запущенный прогон: server-rebuild (проверки, образ, деплой, баланс, кэш) и client-shots (эмулятор) самые долгие
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -93,29 +97,30 @@ jobs:
           issues=$(GH_TOKEN=$ISSUES_TOKEN bash ci/test-stand.sh test-issues 2>/dev/null) || issues='?'
           python3 -I ci/test-stand.py report "$file" na "${issues//[[:space:]]/}" "$SKIP_TEST" "$GITHUB_STEP_SUMMARY"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
-      - name: Start the selected workflow
+      - name: Start the selected workflow and wait for it
         env:
           GH_TOKEN: ${{ github.token }}
           WHAT: ${{ inputs.what }}
           SERVER_SHA: ${{ steps.stand.outputs.sha }}
         run: |
           case "$WHAT" in
-            server)         bash ci/retry.sh once gh workflow run server.yml -R "$GITHUB_REPOSITORY" --ref main -f mode=deploy -f sha="$SERVER_SHA" ;;
-            server-rebuild) bash ci/retry.sh once gh workflow run server.yml -R "$GITHUB_REPOSITORY" --ref main -f mode=rebuild -f sha="$SERVER_SHA" ;;
-            client-shots)   bash ci/retry.sh once gh workflow run client.yml -R "$GITHUB_REPOSITORY" --ref main -f mode=shots ;;
-            telegram)       bash ci/retry.sh once gh workflow run telegram.yml -R "$GITHUB_REPOSITORY" --ref main ;;
-            important)      bash ci/retry.sh once gh workflow run telegram-important.yml -R "$GITHUB_REPOSITORY" --ref main ;;
-            server-notes)   bash ci/retry.sh once gh workflow run telegram-server-notes.yml -R "$GITHUB_REPOSITORY" --ref main ;;
+            server)         bash ci/dispatch-wait.sh server.yml main -f mode=deploy -f sha="$SERVER_SHA" ;;
+            server-rebuild) bash ci/dispatch-wait.sh server.yml main -f mode=rebuild -f sha="$SERVER_SHA" ;;
+            client-shots)   bash ci/dispatch-wait.sh client.yml main -f mode=shots ;;
+            telegram)       bash ci/dispatch-wait.sh telegram.yml main ;;
+            important)      bash ci/dispatch-wait.sh telegram-important.yml main ;;
+            server-notes)   bash ci/dispatch-wait.sh telegram-server-notes.yml main ;;
             *) echo "::error::unknown choice '$WHAT'"; exit 1 ;;
           esac
-          echo "started: $WHAT"
+          echo "finished: $WHAT"
 
   # Выпуск клиента: коммит номера версии в рабочую ветку приватного ExileForge и запуск client.yml mode=release на нём. Коммит с
   # темой `feat: release <версия>` проверки пуша пропускают (client.yml, шаг Changed parts), так что петли нет: пуш не выпускает.
   client:
     if: ${{ inputs.what == 'client' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    # Ждёт client.yml mode=release целиком: все проверки с эмулятором, релиз, деплой сервера, баланс, магазины
+    timeout-minutes: 330
     concurrency:
       group: release-client
       cancel-in-progress: false
@@ -252,15 +257,15 @@ jobs:
           git -C src commit -q -m "feat: release $VERSION" -m "Cumulative release: the version number and the notes heading are set when the release is started." -m "$(printf 'Server-Update: yes\nServer-Wipe: no\nVerified: ci'; [ "$MANDATORY" = yes ] && printf '\nUpdate-Mandatory: yes')"
           bash ci/quiet.sh push-client bash ci/retry.sh idem git -C src push -q "https://x-access-token:$TOKEN@github.com/Sperance/ExileForge.git" "HEAD:refs/heads/$CLIENT_BRANCH"
           echo "sha=$(git -C src rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-      - name: Start the release run
+      - name: Start the release run and wait for it
         env:
           GH_TOKEN: ${{ github.token }}
           SHA: ${{ steps.commit.outputs.sha }}
           FORCE: ${{ inputs.force_breaking }}
           SKIP_TEST: ${{ inputs.skip_test }}
         run: |
-          bash ci/retry.sh once gh workflow run client.yml -R "$GITHUB_REPOSITORY" --ref main -f mode=release -f sha="$SHA" -f force_breaking="$FORCE" -f skip_test="$SKIP_TEST"
-          echo "started: release of ${{ steps.version.outputs.version }} at $SHA"
+          echo "starting: release of ${{ steps.version.outputs.version }} at $SHA"
+          bash ci/dispatch-wait.sh client.yml main -f mode=release -f sha="$SHA" -f force_breaking="$FORCE" -f skip_test="$SKIP_TEST"
       - name: Encrypted log
         if: failure()
         uses: ./.github/actions/upload-log
