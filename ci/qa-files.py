@@ -14,6 +14,7 @@
 «что проверить»; раздел `## Следующая версия` RELEASE_NOTES.md в публичный предрелиз не попадает (будущие возможности до выхода не видны).
 Содержимое кода в журнал не выводится. Ошибки - строкой ::error:: и код 1.
 """
+import json
 import os
 import re
 import shutil
@@ -81,20 +82,37 @@ def plan(clone, old, new, target):
     print(f"test plan: {len(items)} item(s)")
 
 
-def notes_of(name, plan_file):
-    items = [line.strip() for line in open(plan_file, encoding="utf-8").read().splitlines() if line.strip()] if plan_file else []
+def changes_of(history_file):
+    if not history_file or history_file == "-":
+        return []
+    with open(history_file, encoding="utf-8") as source:
+        entries = json.load(source).get("notes", [])
+    return [entry["text"] for entry in entries if not entry.get("check")]
+
+
+def notes_of(name, plan_file, history_file=None):
+    items = [line.strip() for line in open(plan_file, encoding="utf-8").read().splitlines() if line.strip()] if plan_file and plan_file != "-" else []
+    changes = changes_of(history_file)
     lines = [f"{NOTES_TITLE} {name}"]
+    if changes:
+        lines += ["", *[f"- {change}" for change in changes]]
     if items:
         lines += ["", PLAN_TITLE, *[f"- {item}" for item in items]]
-    return "\n".join(lines)
+    text = "\n".join(lines)
+    missing = [change for change in changes if f"- {change}" not in text]
+    if missing:
+        update_info.fail(f"update notes lost {len(missing)} change(s) of the test history")
+    return text
 
 
-def release(apk_source, name, code, out, plan_file=None, commit=None):
+def release(apk_source, name, code, out, plan_file=None, commit=None, history_file=None):
     if not code.isdigit():
         update_info.fail(f"versionCode '{code}' is not a number")
     os.makedirs(out, exist_ok=True)
     shutil.copyfile(apk_source, os.path.join(out, APK_NAME))
-    update_info.write(out, int(code), name, APK_NAME, notes_of(name, plan_file), True, commit)
+    notes_text = notes_of(name, plan_file, history_file)
+    update_info.write(out, int(code), name, APK_NAME, notes_text, True, commit)
+    print(f"test update notes: {len(changes_of(history_file))} change(s)")
 
 
 def main():
@@ -103,10 +121,10 @@ def main():
         version(*args[:5], args[5] if len(args) == 6 else "/dev/stdout")
     elif command == "plan" and len(args) == 4:
         plan(*args)
-    elif command == "release" and len(args) in (4, 5, 6):
+    elif command == "release" and len(args) in (4, 5, 6, 7):
         release(*args)
     else:
-        update_info.fail("usage: qa-files.py version <tag> <commits> <sha7> <previous|-> <same|-> [file] | plan <clone> <from|-> <to> <file> | release <apk> <name> <code> <dir> [plan file [sha7]]")
+        update_info.fail("usage: qa-files.py version <tag> <commits> <sha7> <previous|-> <same|-> [file] | plan <clone> <from|-> <to> <file> | release <apk> <name> <code> <dir> [plan file [sha7 [history file]]]")
 
 
 main()

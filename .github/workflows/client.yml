@@ -1200,6 +1200,16 @@ jobs:
           python3 -I ci/qa-files.py plan src "$old" "$SHA" "$RUNNER_TEMP/plan.txt"
           echo "QA_BASE=$old" >> "$GITHUB_ENV"
       - if: steps.head.outputs.current == 'true'
+        name: Test history record
+        env:
+          SOURCE_TOKEN: ${{ secrets.SOURCE_TOKEN }}
+        run: |
+          # Запись этой сборки для истории теста и для заметок её update.json (окно обновления показывает изменения, как в проде).
+          basic=$(printf 'x-access-token:%s' "$SOURCE_TOKEN" | base64 -w0)
+          echo "::add-mask::$basic"
+          export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="http.https://github.com/.extraheader" GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $basic"
+          python3 -I ci/test-history.py record src "$QA_BASE" "$SHA" "$QA_NAME" "$QA_CODE" "$RUNNER_TEMP/plan.txt" "$RUNNER_TEMP/test-update.json"
+      - if: steps.head.outputs.current == 'true'
         name: Test release files
         working-directory: src
         env:
@@ -1208,7 +1218,7 @@ jobs:
         run: |
           . ../ci/build-tasks.env
           bash ../ci/seal.sh -d ../sealed/qa.enc ../signed
-          python3 ../ci/qa-files.py release "../signed/$QA_APK" "$QA_NAME" "$QA_CODE" ../qa "$RUNNER_TEMP/plan.txt" "${SHA:0:7}"
+          python3 ../ci/qa-files.py release "../signed/$QA_APK" "$QA_NAME" "$QA_CODE" ../qa "$RUNNER_TEMP/plan.txt" "${SHA:0:7}" "$RUNNER_TEMP/test-update.json"
           bash ../ci/sign-update.sh ../qa/update.json
       - if: steps.head.outputs.current == 'true'
         name: Private prerelease with the R8 map
@@ -1228,10 +1238,6 @@ jobs:
           # История обновлений теста (#1085): запись этой сборки - новые пункты «Следующей версии» с прошлой тестовой сборки с номерами Issues и пункты
           # Test-Plan - едет маркером <!-- test-update: base64 --> в тело ЭТОГО приватного предрелиза; тестовый сервер читает его тем же ключом, что номера
           # Issues выше. В публичный exile-ci и его журналы пункты не попадают (старые блобы RELEASE_NOTES.md докачиваются с ключом чтения, он замаскирован).
-          basic=$(printf 'x-access-token:%s' "$SOURCE_TOKEN" | base64 -w0)
-          echo "::add-mask::$basic"
-          export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="http.https://github.com/.extraheader" GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $basic"
-          python3 -I ci/test-history.py record src "$QA_BASE" "$SHA" "$QA_NAME" "$QA_CODE" "$RUNNER_TEMP/plan.txt" "$RUNNER_TEMP/test-update.json"
           marker=$(python3 -I ci/test-history.py marker "$RUNNER_TEMP/test-update.json")
           notes=$(printf 'R8 mapping of test build %s\n<!-- issues: %s -->\n%s' "$QA_NAME" "$issues" "$marker")
           if bash ci/retry.sh read gh release view "$TAG" -R "$CLIENT_REPO" >/dev/null 2>&1; then
