@@ -159,6 +159,7 @@ jobs:
           python3 -I ci/guard-test-vps.py
           python3 -I ci/guard-releases.py
           python3 -I ci/guard-test-version.py
+          python3 -I ci/guard-dispatch.py
       - name: Target commit
         id: target
         env:

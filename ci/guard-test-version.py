@@ -11,6 +11,8 @@ import subprocess
 import sys
 import tempfile
 
+import yaml
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 NAME = re.compile(r"^\d+\.\d+\.\d+_test$")
 VERSION_CASES = (
@@ -72,9 +74,21 @@ def check_prod_fallback():
     code, _ = python(stand, "prod-live", stdin="not json")
     if code == 0:
         fail("a broken live prod manifest must not give a test server version")
-    flow = open(os.path.join(HERE, "..", ".github", "workflows", "server.yml"), encoding="utf-8").read()
-    if "no record of a prod server deploy: the test server version cannot be numbered" in flow:
-        fail("deploy-test fails without a prod deploy mark: the test server must fall back to the live prod manifest or its own image version")
+    check_deploy_test_never_stalls()
+
+
+def check_deploy_test_never_stalls():
+    root = os.path.join(HERE, "..")
+    document = yaml.safe_load(open(os.path.join(root, ".github", "workflows", "server.yml"), encoding="utf-8"))
+    script = open(os.path.join(HERE, "test-server-version.sh"), encoding="utf-8").read()
+    for step in document["jobs"]["deploy-test"]["steps"]:
+        text = step.get("run") if isinstance(step.get("run"), str) else ""
+        if re.search(r"no record of a prod|deploy mark|prod deploy|stand record|no record of", text, re.IGNORECASE) and re.search(r"\bexit 1\b", text):
+            fail(f"step '{step.get('name')}' of deploy-test fails with 'exit 1' on a missing prod deploy mark or stand record: the test server must fall back to the live prod manifest or its own image version")
+    if re.search(r"\bexit 1\b|\breturn 1\b", "\n".join(line for line in script.splitlines() if not line.lstrip().startswith("#"))):
+        fail("ci/test-server-version.sh fails with exit 1/return 1: a missing prod deploy mark or stand record must fall back, not stall deploy-test")
+    if "prod-live" not in script:
+        fail("ci/test-server-version.sh lost the fallback to the live prod manifest (test-stand.py prod-live)")
 
 
 def main():

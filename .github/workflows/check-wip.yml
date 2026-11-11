@@ -17,6 +17,7 @@
 #      ci/guard-edge.py - Caddy боя к игре боя не по псевдониму exileforge-prod-game или блок теста не на exileforge-test-game (deploy/test сервера);
 #      ci/guard-releases.py - gh release create без --prerelease (выпуск игрока - с пометкой «# player-release» над командой);
 #      ci/guard-test-version.py - формат версии теста x.y.z_test (клиент и сервер теста), что читает TestVersion: смена формата не ломает молча карты падений и проверку исправлений;
+#      ci/guard-dispatch.py - запуск workflow мимо ci/dispatch-wait.sh (голый gh workflow run) или запускаемый workflow без входа caller в run-name;
 #   3a. test-dry-run: сухой прогон вычисления версий теста на свежих данных GitHub (ci/test-server-version.sh - тот же код, что у deploy-test сервера, и ci/qa-version.sh - как у тестовой
 #      сборки клиента) без выкладки и записи; красное тут - красное и у настоящего deploy-test, поэтому оно роняет и статус check-wip;
 #   4. record: сводка времён job'ов и сторож замедления (ci/check-wip-timing.py: wall прогона > 1,4 медианы последних 10 успешных - предупреждение, не падение);
@@ -216,6 +217,7 @@ jobs:
           python3 -I ci/guard-test-vps.py
           python3 -I ci/guard-releases.py
           python3 -I ci/guard-test-version.py
+          python3 -I ci/guard-dispatch.py
           python3 -I ci/guard-edge.py --snippet "$RUNNER_TEMP/Caddyfile.snippet" --install "$RUNNER_TEMP/install.sh"
       - name: One rules version per release
         env:
