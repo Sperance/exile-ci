@@ -10,10 +10,24 @@
 
 AGE_RECIPIENT_RE='^age1[a-z0-9]{50,}$'
 
-# ensure_age: age нет в образе раннера - ставится из пакетов Ubuntu (подписанные архивы apt), один раз за job.
+# ensure_age: age нет в образе раннера - ставится из выпуска age на GitHub (версия и sha256 закреплены выше, сверка до распаковки), при сбое -
+# из пакетов Ubuntu (подписанные архивы apt); один раз за job. Зеркала Ubuntu у раннеров бывают недоступны часами (DNS).
+AGE_URL=https://github.com/FiloSottile/age/releases/download/v1.2.1/age-v1.2.1-linux-amd64.tar.gz
+AGE_SHA256=7df45a6cc87d4da11cc03a539a7470c15b1041ab2b396af088fe9990f7c79d50
+
+age_from_release() {
+    local dir
+    dir=$(mktemp -d)
+    netcall read curl -fsSL -o "$dir/age.tgz" "$AGE_URL" >/dev/null || return 1
+    echo "$AGE_SHA256  $dir/age.tgz" | sha256sum -c --quiet - || { echo "::error::age archive checksum mismatch"; return 1; }
+    tar -xzf "$dir/age.tgz" -C "$dir" && sudo install -m 0755 "$dir/age/age" /usr/local/bin/age
+}
+
 ensure_age() {
     command -v age >/dev/null 2>&1 && return 0
     . "$(dirname "${BASH_SOURCE[0]}")/retry.sh"
+    age_from_release && return 0
+    echo "::warning::age release download failed, trying apt"
     { netcall read sudo apt-get update -qq && netcall read sudo apt-get install -y -qq age; } >/dev/null 2>&1 || { echo "::error::cannot install age"; return 1; }
 }
 
