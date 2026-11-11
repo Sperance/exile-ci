@@ -12,7 +12,7 @@
 # закреплён в vars.VPS_HOST_KEY, StrictHostKeyChecking=yes. Секреты: DEPLOY_HOST, DEPLOY_SSH_KEY; переменные: VPS_HOST_KEY,
 # LOG_AGE_RECIPIENT.
 #
-# test-status, test-reset, test-reset-all (job `test`) - тестовый проект на том же VPS (/opt/exileforge-test, vars.TEST_SERVER_URL): ключ DEPLOY_SSH_KEY_TEST
+# test-status, test-logs [N], test-reset, test-reset-all (job `test`) - тестовый проект на том же VPS (/opt/exileforge-test, vars.TEST_SERVER_URL): ключ DEPLOY_SSH_KEY_TEST
 # привязан к update.sh этого проекта, поэтому команды достают только тестовый стенд, боевую установку - никогда (сторож ci/guard-test-vps.py).
 # test-status - состояние стенда; test-reset - сносит тестовую базу, КРОМЕ кодов приглашений и аккаунтов (герои и баланс теста уходят), и поднимает стенд; нужен ввод
 # confirm = RESET. test-reset-all - сносит ВСЁ, приглашения и аккаунты тоже; нужен ввод confirm = RESET-ALL. Копий базы у теста нет. Без переменной TEST_SERVER_URL job пропускается зелёным. Вывод - в зашифрованный журнал.
@@ -56,7 +56,7 @@ on:
       command:
         description: 'update.sh on the server (rules-md/server/vps-maintenance.md): status, logs, restart, health, backup, prune, upgrade, reboot; db-export - weekly encrypted DB copy into an ExileForge release; restore - DB from a copy (owner approval); art, art-backup - pictures; test-status, test-reset, test-reset-all - the test project (test-reset wipes the test database but keeps invite codes and accounts, test-reset-all wipes everything; both then take the prod balance as the base); test-base - the prod balance snapshot as the base of the test project'
         type: choice
-        options: [ status, logs, restart, health, backup, prune, upgrade, reboot, db-export, restore, repo-mirror, art, art-backup, test-status, test-reset, test-reset-all, test-base ]
+        options: [ status, logs, restart, health, backup, prune, upgrade, reboot, db-export, restore, repo-mirror, art, art-backup, test-status, test-logs, test-reset, test-reset-all, test-base ]
         default: status
       restore_from:
         description: 'restore: a copy on the VPS (daily|deploy|pre/db-YYYYMMDD-HHMMSS.archive.gz, see status) or a weekly release tag db-YYYYMMDD-HHMMSS'
@@ -133,7 +133,7 @@ jobs:
           name: vps-${{ inputs.command || 'backup' }}
 
   test:
-    if: ${{ github.event_name == 'workflow_dispatch' && contains(fromJSON('["test-status","test-reset","test-reset-all"]'), inputs.command) && vars.TEST_SERVER_URL != '' }}
+    if: ${{ github.event_name == 'workflow_dispatch' && contains(fromJSON('["test-status","test-logs","test-reset","test-reset-all"]'), inputs.command) && vars.TEST_SERVER_URL != '' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     concurrency:
@@ -152,10 +152,12 @@ jobs:
           LOG_AGE_RECIPIENT: ${{ vars.LOG_AGE_RECIPIENT }}
           COMMAND: ${{ inputs.command }}
           CONFIRM: ${{ inputs.confirm }}
+          LINES: ${{ inputs.lines }}
         run: |
           [[ -n $HOST && -n $KEY && -n $LOG_AGE_RECIPIENT ]] || { echo '::error::DEPLOY_HOST, DEPLOY_SSH_KEY_TEST or LOG_AGE_RECIPIENT is not set'; exit 1; }
           case $COMMAND in
             test-status) line=status ;;
+            test-logs) [[ $LINES =~ ^[0-9]{1,4}$ ]] && ((LINES >= 1)) || { echo '::error::lines must be 1-5000'; exit 1; }; line="logs $LINES" ;;
             test-reset)
               [[ $CONFIRM == RESET ]] || { echo '::error::test-reset wipes the test database: type RESET in the confirm input'; exit 1; }
               line=reset ;;
