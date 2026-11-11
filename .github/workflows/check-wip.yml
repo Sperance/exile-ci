@@ -3,8 +3,9 @@
 #   1. resolve: головы wip обоих репозиториев; сервер, закреплённый в клиенте (backend/), обязан быть головой wip сервера - иначе красное
 #      с понятным сообщением (клиент пока закрепляет не тот сервер, что проверяется);
 #   2. server.yml и client.yml как вызываемые workflow в режиме check-wip: те же ворота, что у пуша кода, но все, а не по разнице
-#      (клиент: core, app, R8-сборки и эмулятор, контракт с сервером; сервер: проверки, панель в браузере, совместимость со старейшим
-#      клиентом). Образ в ghcr не собирается и не метится, выпуска и деплоя нет;
+#      (клиент: core, app, контракт с сервером; сервер: проверки, панель в браузере, совместимость со старейшим клиентом). R8-сборки и эмулятор -
+#      только при выпуске. Сервер параллельно собирает образ и после зелёных проверок метит его тегом :<sha> (без тега ветки); клиент параллельно
+#      собирает и подписывает тестовый APK (qa-apk, qa-sign), если код отличается от стоящего на тесте. Выпуска и боевого деплоя нет;
 #   3. guards (идёт ПЕРВЫМ после resolve: server и client ждут его, красное из дешёвых сторожей приходит за минуту, а не после полной загрузки раннеров;
 #      зелёный путь дольше на ~15 с): версия правил за выпуск (ci/rules-step.py: RULES_VERSION не выше правил последнего релиза клиента + 1), накопление не потеряно (ci/release_state.py check): (а) строки невыпущенной «Следующей версии» RELEASE_NOTES.md и
 #      неопубликованного IMPORTANT.md рабочей ветки есть на wip (перенос между подразделами - не удаление), иначе нужен трейлер
@@ -18,8 +19,12 @@
 #      ci/guard-releases.py - gh release create без --prerelease (выпуск игрока - с пометкой «# player-release» над командой);
 #      ci/guard-test-version.py - формат версии теста x.y.z_test (клиент и сервер теста), что читает TestVersion: смена формата не ломает молча карты падений и проверку исправлений;
 #      ci/guard-dispatch.py - запуск workflow мимо ci/dispatch-wait.sh (голый gh workflow run) или запускаемый workflow без входа caller в run-name;
+#      ci/docs-only.py parity - список «только документы» exile-ci разошёлся с scripts/docs-only.sh сервера (хук pre-push и precheck);
 #   3a. test-dry-run: сухой прогон вычисления версий теста на свежих данных GitHub (ci/test-server-version.sh - тот же код, что у deploy-test сервера, и ci/qa-version.sh - как у тестовой
 #      сборки клиента) без выкладки и записи; красное тут - красное и у настоящего deploy-test, поэтому оно роняет и статус check-wip;
+#   3b. test: всё зелёное - client.yml в режиме test-wip выкатывает тест из этого прогона: файлы предрелиза qa-<n> из APK этого прогона, server.yml
+#      deploy-test на образе :<sha> сервера wip, публикация qa-<n> после выката. Пуш того же кода в рабочие ветки тест не пересобирает (qa-<n> уже есть),
+#      а сервер берёт уже собранный образ. Статус check-wip от выката теста не зависит: record его не ждёт;
 #   4. record: сводка времён job'ов и сторож замедления (ci/check-wip-timing.py: wall прогона > 1,4 медианы последних 10 успешных - предупреждение, не падение);
 #      оба зелёные - на sha клиента и sha сервера кладётся commit status «check-wip» = success (ci/check-wip-status.sh); упал любой
 #      - failure. Отметку читает хук pre-push репозиториев: пуш в рабочую ветку без зелёного check-wip на этом sha отклоняется.
@@ -117,7 +122,7 @@ jobs:
   # Сухой прогон вычисления версий теста на свежих данных GitHub: ТОЧНО тот же код, что у deploy-test (ci/test-server-version.sh) и у шага «Test build target»
   # client.yml (ci/qa-version.sh), без выкладки: метки server-deployed, образ боя, живой манифест боя и запись о стенде только читаются, во временный файл
   # считается и запись о выкате (ci/test-stand.py record). Права только на чтение, publish не вызывается. Красное здесь - красное и у настоящего deploy-test.
-  # Образ берётся у головы рабочей ветки сервера (у wip образа нет: check-wip его не собирает); нет проверенного образа - предупреждение, считается по sha головы.
+  # Образ берётся у головы рабочей ветки сервера (образ wip собирается в этом же прогоне и к сухому прогону не готов); нет проверенного образа - предупреждение, считается по sha головы.
   test-dry-run:
     needs: resolve
     runs-on: ubuntu-24.04
@@ -213,6 +218,7 @@ jobs:
           bash ci/retry.sh read git -C srv show "$SERVER:deploy/test/Caddyfile.snippet" > "$RUNNER_TEMP/Caddyfile.snippet"
           bash ci/retry.sh read git -C srv show "$SERVER:deploy/test/install.sh" > "$RUNNER_TEMP/install.sh"
           bash ci/retry.sh read git -C srv show "$SERVER:deploy/update.sh" > "$RUNNER_TEMP/update.sh"
+          bash ci/retry.sh read git -C srv show "$SERVER:scripts/docs-only.sh" > "$RUNNER_TEMP/docs-only.sh"
           python3 -I ci/guard-network.py
           python3 -I ci/guard-parity.py --client-precheck "$RUNNER_TEMP/precheck-client.sh" --server-precheck "$RUNNER_TEMP/precheck-server.sh"
           python3 -I ci/guard-test-vps.py
@@ -220,6 +226,7 @@ jobs:
           python3 -I ci/guard-test-version.py --update-sh "$RUNNER_TEMP/update.sh"
           python3 -I ci/guard-dispatch.py
           python3 -I ci/guard-edge.py --snippet "$RUNNER_TEMP/Caddyfile.snippet" --install "$RUNNER_TEMP/install.sh"
+          python3 -I ci/docs-only.py parity "$RUNNER_TEMP/docs-only.sh"
       - name: One rules version per release
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -251,6 +258,19 @@ jobs:
         uses: ./.github/actions/upload-log
         with:
           name: guards-log
+
+  # Выкат теста из этого прогона: только когда всё зелёное. Нечего выкатывать (код клиента тот же, что на тесте) - client.yml ничего не делает.
+  test:
+    needs: [ resolve, server, client, guards, test-dry-run ]
+    if: ${{ !cancelled() && needs.server.result == 'success' && needs.client.result == 'success' && needs.guards.result == 'success' && needs.test-dry-run.result == 'success' }}
+    uses: ./.github/workflows/client.yml
+    with:
+      mode: test-wip
+      sha: ${{ needs.resolve.outputs.client }}
+    secrets: inherit
+    permissions:
+      contents: write
+      actions: write
 
   record:
     needs: [ resolve, server, client, guards, test-dry-run ]

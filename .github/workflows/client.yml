@@ -9,7 +9,7 @@
 #
 # Запуск:
 #   repository_dispatch client-push - пуш в рабочую ветку клиента (job `forward` в android.yml ExileForge): sha и before. ТОЛЬКО
-#                                     проверки затронутого (с R8-сборками и эмулятором, если задет код), без релиза: выпуски накопительные (заметки копятся в RELEASE_NOTES.md
+#                                     проверки затронутого (R8-сборки и эмулятор - только при выпуске и снимках), без релиза: выпуски накопительные (заметки копятся в RELEASE_NOTES.md
 #                                     под `## Следующая версия`, номер версии в работах не трогается). Коммит выпуска `feat: release
 #                                     <версия>` (его делает release.yml) проверки пуша пропускает: те же проверки идут в режиме release,
 #                                     кроме тех, что уже были зелёными на том же коде (метка «зелёное дерево», ci/green-tree.sh);
@@ -17,9 +17,10 @@
 #                                     коммита (его запускает Release → client после коммита номера версии, руками не запускать);
 #                                     shots - UI-тесты на эмуляторе и картинки магазина (StoreShotsTest), без релиза;
 #                                     stores - заново выложить выпущенную версию в магазины; cache - только архивы для облачных
-#                                     сессий агента (job `gradle-cache`); check-wip - все проверки как у пуша кода (core, app, R8-сборки,
-#                                     эмулятор, контракт с сервером), не по разнице, без релиза: его зовёт check-wip.yml как вызываемый
-#                                     workflow на текущем wip клиента (см. там).
+#                                     сессий агента (job `gradle-cache`); check-wip - все проверки как у пуша кода (core, app, контракт с
+#                                     сервером), не по разнице, без релиза, и параллельно тестовый APK (qa-apk, qa-sign): его зовёт check-wip.yml
+#                                     как вызываемый workflow на текущем wip клиента; test-wip - выкат теста тем же прогоном check-wip.yml после
+#                                     всех зелёных ворот (qa-release с артефактом этого прогона; ворота не повторяются).
 # Релиз (только режим release): versionName без релиза в exile-ci после зелёных проверок - тег v<версия> здесь с APK, update.json и заметками
 # RELEASE_NOTES.md (их читает игра, Updates.kt); карты R8 (mapping.txt прямого APK, mapping-play.txt и mapping-rustore.txt магазинов) - только в релиз того же тега приватного ExileForge
 # (её качает сервер, ReleaseMappings). Сразу после публикации запускается деплой сервера (server.yml, режим deploy), затем Issues, что называют
@@ -37,14 +38,16 @@
 # Ручной режим stores - заново собрать и выложить в Google Play и RuStore уже выпущенную версию (без проверок и релиза здесь).
 # Архивы для облачных сессий агента (job'ы `gradle-cache` и `gradle-toolchain`, в конце файла) пересобираются, только когда меняется
 # ключ (хэш файлов сборки) или кнопкой (режим cache).
-# Пуш после Check wip: commit status `check-wip` = success на том же sha (его кладёт check-wip.yml, пуш в рабочую ветку - fast-forward из wip)
-# пропускает все ворота пуша (core, app, R8-сборки и эмулятор, контракт с сервером); метки зелёного дерева при этом ставятся. Нет статуса - ворота идут.
+# Пуш после Check wip: commit status `check-wip` = success на том же sha или на предке, после которого менялись только документы (ci/docs-only.py;
+# его кладёт check-wip.yml, пуш в рабочую ветку - fast-forward из wip) пропускает все ворота пуша (core, app, контракт с сервером); метки зелёного
+# дерева при этом ставятся, кроме ui: R8-сборки и эмулятор идут при выпуске. Нет статуса - ворота идут.
 # Зелёные деревья: пуш (и ручной push) после успешных ворот кладёт в кэш Actions пустую метку `client-green-<дерево>-<ворота>` (дерево -
 # ci/green-tree.sh: код без RELEASE_NOTES.md и номера версии). Режим release ищет метки и пропускает ворота, чей код уже был зелёным;
 # метки нет - ворота идут как обычно. Метка живёт в кэше Actions (до 7 суток без обращений).
-# Тестовая сборка (flavor qa, vars.TEST_SERVER_URL): после зелёных ворот пуша (режим push), если менялся код клиента или пин backend/ (любой файл,
-# кроме .md, audit/, .claude/ и номера версии; ci/test-stand.py code-changed - пуш только с документами сборку не запускает) и sha - голова рабочей ветки,
-# job `qa-apk` собирает qa-вариант (R8, одноразовый ключ; карта R8 едет запечатанной вместе с APK), `qa-sign` подписывает его ключом релиза, `qa-release` готовит файлы предрелиза qa-<число
+# Тестовая сборка (flavor qa, vars.TEST_SERVER_URL): обычно её собирает и выкатывает Check wip (режимы check-wip и test-wip, sha - голова wip), пуш того
+# же кода её не повторяет (предрелиз qa-<n> уже есть); пуш (режим push, sha - голова рабочей ветки) собирает её сам, если код клиента или пин backend/
+# отличается от стоящего на тесте (новейший qa-<n>; любой файл, кроме .md, audit/, .claude/ и номера версии; ci/test-stand.py code-changed).
+# Job `qa-apk` (параллельно с воротами) собирает qa-вариант (R8, одноразовый ключ; карта R8 едет запечатанной вместе с APK), `qa-sign` подписывает его ключом релиза, `qa-release` готовит файлы предрелиза qa-<число
 # коммитов> (ExileForge-qa.apk, update.json с mandatory=true и подпись; заметки - номер сборки и пункты «что проверить» из трейлеров `Test-Plan:`), запечатывает
 # их, кладёт карту R8 (mapping.txt.gz после ci/verify-map.py) в приватный предрелиз qa-<n> ExileForge (хранятся карты 5 новейших) и запускает server.yml deploy-test на сервере, закреплённом в клиенте (передаёт ему sha клиента, тег qa и номер своего прогона: по ним deploy-test
 # записывает, что стоит на тесте, - ci/test-stand.sh, а job `qa-publish` ПОСЛЕ удачного выката публикует предрелиз, оставляет 5 новейших и ведёт qa-latest). Переменная пуста - все три job'а пропускаются зелёными. Секреты те же, что у выпуска; новых нет.
@@ -109,6 +112,7 @@ permissions:
 
 env:
   CLIENT_REPO: Sperance/ExileForge
+  SERVER_REPO: Sperance/ktor-bestgame
   # Открытые ключи age (ci/crypt.sh) для журналов и артефактов: общие для всех job'ов.
   LOG_AGE_RECIPIENT: ${{ vars.LOG_AGE_RECIPIENT }}
   SEAL_AGE_RECIPIENT: ${{ vars.SEAL_AGE_RECIPIENT }}
@@ -128,6 +132,7 @@ jobs:
       cancel-in-progress: true
     outputs:
       sha: ${{ steps.target.outputs.sha }}
+      mode: ${{ steps.target.outputs.mode }}
       core: ${{ steps.diff.outputs.core }}
       app: ${{ steps.diff.outputs.app }}
       code: ${{ steps.diff.outputs.code }}
@@ -138,8 +143,9 @@ jobs:
       trusted: ${{ steps.green.outputs.trusted }}
       release: ${{ steps.release.outputs.pending }}
       shots: ${{ steps.target.outputs.mode == 'shots' }}
-      # R8-сборки и эмулятор: выпуск, снимки и каждый пуш, что задел core, app или сервер - зелёный пуш значит, что выпуск пройдёт
-      ui: ${{ (steps.target.outputs.mode == 'release' || steps.target.outputs.mode == 'shots' || steps.target.outputs.mode == 'check-wip' || (steps.target.outputs.mode == 'push' && (steps.diff.outputs.core == 'true' || steps.diff.outputs.app == 'true'))) && steps.green.outputs.skip_ui != 'true' }}
+      # R8-сборки и эмулятор: только выпуск и снимки (решение владельца: пуш и check-wip их не ждут - тестовый APK собирается без них; ошибка R8
+      # всплывёт в qa-apk, он тоже R8)
+      ui: ${{ (steps.target.outputs.mode == 'release' || steps.target.outputs.mode == 'shots') && steps.green.outputs.skip_ui != 'true' }}
       stores: ${{ steps.release.outputs.stores }}
       cache: ${{ steps.target.outputs.mode == 'cache' }}
       qa: ${{ steps.qa.outputs.build }}
@@ -169,7 +175,7 @@ jobs:
           INPUT_MODE: ${{ inputs.mode }}
           INPUT_SHA: ${{ inputs.sha }}
           TOKEN: ${{ secrets.SOURCE_TOKEN }}
-        run: . ci/branches.env && bash ci/resolve.sh "$CLIENT_REPO" "$CLIENT_BRANCH" client push release shots stores cache check-wip
+        run: . ci/branches.env && bash ci/resolve.sh "$CLIENT_REPO" "$CLIENT_BRANCH" client push release shots stores cache check-wip test-wip
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: ${{ env.CLIENT_REPO }}
@@ -219,16 +225,21 @@ jobs:
           echo "code tree $tree"
           trusted=false
           if [ "$MODE" = push ]; then
-            # Пуш в рабочую ветку - fast-forward из wip, sha тот же, что прошёл Check wip: commit status `check-wip` = success на этом sha
-            # значит, все ворота уже зелёные на этом коде, и они пропускаются. Статуса нет или он не success - ворота идут как обычно; статус не
-            # прочитался - то же, но с предупреждением и строкой в сводке job (ci/check-wip-read.sh), а не молча.
-            state=$(TOKEN="$STATUS_TOKEN" bash ../ci/check-wip-read.sh "$CLIENT_REPO" "$SHA")
-            echo "check-wip status of ${SHA:0:12}: $state"
-            if [ "$state" = success ]; then
+            # Пуш в рабочую ветку - fast-forward из wip: commit status `check-wip` = success на этом sha или на предке, после которого менялись только
+            # документы (ci/docs-only.py trusted; пин сервера, сдвинутый только документами, - тоже), значит, все ворота уже зелёные на этом коде, и они
+            # пропускаются. Статуса нет или он не success - ворота идут как обычно; статус не прочитался - то же, но с предупреждением и строкой в сводке
+            # job (ci/check-wip-read.sh), а не молча.
+            . ../ci/branches.env
+            if base=$(TOKEN="$STATUS_TOKEN" python3 -I ../ci/docs-only.py trusted client "$CLIENT_REPO" "$SHA" --server-repo "$SERVER_REPO"); then
               trusted=true
               for gate in core app ui server; do echo "skip_$gate=true" >> "$GITHUB_OUTPUT"; done
-              echo "all gates are skipped: this commit was checked by Check wip"
+              echo "all gates are skipped: Check wip passed ${base:0:12}${base:+, after it only documents changed}"
+            else
+              echo "no green check-wip on ${SHA:0:12} or on a documents-only ancestor: the gates run"
             fi
+          elif [ "$MODE" = test-wip ]; then
+            # Выкладка теста из Check wip (job test check-wip.yml): ворота этого кода уже зелёные в том же прогоне, здесь - только файлы и выкат теста
+            for gate in core app ui server; do echo "skip_$gate=true" >> "$GITHUB_OUTPUT"; done
           fi
           echo "trusted=$trusted" >> "$GITHUB_OUTPUT"
           if [ "$MODE" = release ]; then
@@ -263,8 +274,12 @@ jobs:
           fi
           { echo "pending=$pending"; echo "stores=$stores"; echo "tag=v$version"; } >> "$GITHUB_OUTPUT"
           echo "v$version: release pending=$pending, stores=$stores"
-      # Тестовая сборка: только пуш с изменённым кодом клиента, sha которого - голова рабочей ветки, и только при заданном адресе тестового
-      # сервера. Версия: <последний боевой тег + k patch>_test, k - порядковый номер тестового обновления после тега (ci/qa-files.py version: прошлая версия - из qa-latest, повтор той же сборки - из её предрелиза qa-<n>); число коммитов ветки - и versionCode, и номер предрелиза qa-<n>, в строку версии не входит.
+      # Тестовая сборка: пуш (sha - голова рабочей ветки) или Check wip (режимы check-wip и test-wip: sha - голова wip), только при заданном адресе
+      # тестового сервера и только если код клиента или пин backend/ отличается от сборки, что уже стоит на тесте (коммит новейшего предрелиза qa-<n>;
+      # ci/test-stand.py code-changed: .md, audit/, .claude/ и номер версии - не код). Предрелиз qa-<n> этого числа уже есть - сборка этого кода уже
+      # выкачена (Check wip выкатывает тест сам, пуш того же кода её не повторяет). Версия: <последний боевой тег + k patch>_test, k - порядковый номер
+      # тестового обновления после тега (ci/qa-files.py version: прошлая версия - из qa-latest, повтор той же сборки - из её предрелиза qa-<n>);
+      # число коммитов ветки - и versionCode, и номер предрелиза qa-<n>, в строку версии не входит.
       - name: Test build target
         id: qa
         working-directory: src
@@ -278,19 +293,42 @@ jobs:
           APP: ${{ steps.diff.outputs.app }}
           CODE: ${{ steps.diff.outputs.code }}
         run: |
+          . ../ci/branches.env
           build=false
+          case $MODE in
+            push) branch=$CLIENT_BRANCH ;;
+            check-wip | test-wip) branch=$WIP_BRANCH ;;
+            *) branch="" ;;
+          esac
           if [ -z "$TEST_SERVER_URL" ]; then
             echo "TEST_SERVER_URL is not set: no test build"
-          elif [ "$MODE" != push ] || { [ "$CORE" != true ] && [ "$APP" != true ] && [ "$CODE" != true ]; }; then
-            echo "not a push with client code or server pin changes: no test build"
+          elif [ -z "$branch" ]; then
+            echo "not a push or Check wip: no test build"
           else
-            . ../ci/branches.env
-            head=$(GH_TOKEN="$HEAD_TOKEN" bash ../ci/retry.sh read gh api "repos/$CLIENT_REPO/git/ref/heads/$CLIENT_BRANCH" --jq .object.sha)
+            head=$(GH_TOKEN="$HEAD_TOKEN" bash ../ci/retry.sh read gh api "repos/$CLIENT_REPO/git/ref/heads/$branch" --jq .object.sha)
+            prev=$(bash ../ci/retry.sh read gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq '.[] | select(.prerelease) | .tag_name' | grep -E '^qa-[0-9]+$' | sort -t- -k2 -n | tail -1 || true)
+            stand=""
+            if [ -n "$prev" ]; then
+              short=$(bash ../ci/retry.sh read gh release view "$prev" -R "$GITHUB_REPOSITORY" --json body --jq .body | sed -n -e 's/.*commit \([0-9a-f]\{7\}\).*/\1/p' -e 's/.*+\([0-9a-f]\{7\}\) .*/\1/p' | head -1)
+              [ -z "$short" ] || stand=$(git rev-parse --verify --quiet "$short^{commit}" || true)
+            fi
+            if [ -n "$stand" ]; then
+              changed=$(python3 -I ../ci/test-stand.py code-changed . "$stand" "$SHA")
+              echo "test stand: $prev (${stand:0:12}), client code changed since: $changed"
+            elif [ "$MODE" = push ] && [ "$CORE" != true ] && [ "$APP" != true ] && [ "$CODE" != true ]; then
+              changed=false
+            else
+              changed=true
+            fi
+            code=$(git rev-list --count "$SHA")
             if [ "$head" != "$SHA" ]; then
-              echo "${SHA:0:12} is not the head of the working branch: no test build"
+              echo "${SHA:0:12} is not the head of $branch: no test build"
+            elif [ "$changed" != true ]; then
+              echo "the client code on the test stand is the same: no test build"
+            elif bash ../ci/retry.sh read gh release view "qa-$code" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              echo "::warning::qa-$code is already published: this code is already on the test stand (or a rewritten wip reuses the number - the next commit gets a new one)"
             else
               bash ../ci/qa-version.sh . "$SHA" "$GITHUB_OUTPUT"
-              code=$(git rev-list --count "$SHA")
               build=true
               echo "test build $code"
             fi
@@ -842,7 +880,8 @@ jobs:
         with:
           path: green
           key: client-green-${{ env.TREE }}-app
-      - if: ${{ needs.emulator.result == 'success' || needs.changes.outputs.trusted == 'true' }}
+      # R8-сборки и эмулятор идут только при выпуске и снимках: доверие к Check wip их не покрывает
+      - if: ${{ needs.emulator.result == 'success' }}
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: green
@@ -1029,9 +1068,10 @@ jobs:
   # Тестовая сборка клиента (flavor qa, сервер из vars.TEST_SERVER_URL): после зелёных ворот пуша, если код менялся и sha - голова рабочей
   # ветки (выход qa job'а changes). Сборка идёт без секретов, как release-apk: одноразовый ключ, URL тестового сервера и версия - свойствами Gradle.
   # Профиль Gradle (--profile) кладётся зашифрованным артефактом qa-apk-profile на 7 дней - замер, на что уходит время сборки.
+  # Тестовый APK собирается параллельно с воротами (не ждёт их): публикацию и выкат держит qa-release, он ждёт ворота
   qa-apk:
-    needs: [ changes, core, app-fast, app, minified, emulator, client-server ]
-    if: ${{ !cancelled() && needs.changes.outputs.qa == 'true' && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') }}
+    needs: changes
+    if: ${{ needs.changes.outputs.qa == 'true' && needs.changes.outputs.mode != 'test-wip' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     concurrency:
@@ -1138,11 +1178,14 @@ jobs:
   # Файлы тестовой сборки (qa-<число коммитов>): APK, update.json только с номером сборки и пунктами «что проверить» (трейлеры `Test-Plan:` коммитов
   # с прошлой тестовой сборки, ci/qa-files.py plan) и подпись запечатываются в артефакт qa-publish. Сами они НЕ публикуются: предрелиз qa-<n> и
   # постоянный адрес qa-latest выкладывает server.yml job `qa-publish` ТОЛЬКО после удачного выката сервера теста. Здесь - если sha всё ещё голова
-  # рабочей ветки (более новый пуш ведёт свою сборку; порядок номеров сохраняется) и тега ещё нет - запуск деплоя тестового сервера на sha,
-  # закреплённом в этом коммите клиента (server.yml, режим deploy-test), с номером этого прогона.
+  # своей ветки (рабочей у пуша, wip у Check wip; более новый пуш ведёт свою сборку; порядок номеров сохраняется) и тега ещё нет - запуск деплоя
+  # тестового сервера на sha, закреплённом в этом коммите клиента (server.yml, режим deploy-test), с номером этого прогона.
+  # Пуш - после зелёных ворот этого прогона. Check wip: в режиме check-wip job не идёт (APK собран и подписан, серверные проверки ещё идут);
+  # выкат делает режим test-wip того же прогона (job test check-wip.yml) после зелёных серверных и клиентских ворот и сторожей - он берёт
+  # артефакт exile-forge-qa этого прогона.
   qa-release:
-    needs: [ changes, qa-sign ]
-    if: ${{ !cancelled() && needs.qa-sign.result == 'success' }}
+    needs: [ changes, qa-sign, core, app-fast, app, client-server ]
+    if: ${{ !cancelled() && needs.changes.outputs.qa == 'true' && needs.changes.outputs.mode != 'check-wip' && (needs.qa-sign.result == 'success' || needs.changes.outputs.mode == 'test-wip') && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') }}
     runs-on: ubuntu-24.04
     # Включает ожидание deploy-test сервера: образ до 12 мин, выкат 25, публикация qa-publish 15 и test-base 15
     timeout-minutes: 90
@@ -1169,14 +1212,17 @@ jobs:
           fetch-depth: 0
           filter: blob:none
           persist-credentials: false
-      - name: Still the head of the working branch
+      - name: Still the head of its branch
         id: head
         env:
           GH_TOKEN: ${{ github.token }}
           HEAD_TOKEN: ${{ secrets.SOURCE_TOKEN }}
+          MODE: ${{ needs.changes.outputs.mode }}
         run: |
           . ci/branches.env
-          head=$(GH_TOKEN="$HEAD_TOKEN" bash ci/retry.sh read gh api "repos/$CLIENT_REPO/git/ref/heads/$CLIENT_BRANCH" --jq .object.sha)
+          branch=$CLIENT_BRANCH
+          [ "$MODE" = test-wip ] && branch=$WIP_BRANCH
+          head=$(GH_TOKEN="$HEAD_TOKEN" bash ci/retry.sh read gh api "repos/$CLIENT_REPO/git/ref/heads/$branch" --jq .object.sha)
           current=true
           [ "$head" = "$SHA" ] || { echo "a newer push owns the test build: nothing is published"; current=false; }
           if bash ci/retry.sh read gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then echo "$TAG is already published"; current=false; fi

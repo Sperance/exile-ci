@@ -4,9 +4,10 @@
 # шага, полный вывод падения - в зашифрованном артефакте (age, открытый ключ LOG_AGE_RECIPIENT).
 #
 # Запуск:
-#   repository_dispatch server-push   - пуш в рабочую ветку сервера (job `forward` в deploy.yml сервера); если на этом sha уже стоит commit status
-#                                       `check-wip` = success (пуш - fast-forward из wip, прошедшего Check wip), проверки, панель и совместимость
-#                                       пропускаются, остаются образ и метка. Иначе: проверки, браузерная
+#   repository_dispatch server-push   - пуш в рабочую ветку сервера (job `forward` в deploy.yml сервера); если на этом sha или на предке, после которого
+#                                       менялись только документы (ci/docs-only.py), стоит commit status `check-wip` = success (пуш - fast-forward из wip,
+#                                       прошедшего Check wip), проверки, панель и совместимость пропускаются, остаются образ (собранный Check wip на
+#                                       том же sha берётся готовым) и метка. Иначе: проверки, браузерная
 #                                       проверка графиков панели, совместимость со старейшим клиентом окна ревизий (job `compat`)
 #                                       и сборка образа параллельно, затем метка «проверен» на образ (job `mark`). БЕЗ деплоя:
 #                                       выпуски накопительные, сервер выкатывается вместе с выпуском клиента;
@@ -23,7 +24,8 @@
 #                                       что стоит на тесте (ci/test-stand.sh: prerelease `stand-<UTC>` с stand.json: sha клиента, закреплённый
 #                                       сервер, образ, время, база боя и k версии теста) - по записи Release решает, на тесте ли голова. Первый выкат теста (записей ещё нет)
 #                                       один раз переносит боевой слепок баланса на тест (job `test-base`, ci/balance-transfer.sh prod-to-test);
-#   workflow_call (check-wip.yml)     - режим check-wip: проверки, панель и совместимость на текущем wip сервера, БЕЗ образа и деплоя.
+#   workflow_call (check-wip.yml)     - режим check-wip: проверки, панель и совместимость на текущем wip сервера и образ; после зелёных проверок образ
+#                                       метится :<sha> (без тега ветки) - на нём check-wip.yml выкатывает тест (job test). Боевого деплоя нет.
 # После выката сервера с выпуском клиента (job `deploy`, вход version) job `balance` переносит слепок баланса и текстов клиента теста в бой
 # (test-to-prod; отказ, если код различается, - красный); без этого переноса выкат идёт, когда выпуск мимо теста (вход skip_test).
 # После выката (job `deploy`): коммит отмечается тегом server-deployed/<sha> в этом репозитории (от него считаются «с прошлого выката»:
@@ -158,10 +160,10 @@ jobs:
           INPUT_SHA: ${{ inputs.sha }}
           TOKEN: ${{ secrets.SOURCE_TOKEN }}
         run: . ci/branches.env && bash ci/resolve.sh "$SERVER_REPO" "$SERVER_BRANCH" server push deploy rebuild deploy-test check-wip
-      # Пуш в рабочую ветку - fast-forward из wip, sha тот же, что прошёл Check wip: commit status `check-wip` = success на этом sha значит, что
-      # проверки, панель и совместимость уже зелёные на этом коде, и они пропускаются; остаются образ и метка «проверен». Режим rebuild
-      # (Release → server-rebuild) проверки идёт заново всегда. Статуса нет или он не success - всё как обычно; статус не прочитался - то же, но
-      # с предупреждением и строкой в сводке job (ci/check-wip-read.sh), а не молча.
+      # Пуш в рабочую ветку - fast-forward из wip: commit status `check-wip` = success на этом sha или на предке, после которого менялись только документы
+      # (ci/docs-only.py trusted), значит, что проверки, панель и совместимость уже зелёные на этом коде, и они пропускаются; остаются образ (уже
+      # собранный Check wip - берётся готовым) и метка «проверен». Режим rebuild (Release → server-rebuild) проверки идёт заново всегда. Статуса нет или
+      # он не success - всё как обычно; статус не прочитался - то же, но с предупреждением и строкой в сводке job (ci/check-wip-read.sh), а не молча.
       - name: Check wip status
         id: wip
         env:
@@ -171,9 +173,12 @@ jobs:
         run: |
           trusted=false
           if [ "$MODE" = push ]; then
-            state=$(bash ci/check-wip-read.sh "$SERVER_REPO" "$SHA")
-            echo "check-wip status of ${SHA:0:12}: $state"
-            if [ "$state" = success ]; then trusted=true; echo "checks, panel and compat are skipped: this commit was checked by Check wip"; fi
+            if base=$(python3 -I ci/docs-only.py trusted server "$SERVER_REPO" "$SHA"); then
+              trusted=true
+              echo "checks, panel and compat are skipped: Check wip passed ${base:0:12}${base:+, after it only documents changed}"
+            else
+              echo "no green check-wip on ${SHA:0:12} or on a documents-only ancestor: the checks run"
+            fi
           fi
           echo "trusted=$trusted" >> "$GITHUB_OUTPUT"
 
@@ -357,23 +362,41 @@ jobs:
             logs
           if-no-files-found: ignore
 
+  # Образ: пуш, rebuild и Check wip (он выкатывает тест на этот образ). Пуш, чей образ уже собран и помечен Check wip на том же sha, берёт его готовым.
   image:
     needs: resolve
-    if: ${{ (needs.resolve.outputs.mode == 'push' || needs.resolve.outputs.mode == 'rebuild') }}
+    if: ${{ needs.resolve.outputs.mode == 'push' || needs.resolve.outputs.mode == 'rebuild' || needs.resolve.outputs.mode == 'check-wip' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     concurrency:
-      group: server-image
+      group: server-image${{ needs.resolve.outputs.mode == 'check-wip' && '-wip' || '' }}
       cancel-in-progress: true
     permissions:
       contents: read
       packages: write
     outputs:
-      digest: ${{ steps.build.outputs.digest }}
+      digest: ${{ steps.existing.outputs.digest || steps.build.outputs.digest }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Image already built by Check wip
+        id: existing
+        env:
+          MODE: ${{ needs.resolve.outputs.mode }}
+          SHA: ${{ needs.resolve.outputs.sha }}
+        run: |
+          [ "$MODE" = push ] || exit 0
+          if digest=$(docker buildx imagetools inspect "$IMAGE:$SHA" --format '{{.Manifest.Digest}}' 2>/dev/null) && [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "digest=$digest" >> "$GITHUB_OUTPUT"
+            echo "image of ${SHA:0:12} is already built and checked: no rebuild"
+          fi
       # Вся история: patch версии - число коммитов после правки server-version, плюс список изменений в метке образа
-      - uses: ./.github/actions/source
+      - if: steps.existing.outputs.digest == ''
+        uses: ./.github/actions/source
         with:
           repo: ${{ env.SERVER_REPO }}
           sha: ${{ needs.resolve.outputs.sha }}
@@ -384,17 +407,14 @@ jobs:
           fetch-depth: 0
           java: '21'
       # buildkit - с зеркала Google: Docker Hub отвечал таймаутом и toomanyrequests
-      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - if: steps.existing.outputs.digest == ''
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
         with:
           driver-opts: image=mirror.gcr.io/moby/buildkit:buildx-stable-1
-      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
       # Метаданные и сборка - одним шагом: список коммитов (метка образа) не попадает ни в env шага, ни в команду в журнале.
       # Одинаковые библиотеки дают одинаковый слой (время файлов обнулено): VPS докачивает только слой app.
       - name: Build and push the image
+        if: steps.existing.outputs.digest == ''
         id: build
         working-directory: server
         env:
@@ -426,9 +446,10 @@ jobs:
 
   # Метка «проверен» на образ: после зелёных проверок, проверки панели, совместимости со старейшим клиентом окна и образа. Пуш на этом
   # заканчивается (деплой - с выпуском клиента); деплой по голове ветки берёт только помеченный образ.
+  # Check wip метит только :<sha> (тег ветки - у головы рабочей ветки, его ставит пуш того же sha).
   mark:
     needs: [ resolve, checks, panel, compat, image ]
-    if: ${{ !cancelled() && (needs.resolve.outputs.mode == 'push' || needs.resolve.outputs.mode == 'rebuild') && (needs.resolve.outputs.trusted == 'true' || (needs.checks.result == 'success' && needs.panel.result == 'success' && needs.compat.result == 'success')) && needs.image.result == 'success' }}
+    if: ${{ !cancelled() && (needs.resolve.outputs.mode == 'push' || needs.resolve.outputs.mode == 'rebuild' || needs.resolve.outputs.mode == 'check-wip') && (needs.resolve.outputs.trusted == 'true' || (needs.checks.result == 'success' && needs.panel.result == 'success' && needs.compat.result == 'success')) && needs.image.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     concurrency:
@@ -439,6 +460,7 @@ jobs:
       packages: write
     env:
       SHA: ${{ needs.resolve.outputs.sha }}
+      MODE: ${{ needs.resolve.outputs.mode }}
       PUSHED_DIGEST: ${{ needs.image.outputs.digest }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -455,7 +477,9 @@ jobs:
         run: |
           . ci/branches.env
           [[ $PUSHED_DIGEST =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::no image digest from the image job"; exit 1; }
-          docker buildx imagetools create --prefer-index=false -t "$IMAGE:$SHA" -t "$IMAGE:${SERVER_BRANCH//\//-}" "$IMAGE@$PUSHED_DIGEST" >/dev/null
+          tags=(-t "$IMAGE:$SHA")
+          [ "$MODE" = check-wip ] || tags+=(-t "$IMAGE:${SERVER_BRANCH//\//-}")
+          docker buildx imagetools create --prefer-index=false "${tags[@]}" "$IMAGE@$PUSHED_DIGEST" >/dev/null
 
   # Деплой: режим deploy (релиз клиента или вручную) - сразу, по голове ветки; режим rebuild - после метки образа этого прогона.
   # Пуш (режим push) не выкатывает.
