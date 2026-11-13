@@ -1,6 +1,7 @@
-# Обслуживание CI: пять независимых задач, выбор - по расписанию, пушу или входу task при ручном запуске.
+# Обслуживание CI: шесть независимых задач, выбор - по расписанию, пушу или входу task при ручном запуске.
 #   store-status - раз в 6 часов ('17 */6 * * *': 03:17, 09:17, 15:17, 21:17 МСК), сразу после выкладки выпуска (client.yml) и вручную;
 #   cleanup      - раз в сутки ('43 2 * * *') и вручную;
+#   branches     - раз в сутки вместе с cleanup ('43 2 * * *', обход всех черновиков) и вручную (можно по списку, можно с force);
 #   outdated     - раз в неделю ('29 4 * * 1', понедельник) и вручную;
 #   scan         - раз в неделю ('31 3 * * 1', понедельник) и вручную; вместе с ним идёт полный обход панели (job `panel-full`);
 #   doctor       - вручную и на пуш в main, затронувший этот файл (только она).
@@ -31,6 +32,16 @@
 # предупреждением). Переменная LOG_AGE_RECIPIENT. Образы удаляет GITHUB_TOKEN: пакету выдана роль Admin этого репозитория
 # (Package settings - Manage Actions access).
 #
+# Задача branches:
+# Удаляет влитые черновики пакетов `wip-<id>` в ExileForge, ktor-bestgame и exile-ci (ci/branches.py). Имя строго ^wip-[a-z0-9-]+$: `wip`, `main`
+# и рабочие ветки не трогаются никогда. Влитость: `git cherry` черновика против `wip` и против ветки по умолчанию репозитория - коммит считается влитым,
+# если он содержится в ветке или совпадает с её коммитом по patch-id (координатор вливает пакеты cherry-pick'ом, sha другие); остался хоть один -
+# черновик живёт. Входы ручного запуска: drafts - пары `репозиторий:ветка` через пробел (`ExileForge:wip-n8 ktor-bestgame:wip-n8`), пусто - обход всех
+# wip-* трёх репозиториев; force - удалить названные без проверки влития (только с непустым drafts, имя всё равно проверяется).
+# Удаляет EXILEFORGE_TOKEN (ExileForge и ktor-bestgame, Contents: Read and write на обоих) и GITHUB_TOKEN (exile-ci, permissions: contents: write);
+# нет токена или 403/404 - предупреждение со счётчиком, остальные репозитории идут дальше. Читает SOURCE_TOKEN. В журнал и сводку - только счётчики
+# по репозиториям: удалено / оставлено (не влито) / отказано.
+#
 # Задача outdated:
 # Какие зависимости клиента и сервера устарели: раз в неделю и вручную читает каталоги версий gradle/libs.versions.toml ExileForge и
 # ktor-bestgame (скачивается только этот файл) и сверяет версии с последним стабильным выпуском в Maven Central, Google Maven и Gradle
@@ -48,7 +59,7 @@
 #
 # Задача doctor:
 # Проверка секретов, токенов и доступов CI без вывода значений: только «есть / работает / нет». Запуск - вручную
-# (workflow_dispatch) или правкой этого файла (на пуш в main запускается только эта задача). Ничего не меняет, кроме проверочных метки и черновика релиза в ExileForge (сразу удаляются).
+# (workflow_dispatch) или правкой этого файла (на пуш в main запускается только эта задача). Ничего не меняет, кроме проверочных метки и черновика релиза в ExileForge (сразу удаляются); право EXILEFORGE_TOKEN на пуш в ktor-bestgame (задача branches) только читается.
 name: Maintenance
 run-name: Maintenance ${{ inputs.task || github.event_name }} ${{ inputs.caller }}
 
@@ -61,10 +72,18 @@ on:
   workflow_dispatch:
     inputs:
       task:
-        description: 'store-status - report the store channels to the server; cleanup - free the paid GitHub storage and trim the Actions cache; caches - only trim the Actions cache; scan - Trivy over the server head and its checked image (fails on CRITICAL) and the full browser crawl of the panel, every bestiary page (job panel-full); outdated - list the outdated dependencies of client and server (sealed artifact); doctor - check secrets, tokens and access'
+        description: 'store-status - report the store channels to the server; cleanup - free the paid GitHub storage and trim the Actions cache; branches - delete integrated package drafts wip-<id> in the three repositories (inputs drafts, force); caches - only trim the Actions cache; scan - Trivy over the server head and its checked image (fails on CRITICAL) and the full browser crawl of the panel, every bestiary page (job panel-full); outdated - list the outdated dependencies of client and server (sealed artifact); doctor - check secrets, tokens and access'
         type: choice
-        options: [ store-status, cleanup, caches, scan, outdated, doctor ]
+        options: [ store-status, cleanup, branches, caches, scan, outdated, doctor ]
         default: store-status
+      drafts:
+        description: 'Task branches: space-separated repo:branch pairs (ExileForge:wip-n8 ktor-bestgame:wip-n8); empty - sweep all wip-* drafts of the three repositories'
+        required: false
+        default: ''
+      force:
+        description: 'Task branches: delete the named drafts without the merged check (needs drafts; the name must still match wip-<id>)'
+        type: boolean
+        default: false
       caller:
         description: 'Marker of the run that waits for this one (ci/dispatch-wait.sh sets it); empty - started by hand'
         required: false
@@ -180,6 +199,40 @@ jobs:
       - name: Result
         if: steps.artifacts.outcome == 'failure' || steps.images.outcome == 'failure'
         run: exit 1
+
+  # Влитые черновики пакетов wip-<id> (ci/branches.py): единственный job с contents: write на этот репозиторий. Приватные репозитории читает SOURCE_TOKEN,
+  # удаляет в них EXILEFORGE_TOKEN; имена веток в журнал не выводятся.
+  branches:
+    if: ${{ (github.event_name == 'schedule' && github.event.schedule == '43 2 * * *') || (github.event_name == 'workflow_dispatch' && inputs.task == 'branches') }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    timeout-minutes: 15
+    concurrency:
+      group: branches
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Integrated package drafts
+        env:
+          SOURCE_TOKEN: ${{ secrets.SOURCE_TOKEN }}
+          EXILEFORGE_TOKEN: ${{ secrets.EXILEFORGE_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
+          DRAFTS: ${{ inputs.drafts }}
+          FORCE: ${{ inputs.force }}
+          PUBLIC_NOTES: ${{ runner.temp }}/branches.txt
+        run: |
+          code=0
+          bash ci/quiet.sh branches python3 ci/branches.py || code=$?
+          cat "$PUBLIC_NOTES" 2>/dev/null || true
+          exit $code
+      - name: Encrypted log
+        if: failure()
+        uses: ./.github/actions/upload-log
+        with:
+          name: branches-log
 
   # Кэш Actions репозитория: лимит GitHub 10 ГБ, записи gradle-home пишутся на каждый коммит и вытесняют нужные (Playwright, снимок эмулятора).
   # Удаляются записи, не использованные несколько суток, лишние в своём семействе и самые давние сверх бюджета (ci/cleanup.py caches). Единственный job
@@ -509,6 +562,10 @@ jobs:
               && ok "signing keystore opens, alias found" || bad "signing keystore or its password or alias is wrong"
             rm -f "$RUNNER_TEMP/r.jks"
           else echo "WAIT  signing secrets not copied yet (copy them from ExileForge)"; fi
+          # Задача branches удаляет черновики wip-<id> ktor-bestgame этим токеном: нужен Contents: Read and write на ktor-bestgame (читается permissions.push, ничего не меняется)
+          push=$(bash ci/retry.sh read curl -sS -H "Authorization: Bearer $EXILEFORGE_TOKEN" -H "Accept: application/vnd.github+json" https://api.github.com/repos/Sperance/ktor-bestgame \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin).get("permissions",{}).get("push",False))' 2>/dev/null || true)
+          [ "$push" = True ] && ok "EXILEFORGE_TOKEN can push to ktor-bestgame (branches task deletes drafts)" || echo "WAIT  EXILEFORGE_TOKEN cannot push to ktor-bestgame (grant Contents: Read and write; the branches task keeps its drafts)"
           # Чистка хранилища (задача cleanup): без токена пропускает артефакты приватных репозиториев
           [ -n "$CLEANUP_TOKEN" ] && ok "secret CLEANUP_TOKEN is set" || echo "WAIT  secret CLEANUP_TOKEN is not set (cleanup.yml skips old artifacts of private repositories)"
           # Магазины и отчёты о каналах: аккаунтов может ещё не быть - отсутствие не ошибка, канал просто выключен
