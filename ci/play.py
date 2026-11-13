@@ -10,7 +10,7 @@ beta - открытый тест («Ранний доступ» в Play), produc
 
 Запуск (из каталога с распакованным пакетом):
     python3 ci/play.py upload <bundle.aab> <update.json>
-В update.json - versionCode, versionName, notes и mandatory релиза; заметки уходят в ru-RU и режутся до 500 знаков (предел Play),
+В update.json - versionCode, versionName, notes и mandatory релиза; заметки уходят в ru-RU выжимкой до 500 знаков (предел Play; ci/notes.py store_summary: целые пункты «Нового», «Изменений», «Исправлений», остаток - «…и ещё N изменений в игре»),
 обязательный релиз получает inAppUpdatePriority 5.
 """
 import contextlib

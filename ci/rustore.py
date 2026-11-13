@@ -5,6 +5,9 @@
 Нужны пакеты requests и cryptography (.github/actions/store-tools). Пакет приложения - APP_ID из ci/build-tasks.env. Весь вывод
 скрипта перехватывает ci/quiet.sh.
 
+«Что нового» версии - выжимка ci/notes.py store_summary (целые пункты «Нового», «Изменений», «Исправлений», остаток - «…и ещё N изменений в игре») не длиннее
+меньшего из NOTES_LIMIT скрипта (4000) и 500 знаков (store_common.WHATS_NEW_LIMIT, как в Play).
+
 Запуск (из каталога с распакованным APK):
     python3 ci/rustore.py upload <app.apk> <update.json>
 """

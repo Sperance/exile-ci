@@ -115,10 +115,31 @@ def public_items(notes):
             if not is_staff(title, item) and not is_server(item) and not MANDATORY.match(item)]
 
 
-def store_items(notes):
-    """Для короткой выжимки магазинов: пункты «Нового»; нет их - остальные публичные пункты."""
-    first = [item for item in notes.items("Новое") if not is_server(item)]
-    return first or public_items(notes)
+def plural_changes(count):
+    tail, hundreds = count % 10, count % 100
+    if tail == 1 and hundreds != 11:
+        return "изменение"
+    if 2 <= tail <= 4 and not 12 <= hundreds <= 14:
+        return "изменения"
+    return "изменений"
+
+
+def store_summary(text, limit):
+    """Выжимка для «Что нового» магазинов не длиннее limit знаков: публичные пункты (public_items: «Новое», «Изменения», «Исправления»,
+    потом пункты вне подразделов; без «Техническое», пунктов сервера и обязательности) целыми строками «- пункт», пока влезают; не влезло -
+    последней строкой «…и ещё N изменений в игре» (она входит в предел). Пункт не режется: первый невлезший и все после него уходят в N."""
+    items = public_items(parse(text))
+    lines = [f"- {item}" for item in items]
+    full = "\n".join(lines)
+    if len(full) <= limit:
+        return full
+    for kept in range(len(lines) - 1, -1, -1):
+        left = len(lines) - kept
+        tail = f"…и ещё {left} {plural_changes(left)} в игре"
+        candidate = "\n".join(lines[:kept] + [tail])
+        if len(candidate) <= limit:
+            return candidate
+    return tail[:limit]
 
 
 def rewrite_without_empty(text):

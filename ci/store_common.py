@@ -6,7 +6,6 @@
 """
 import json
 import os
-import re
 import sys
 import urllib.error
 from datetime import datetime
@@ -19,6 +18,7 @@ from net import get_json
 REPORT_PATH = "/api/v1/admin/release/channels"
 CHANNELS = ("DIRECT", "PLAY", "RUSTORE")
 RELEASES_SCAN = 30
+WHATS_NEW_LIMIT = 500
 
 
 def say(message):
@@ -41,28 +41,10 @@ def load_update(path):
         return json.load(file)
 
 
-def public_notes(text):
-    """Заметки для магазина (ci/notes.py): первые пункты «Нового» (нет их - остальные публичные), без «Техническое», обязательности
-    и пунктов сервера. Заметки без подразделов (прежний вид) - все пункты, кроме «Техническое: …». В update.json для клиента
-    заметки остаются целиком."""
-    parsed = notes.parse(text)
-    if parsed.items(""):
-        lines = [line for line in re.sub(r"<!--.*?(-->|$)", "", text, flags=re.DOTALL).splitlines()
-                 if not re.match(r"^\s*(?:[-*]\s+)?Техническое:", line)]
-        return "\n".join(lines).strip()
-    return "\n".join(f"- {item}" for item in notes.store_items(parsed))
-
-
 def short_notes(text, limit):
-    """Публичные заметки (public_notes) не длиннее limit знаков: обрезка по границе строки или слова, с многоточием."""
-    text = public_notes(text)
-    if len(text) <= limit:
-        return text
-    cut = text[: limit - 1]
-    boundary = max(cut.rfind("\n"), cut.rfind(" "))
-    if boundary > limit // 2:
-        cut = cut[:boundary]
-    return cut.rstrip() + "…"
+    """«Что нового» магазина: ci/notes.py store_summary не длиннее limit знаков, одна и та же для Play и RuStore. В update.json для клиента
+    заметки остаются целиком."""
+    return notes.store_summary(text, min(limit, WHATS_NEW_LIMIT))
 
 
 def build_entry(version_code, version_name, revision, availability, published_at=0, rules=0, content_schema=None, mandatory=None):
