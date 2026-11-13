@@ -1030,6 +1030,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.EXILEFORGE_TOKEN }}
           TAG: ${{ steps.version.outputs.tag }}
+          REPORTS_API_URL: ${{ vars.SERVER_URL }}
+          REPORTS_WORK_TOKEN: ${{ secrets.REPORTS_WORK_TOKEN }}
         run: |
           bash ../ci/retry.sh read git -C backend fetch --quiet --unshallow 2>/dev/null || true
           bash ../ci/close-issues.sh "$CLIENT_REPO" "$TAG" "$SHA"

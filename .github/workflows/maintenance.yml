@@ -473,6 +473,8 @@ jobs:
       SOURCE_TOKEN: ${{ secrets.SOURCE_TOKEN }}
       EXILEFORGE_TOKEN: ${{ secrets.EXILEFORGE_TOKEN }}
       GH_ISSUES_TOKEN: ${{ secrets.GH_ISSUES_TOKEN }}
+      REPORTS_WORK_TOKEN: ${{ secrets.REPORTS_WORK_TOKEN }}
+      REPORTS_RELAY_TOKEN: ${{ secrets.REPORTS_RELAY_TOKEN }}
       LOG_AGE_RECIPIENT: ${{ vars.LOG_AGE_RECIPIENT }}
       SEAL_AGE_RECIPIENT: ${{ vars.SEAL_AGE_RECIPIENT }}
       SEAL_AGE_IDENTITY: ${{ secrets.SEAL_AGE_IDENTITY }}
@@ -504,6 +506,9 @@ jobs:
           api() { bash ci/retry.sh "${API_MODE:-read}" curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $1" -H "Accept: application/vnd.github+json" "${@:2}" 2>/dev/null || echo 000; }
           for name in SOURCE_TOKEN EXILEFORGE_TOKEN GH_ISSUES_TOKEN DEPLOY_HOST DEPLOY_SSH_KEY; do
             [ -n "${!name}" ] && ok "secret $name is set" || bad "secret $name is missing"
+          done
+          for name in REPORTS_WORK_TOKEN REPORTS_RELAY_TOKEN; do
+            [ -n "${!name}" ] && ok "secret $name is set" || echo "WAIT  secret $name is not set (report queue on the prod server)"
           done
           # Шифрование журналов и артефактов (ci/crypt.sh): age с открытыми ключами
           . ci/crypt.sh; ensure_age
