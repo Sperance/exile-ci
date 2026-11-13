@@ -166,6 +166,7 @@ jobs:
           python3 -I ci/guard-releases.py
           python3 -I ci/guard-test-version.py
           python3 -I ci/guard-dispatch.py
+          python3 -I ci/guard-age.py
       - name: Target commit
         id: target
         env:

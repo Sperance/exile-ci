@@ -509,7 +509,8 @@ jobs:
           . ci/crypt.sh; ensure_age
           if [[ $LOG_AGE_RECIPIENT =~ ^age1[a-z0-9]{50,}$ ]]; then ok "variable LOG_AGE_RECIPIENT is an age public key"; else bad "variable LOG_AGE_RECIPIENT is missing or not an age public key (age-keygen)"; fi
           if [[ $SEAL_AGE_RECIPIENT =~ ^age1[a-z0-9]{50,}$ && -n $SEAL_AGE_IDENTITY ]]; then
-            [ "$(printf '%s\n' "$SEAL_AGE_IDENTITY" | age-keygen -y 2>/dev/null)" = "$SEAL_AGE_RECIPIENT" ] \
+            derived=$(printf '%s\n' "$SEAL_AGE_IDENTITY" | age-keygen -y 2>/dev/null) || bad "age-keygen is missing or cannot read the secret SEAL_AGE_IDENTITY"
+            [ "$derived" = "$SEAL_AGE_RECIPIENT" ] \
               && ok "SEAL_AGE_RECIPIENT matches the secret SEAL_AGE_IDENTITY" || bad "SEAL_AGE_RECIPIENT does not match the secret SEAL_AGE_IDENTITY"
           else bad "variable SEAL_AGE_RECIPIENT or secret SEAL_AGE_IDENTITY is missing (artifacts between jobs)"; fi
           [[ $VPS_HOST_KEY =~ ^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp[0-9]+)[[:space:]]+[A-Za-z0-9+/]+=*([[:space:]].*)?$ ]] \

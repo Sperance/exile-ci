@@ -19,6 +19,7 @@
 #      ci/guard-releases.py - gh release create без --prerelease (выпуск игрока - с пометкой «# player-release» над командой);
 #      ci/guard-test-version.py - формат версии теста x.y.z_test (клиент и сервер теста), что читает TestVersion: смена формата не ломает молча карты падений и проверку исправлений;
 #      ci/guard-dispatch.py - запуск workflow мимо ci/dispatch-wait.sh (голый gh workflow run) или запускаемый workflow без входа caller в run-name;
+#      ci/guard-age.py - утилита age (age-keygen и др.) зовётся, но ensure_age (ci/crypt.sh, AGE_TOOLS) её не ставит;
 #      ci/docs-only.py parity - список «только документы» exile-ci разошёлся с scripts/docs-only.sh сервера (хук pre-push и precheck);
 #   3a. test-dry-run: сухой прогон вычисления версий теста на свежих данных GitHub (ci/test-server-version.sh - тот же код, что у deploy-test сервера, и ci/qa-version.sh - как у тестовой
 #      сборки клиента) без выкладки и записи; красное тут - красное и у настоящего deploy-test, поэтому оно роняет и статус check-wip;
@@ -225,6 +226,7 @@ jobs:
           python3 -I ci/guard-releases.py
           python3 -I ci/guard-test-version.py --update-sh "$RUNNER_TEMP/update.sh"
           python3 -I ci/guard-dispatch.py
+          python3 -I ci/guard-age.py
           python3 -I ci/guard-edge.py --snippet "$RUNNER_TEMP/Caddyfile.snippet" --install "$RUNNER_TEMP/install.sh"
           python3 -I ci/docs-only.py parity "$RUNNER_TEMP/docs-only.sh"
       - name: One rules version per release

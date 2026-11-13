@@ -14,17 +14,23 @@ AGE_RECIPIENT_RE='^age1[a-z0-9]{50,}$'
 # из пакетов Ubuntu (подписанные архивы apt); один раз за job. Зеркала Ubuntu у раннеров бывают недоступны часами (DNS).
 AGE_URL=https://github.com/FiloSottile/age/releases/download/v1.2.1/age-v1.2.1-linux-amd64.tar.gz
 AGE_SHA256=7df45a6cc87d4da11cc03a539a7470c15b1041ab2b396af088fe9990f7c79d50
+# Все утилиты age, что зовёт CI (сторож ci/guard-age.py): ставятся вместе, иначе `age-keygen -y` в doctor молча пуст.
+AGE_TOOLS="age age-keygen"
 
 age_from_release() {
     local dir
     dir=$(mktemp -d)
     netcall read curl -fsSL -o "$dir/age.tgz" "$AGE_URL" >/dev/null || return 1
     echo "$AGE_SHA256  $dir/age.tgz" | sha256sum -c --quiet - || { echo "::error::age archive checksum mismatch"; return 1; }
-    tar -xzf "$dir/age.tgz" -C "$dir" && sudo install -m 0755 "$dir/age/age" /usr/local/bin/age
+    tar -xzf "$dir/age.tgz" -C "$dir" || return 1
+    local tool
+    for tool in $AGE_TOOLS; do sudo install -m 0755 "$dir/age/$tool" "/usr/local/bin/$tool" || return 1; done
 }
 
 ensure_age() {
-    command -v age >/dev/null 2>&1 && return 0
+    local tool missing=
+    for tool in $AGE_TOOLS; do command -v "$tool" >/dev/null 2>&1 || missing=1; done
+    [[ -z $missing ]] && return 0
     . "$(dirname "${BASH_SOURCE[0]}")/retry.sh"
     age_from_release && return 0
     echo "::warning::age release download failed, trying apt"
