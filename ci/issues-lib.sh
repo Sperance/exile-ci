@@ -8,8 +8,13 @@
 # очереди в проверке GitHub ниже. Не заданы или ответ не пришёл - номер идёт в GitHub как прежде. Ответы и ключ в журнал не попадают.
 . "$(dirname "${BASH_SOURCE[0]}")/retry.sh"
 queue_close() {
-  local n=$1 label=$2 body reply
+  local n=$1 label=$2 body reply head
   [ -n "${REPORTS_API_URL:-}" ] && [ -n "${REPORTS_WORK_TOKEN:-}" ] || { echo -; return 0; }
+  head=$(netcall read curl -sS --fail-with-body -G -H "Authorization: Bearer $REPORTS_WORK_TOKEN" --data "number=$n" "${REPORTS_API_URL%/}/api/v1/reports-work/get") \
+    || { echo "::warning::report queue did not answer for #$n" >&2; echo -; return 0; }
+  head=$(printf '%s' "$head" | python3 -I -c 'import json, sys; s = json.load(sys.stdin)["data"]["summary"]; print(("closed " if s.get("state") == "closed" else "open ") + str(int(s.get("githubNumber", 0))))' 2>/dev/null) \
+    || { echo "::warning::report queue answer for #$n is unreadable" >&2; echo -; return 0; }
+  case $head in closed*) echo "done ${head#closed }"; return 0 ;; esac
   body=$(python3 -I -c 'import json, sys; print(json.dumps({"number": int(sys.argv[1]), "reason": "completed", "label": sys.argv[2]}))' "$n" "$label")
   reply=$(netcall idem curl -sS --fail-with-body -X POST -H "Authorization: Bearer $REPORTS_WORK_TOKEN" -H 'Content-Type: application/json' --data-binary "$body" "${REPORTS_API_URL%/}/api/v1/reports-work/close") \
     || { echo "::warning::report queue did not close #$n" >&2; echo -; return 0; }
@@ -23,6 +28,7 @@ close_issues() {
     queued=$(queue_close "$n" "$label")
     case $queued in
       -) ;;
+      done*) echo "#$n is already closed in the report queue"; continue ;;
       0) echo "closed #$n in the report queue ($label)"; continue ;;
       *) echo "closed #$n in the report queue ($label)"; n=$queued ;;
     esac
