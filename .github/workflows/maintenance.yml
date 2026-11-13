@@ -33,11 +33,11 @@
 # (Package settings - Manage Actions access).
 #
 # Задача branches:
-# Удаляет влитые черновики пакетов `wip-<id>` в ExileForge, ktor-bestgame и exile-ci (ci/branches.py). Имя строго ^wip-[a-z0-9-]+$: `wip`, `main`
-# и рабочие ветки не трогаются никогда. Влитость: `git cherry` черновика против `wip` и против ветки по умолчанию репозитория - коммит считается влитым,
+# Удаляет влитые черновики пакетов `wip-<id>` и ветки сессий `claude/*` в ExileForge, ktor-bestgame и exile-ci (ci/branches.py). Имя строго
+# ^wip-[a-z0-9-]+$ или ^claude/.+$: `wip`, `main`, ветка по умолчанию и прочие рабочие ветки не трогаются никогда. Влитость: `git cherry` черновика против `wip` и против ветки по умолчанию репозитория - коммит считается влитым,
 # если он содержится в ветке или совпадает с её коммитом по patch-id (координатор вливает пакеты cherry-pick'ом, sha другие); остался хоть один -
 # черновик живёт. Входы ручного запуска: drafts - пары `репозиторий:ветка` через пробел (`ExileForge:wip-n8 ktor-bestgame:wip-n8`), пусто - обход всех
-# wip-* трёх репозиториев; force - удалить названные без проверки влития (только с непустым drafts, имя всё равно проверяется).
+# wip-* и claude/* трёх репозиториев (так идёт ночной обход); force - удалить названные без проверки влития (только с непустым drafts, имя всё равно проверяется).
 # Удаляет EXILEFORGE_TOKEN (ExileForge и ktor-bestgame, Contents: Read and write на обоих) и GITHUB_TOKEN (exile-ci, permissions: contents: write);
 # нет токена или 403/404 - предупреждение со счётчиком, остальные репозитории идут дальше. Читает SOURCE_TOKEN. В журнал и сводку - только счётчики
 # по репозиториям: удалено / оставлено (не влито) / отказано.
@@ -72,12 +72,12 @@ on:
   workflow_dispatch:
     inputs:
       task:
-        description: 'store-status - report the store channels to the server; cleanup - free the paid GitHub storage and trim the Actions cache; branches - delete integrated package drafts wip-<id> in the three repositories (inputs drafts, force); caches - only trim the Actions cache; scan - Trivy over the server head and its checked image (fails on CRITICAL) and the full browser crawl of the panel, every bestiary page (job panel-full); outdated - list the outdated dependencies of client and server (sealed artifact); doctor - check secrets, tokens and access'
+        description: 'store-status - report the store channels to the server; cleanup - free the paid GitHub storage and trim the Actions cache; branches - delete integrated package drafts wip-<id> and session branches claude/* in the three repositories (inputs drafts, force); caches - only trim the Actions cache; scan - Trivy over the server head and its checked image (fails on CRITICAL) and the full browser crawl of the panel, every bestiary page (job panel-full); outdated - list the outdated dependencies of client and server (sealed artifact); doctor - check secrets, tokens and access'
         type: choice
         options: [ store-status, cleanup, branches, caches, scan, outdated, doctor ]
         default: store-status
       drafts:
-        description: 'Task branches: space-separated repo:branch pairs (ExileForge:wip-n8 ktor-bestgame:wip-n8); empty - sweep all wip-* drafts of the three repositories'
+        description: 'Task branches: space-separated repo:branch pairs (ExileForge:wip-n8 ktor-bestgame:wip-n8); empty - sweep all wip-* drafts and claude/* branches of the three repositories'
         required: false
         default: ''
       force:
@@ -200,7 +200,7 @@ jobs:
         if: steps.artifacts.outcome == 'failure' || steps.images.outcome == 'failure'
         run: exit 1
 
-  # Влитые черновики пакетов wip-<id> (ci/branches.py): единственный job с contents: write на этот репозиторий. Приватные репозитории читает SOURCE_TOKEN,
+  # Влитые черновики пакетов wip-<id> и ветки сессий claude/* (ci/branches.py): единственный job с contents: write на этот репозиторий. Приватные репозитории читает SOURCE_TOKEN,
   # удаляет в них EXILEFORGE_TOKEN; имена веток в журнал не выводятся.
   branches:
     if: ${{ (github.event_name == 'schedule' && github.event.schedule == '43 2 * * *') || (github.event_name == 'workflow_dispatch' && inputs.task == 'branches') }}

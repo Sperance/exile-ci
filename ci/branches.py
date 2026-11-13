@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""Чистка влитых черновиков пакетов wip-<id> (.github/workflows/maintenance.yml, задача branches) в ExileForge, ktor-bestgame и exile-ci.
+"""Чистка влитых черновиков пакетов wip-<id> и веток сессий claude/* (.github/workflows/maintenance.yml, задача branches) в ExileForge, ktor-bestgame и exile-ci.
 
-Имя черновика - строго ^wip-[a-z0-9-]+$: `wip`, `main` и рабочие ветки не трогаются никогда, в том числе с force.
-Без force черновик удаляется, только когда все его коммиты вошли в `wip` или в ветку по умолчанию репозитория: `git cherry <ветка> <черновик>`
+Имя черновика - строго ^wip-[a-z0-9-]+$, ветки сессии - ^claude/.+$: `wip`, `main`, ветка по умолчанию и прочие рабочие ветки не трогаются никогда, в том числе с force.
+Ночной обход (DRAFTS пуст) берёт все wip-* и claude/* репозитория. Без force ветка удаляется, только когда все его коммиты вошли в `wip` или в ветку по умолчанию репозитория: `git cherry <ветка> <черновик>`
 не оставляет «+» (коммит либо содержится в ветке, либо совпадает с чужим по patch-id - координатор вливает пакеты cherry-pick'ом, sha другие).
 Читает голый клон веток (приватные - токеном SOURCE_TOKEN, exile-ci - GITHUB_TOKEN), удаляет REST DELETE /git/refs/heads/<ветка>:
 EXILEFORGE_TOKEN для ExileForge и ktor-bestgame (нужен Contents: write), GITHUB_TOKEN для exile-ci. Нет токена или 403/404 - предупреждение
 со счётчиком, остальные репозитории идут дальше.
 
-Окружение: DRAFTS - пары `репозиторий:ветка` через пробел (пусто - все wip-* трёх репозиториев), FORCE=true - без проверки влития
+Окружение: DRAFTS - пары `репозиторий:ветка` через пробел (пусто - все wip-* и claude/* трёх репозиториев), FORCE=true - без проверки влития
 (только с явным DRAFTS), SOURCE_TOKEN, EXILEFORGE_TOKEN, GITHUB_TOKEN, GITHUB_STEP_SUMMARY.
 В публичный журнал - только счётчики: имена веток приватных репозиториев не выводятся.
 Использование: ci/branches.py
@@ -29,6 +29,7 @@ OWNER = "Sperance"
 REPOS = ("ExileForge", "ktor-bestgame", "exile-ci")
 PRIVATE = ("ExileForge", "ktor-bestgame")
 DRAFT = re.compile(r"^wip-[a-z0-9-]+$")
+SESSION = re.compile(r"^claude/.+$")
 UPSTREAM = "wip"
 
 
@@ -75,6 +76,10 @@ def integrated(directory, draft, upstreams):
     return not left
 
 
+def sweepable(branch):
+    return bool(DRAFT.match(branch) or SESSION.match(branch))
+
+
 def parse_drafts(text):
     pairs = []
     for item in text.split():
@@ -100,7 +105,7 @@ def main():
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary:
         with open(summary, "a", encoding="utf-8") as file:
-            file.write("### Branch drafts\n" + "\n".join(f"- {line}" for line in lines) + "\n")
+            file.write("### Branch drafts and session branches\n" + "\n".join(f"- {line}" for line in lines) + "\n")
 
 
 def sweep(repo, wanted, force, count):
@@ -123,12 +128,12 @@ def sweep(repo, wanted, force, count):
             return
         heads = git(directory, "for-each-ref", "--format=%(refname:short)", "refs/heads").stdout.split()
         existing = set(heads)
-        candidates = wanted or [h for h in heads if h.startswith("wip-")]
+        candidates = wanted or [h for h in heads if h.startswith("wip-") or h.startswith("claude/")]
         upstreams = [u for u in dict.fromkeys([UPSTREAM, default]) if u in existing]
         for branch in candidates:
-            if not DRAFT.match(branch):
+            if not sweepable(branch) or branch == default:
                 count["refused"] += 1
-                say(f"::warning::{name}: a name outside wip-<id> refused")
+                say(f"::warning::{name}: a name outside wip-<id> and claude/* refused")
                 continue
             if branch not in existing:
                 say(f"{name}: a requested draft is already gone")
