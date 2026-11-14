@@ -14,6 +14,7 @@ server/compat* => ci-only: контрактные тесты старейшег�
 server/image* => ci-only: сборка и публикация образа в ghcr, нужен Docker и права на пакеты
 server/mark* => ci-only: метка проверенного образа в ghcr
 server/deploy* => ci-only: выкат на VPS, секреты SSH и ghcr
+server/deploy-test/The report relay answers this key => ci-only: живой бой и ключ релея отчётов (секрет exile-ci), локально не повторить
 server/qa-publish* => ci-only: публикация тестовой сборки после выката теста, нужны артефакт прогона клиента, ключ SEAL и права на релизы
 server/test-base* => ci-only: перенос боевого слепка баланса на тест по SSH, секреты VPS
 server/balance* => ci-only: перенос слепка баланса теста в бой по SSH, секреты VPS
