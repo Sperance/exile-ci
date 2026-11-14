@@ -725,7 +725,7 @@ jobs:
           VPS_HOST=$HOST VPS_KEY_FILE="$RUNNER_TEMP/key" bash ci/stand-files.sh send server
       # Ключ релея отчётов бой может не принимать (релей живёт на бое, и боевой образ бывает старше маршрута). Проверка - настоящим ключом:
       # ответ с кодом RQ_/BUG_ значит релей живой, AUTH_/RQ_002 - ключ отвергнут. Отвергнут - в третье слово stdin уходит `-`,
-      # и update.sh очищает ключ: тест ходит в GitHub напрямую (GH_ISSUES_TOKEN), проверки не слепнут. Сторож - job health в vps.yml.
+      # и update.sh очищает ключ: тест ведёт свою очередь отчётов, проверки не слепнут. Сторож - job health в vps.yml.
       - name: The report relay answers this key
         id: relay
         env:
@@ -734,7 +734,7 @@ jobs:
         run: |
           if [[ -z $REPORTS_RELAY_TOKEN ]]; then
             echo "relay=-" >> "$GITHUB_OUTPUT"
-            echo "- релей отчётов: ключ не задан, тест идёт в GitHub напрямую" >> "$GITHUB_STEP_SUMMARY"
+            echo "- релей отчётов: ключ не задан, тест ведёт свою очередь" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
           body=$(bash ci/retry.sh read curl -sS --max-time 20 -X POST -H "Authorization: Bearer $REPORTS_RELAY_TOKEN" -H 'Content-Type: application/json' \
@@ -744,8 +744,8 @@ jobs:
             echo "- релей отчётов: бой принимает ключ" >> "$GITHUB_STEP_SUMMARY"
           else
             echo "relay=-" >> "$GITHUB_OUTPUT"
-            echo "::warning::the prod server does not accept the report relay key: the test stand goes to GitHub directly (no relay)"
-            echo "- релей отчётов: **бой не принимает ключ** — тест идёт в GitHub напрямую" >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning::the prod server does not accept the report relay key: the test stand keeps its own report queue"
+            echo "- релей отчётов: **бой не принимает ключ** — тест ведёт свою очередь" >> "$GITHUB_STEP_SUMMARY"
           fi
       - name: Update the test server on the VPS
         env:

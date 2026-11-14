@@ -379,10 +379,10 @@ jobs:
 
       # Тест: публичный static/index.json стенда (только при заданной vars.TEST_SERVER_URL). Мёртвый тест - предупреждение и строка в сводке,
       # боевой присмотр от него не краснеет.
-      # Релей отчётов: тестовый стенд ходит в GitHub через бой (`/api/v1/reports-relay` с ключом REPORTS_RELAY_TOKEN). Мёртвый ключ
+      # Релей отчётов: тестовый стенд пишет отчёты в очередь боя (`/api/v1/reports-relay` с ключом REPORTS_RELAY_TOKEN). Мёртвый ключ
       # раньше был виден только в журнале контейнера теста и молча оставлял «Проверьте исправления» пустым.
       # Красное - только настоящая поломка: маршрут на бое есть (RQ_002 - ключ не тот, 200 - релей отвечает). Бой без маршрута или с
-      # выключенным релеем (AUTH_*, RQ_001) - предупреждение: так выглядит бой, ещё не выпустивший релей; выпуск это меняет.
+      # выключенным релеем (AUTH_*, RQ_001) - предупреждение: так выглядит бой, ещё не выпустивший релей; без релея тест ведёт свою очередь.
       - name: The report relay answers this key
         if: ${{ always() && vars.SERVER_URL != '' }}
         env:
@@ -390,8 +390,8 @@ jobs:
           REPORTS_RELAY_TOKEN: ${{ secrets.REPORTS_RELAY_TOKEN }}
         run: |
           if [[ -z $REPORTS_RELAY_TOKEN ]]; then
-            printf '### Релей отчётов\n- Ключ `REPORTS_RELAY_TOKEN` не задан: тест ходит в GitHub напрямую.\n' >> "$GITHUB_STEP_SUMMARY"
-            echo "::warning title=report relay::REPORTS_RELAY_TOKEN is not set: the test stand goes to GitHub directly"
+            printf '### Релей отчётов\n- Ключ `REPORTS_RELAY_TOKEN` не задан: тест ведёт свою очередь отчётов.\n' >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning title=report relay::REPORTS_RELAY_TOKEN is not set: the test stand keeps its own report queue"
             exit 0
           fi
           tmp=${RUNNER_TEMP:?}
@@ -406,8 +406,8 @@ jobs:
             printf '### Релей отчётов\n- **Бой не принял ключ релея** (`RQ_002`): проверки на тесте слепнут, пока ключ и бой не сойдутся.\n' >> "$GITHUB_STEP_SUMMARY"
             echo "::error title=report relay::the prod server refuses REPORTS_RELAY_TOKEN (RQ_002): the test stand cannot reach GitHub through the relay"
           elif [[ $code == RQ_001 || $code == AUTH_* || -z $code ]]; then
-            printf '### Релей отчётов\n- Бой ещё не несёт релей (`%s`): тест ходит в GitHub напрямую, это нормально до выпуска.\n' "${code:-нет ответа}" >> "$GITHUB_STEP_SUMMARY"
-            echo "::warning title=report relay::the prod server has no live report relay yet (${code:-HTTP $status}): the test stand goes to GitHub directly"
+            printf '### Релей отчётов\n- Бой ещё не несёт релей (`%s`): тест ведёт свою очередь отчётов, это нормально до выпуска.\n' "${code:-нет ответа}" >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning title=report relay::the prod server has no live report relay yet (${code:-HTTP $status}): the test stand keeps its own queue"
           else
             printf '### Релей отчётов\n- Релей отвечает (`%s`).\n' "$code" >> "$GITHUB_STEP_SUMMARY"
           fi
