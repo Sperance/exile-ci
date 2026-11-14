@@ -83,8 +83,9 @@ jobs:
         if: ${{ inputs.what == 'server' || inputs.what == 'server-rebuild' }}
         env:
           GH_TOKEN: ${{ github.token }}
-          ISSUES_TOKEN: ${{ secrets.EXILEFORGE_TOKEN }}
           SKIP_TEST: ${{ inputs.skip_test }}
+          REPORTS_API_URL: ${{ vars.SERVER_URL }}
+          REPORTS_WORK_TOKEN: ${{ secrets.REPORTS_WORK_TOKEN }}
         run: |
           code=0
           bash ci/test-stand.sh fetch "$RUNNER_TEMP/stand.json" || code=$?
@@ -94,7 +95,7 @@ jobs:
           if [ "$SKIP_TEST" = true ]; then sha=
           elif [ -z "$sha" ]; then echo "::error::no deploy to the test stand is recorded yet: wait for the test deploy of a client push (or tick skip_test)"; exit 1
           fi
-          issues=$(GH_TOKEN=$ISSUES_TOKEN bash ci/test-stand.sh test-issues 2>/dev/null) || issues='?'
+          issues=$(bash ci/test-stand.sh test-issues 2>/dev/null) || issues='?'
           python3 -I ci/test-stand.py report "$file" na "${issues//[[:space:]]/}" "$SKIP_TEST" "$GITHUB_STEP_SUMMARY"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
       - name: Start the selected workflow and wait for it
@@ -165,13 +166,14 @@ jobs:
       # Ворота теста. Стенд не включён (нет vars.TEST_SERVER_URL) - ворота пропускают, в сводке красная строка «тестовый стенд не включён».
       # Стенд включён - ворота строгие: голова клиента уже стоит на тесте (запись последнего удачного deploy-test, ci/test-stand.sh: код клиента после
       # коммита стенда не менялся, версия, заметки и .md не в счёт, закреплённый сервер тот же) И сам живой стенд отвечает публичным static/index.json
-      # образом этой записи. Итог (возраст выката, открытые Issues `test`, блок «Состояние теста») - в сводке всегда. skip_test обходит ворота.
+      # образом этой записи. Итог (возраст выката, открытые отчёты `test`, блок «Состояние теста») - в сводке всегда. skip_test обходит ворота.
       - name: Head of the client is on the test stand
         env:
           GH_TOKEN: ${{ github.token }}
-          ISSUES_TOKEN: ${{ secrets.EXILEFORGE_TOKEN }}
           SKIP_TEST: ${{ inputs.skip_test }}
           TEST_SERVER_URL: ${{ vars.TEST_SERVER_URL }}
+          REPORTS_API_URL: ${{ vars.SERVER_URL }}
+          REPORTS_WORK_TOKEN: ${{ secrets.REPORTS_WORK_TOKEN }}
         run: |
           if [ -z "$TEST_SERVER_URL" ]; then
             python3 -I ci/test-stand.py report - disabled - "$SKIP_TEST" "$GITHUB_STEP_SUMMARY"
@@ -193,7 +195,7 @@ jobs:
           if [ "$state" = on ] && ! grep -qx 'image_ok=true' "$RUNNER_TEMP/live.txt"; then
             state=off; reason=$(sed -n 's/^reason=//p' "$RUNNER_TEMP/live.txt")
           fi
-          issues=$(GH_TOKEN=$ISSUES_TOKEN bash ci/test-stand.sh test-issues 2>/dev/null) || issues='?'
+          issues=$(bash ci/test-stand.sh test-issues 2>/dev/null) || issues='?'
           python3 -I ci/test-stand.py report "$file" "$state" "${issues//[[:space:]]/}" "$SKIP_TEST" "$GITHUB_STEP_SUMMARY"
           python3 -I ci/test-stand.py state-block "$file" "$live" "$GITHUB_STEP_SUMMARY"
           if [ "$state" != on ] && [ "$SKIP_TEST" != true ]; then

@@ -6,8 +6,8 @@
 #   ci/test-stand.sh fetch <файл>      новейший stand.json в файл; код 3 - записей ещё нет
 #   ci/test-stand.sh publish <файл>    опубликовать stand.json новым prerelease
 #   ci/test-stand.sh live <файл>       блок `stand` публичного static/index.json стенда (TEST_SERVER_URL) в файл; код 4 - переменной нет или стенд не ответил
-#   ci/test-stand.sh test-issues       число открытых Issues с меткой `test` в Sperance/ExileForge (GH_TOKEN с правом чтения Issues там)
-# Окружение: GH_TOKEN, GITHUB_REPOSITORY (publish ещё GITHUB_SHA).
+#   ci/test-stand.sh test-issues       число открытых отчётов с меткой `test` в очереди боевого сервера (REPORTS_API_URL, REPORTS_WORK_TOKEN)
+# Окружение: GH_TOKEN, GITHUB_REPOSITORY (publish ещё GITHUB_SHA); test-issues - REPORTS_API_URL и REPORTS_WORK_TOKEN.
 set -euo pipefail
 
 here=$(dirname "${BASH_SOURCE[0]}")
@@ -36,6 +36,8 @@ case ${1:-} in
         body=$(netcall read curl -fsS --max-time 20 "${TEST_SERVER_URL%/}/static/index.json") || { echo "::warning::the test stand did not answer"; exit 4; }
         printf '%s' "$body" | python3 -I "$here/test-stand.py" live-extract "$2" ;;
     test-issues)
-        netcall read gh api --paginate "repos/Sperance/ExileForge/issues?labels=test&state=open&per_page=100" --jq '.[] | select(.pull_request | not) | .number' | wc -l ;;
+        [ -n "${REPORTS_API_URL:-}" ] && [ -n "${REPORTS_WORK_TOKEN:-}" ] || { echo 0; exit 0; }
+        netcall read curl -sS --fail-with-body -G -H "Authorization: Bearer $REPORTS_WORK_TOKEN" --data state=open "${REPORTS_API_URL%/}/api/v1/reports-work/statuses" \
+            | python3 -I -c 'import json, sys; print(int(json.load(sys.stdin)["data"].get("labels", {}).get("test", 0)))' ;;
     *) echo "usage: test-stand.sh fetch <file> | publish <file> | live <file> | test-issues" >&2; exit 2 ;;
 esac
