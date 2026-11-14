@@ -93,14 +93,20 @@ def python_violations(path):
                 yield f"os.{func.attr} network command"
 
 
+def slashed(path, root):
+    """Путь от корня репозитория через прямой слэш: в CI Linux и в локальном прогоне на Windows записи ci/net-allowlist.txt
+    должны совпадать (os.sep на Windows дал бы путь с обратным слэшем, и ни одна запись не нашлась бы)."""
+    return os.path.relpath(path, root).replace(os.sep, "/")
+
+
 def collect(root):
     for path in sorted(glob.glob(os.path.join(root, ".github", "workflows", "*.yml")) + glob.glob(os.path.join(root, ".github", "actions", "*", "action.yml"))):
-        relative = os.path.relpath(path, root)
+        relative = slashed(path, root)
         for where, text in yaml_snippets(path):
             for line in shell_violations(text):
                 yield relative, where, line
     for path in sorted(glob.glob(os.path.join(root, "ci", "**", "*"), recursive=True)):
-        relative = os.path.relpath(path, root)
+        relative = slashed(path, root)
         if path.endswith(".sh"):
             for line in shell_violations(open(path, encoding="utf-8").read()):
                 yield relative, "script", line

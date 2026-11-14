@@ -35,14 +35,33 @@ ISSUE_TRAILER = re.compile(r"^Issue: #(\d+)", re.MULTILINE)
 SPLIT = "\x00"
 
 
+class Unreadable(Exception):
+    """Объект есть в дереве, но прочитать его не удалось: клон без блобов (--filter=blob:none) докачивает файл на месте,
+    и сбой этой докачки (свежий коммит, обрыв, 5xx) не должен выглядеть как «файла нет»: иначе сторож выпуска превращает
+    недочитанные заметки в «все строки потеряны»."""
+
+
 def run(directory, *args):
     done = net.run(net.READ, ["git", "-C", directory, *args], capture_output=True)
     return done.stdout if done.returncode == 0 else None
 
 
+def in_tree(directory, ref, path):
+    """Есть ли путь в дереве ref: ls-tree читает только объекты дерева, блоб не докачивает."""
+    done = net.run(net.READ, ["git", "-C", directory, "ls-tree", "-z", ref, "--", path], capture_output=True)
+    if done.returncode != 0:
+        raise Unreadable(f"the tree of {ref[:12]} cannot be read")
+    return bool(done.stdout.strip())
+
+
 def show(directory, ref, path):
-    """Содержимое файла на ref (байты) или None, если файла нет."""
-    return run(directory, "show", f"{ref}:{path}")
+    """Содержимое файла на ref (байты) или None, если файла нет. Докачка блоба не удалась - Unreadable, а не пустой файл."""
+    if not in_tree(directory, ref, path):
+        return None
+    done = net.run(net.READ, ["git", "-C", directory, "show", f"{ref}:{path}"], capture_output=True)
+    if done.returncode != 0:
+        raise Unreadable(f"{path} at {ref[:12]} cannot be read (the blob fetch failed)")
+    return done.stdout
 
 
 def text_at(directory, ref, path):
@@ -335,7 +354,11 @@ def parser():
 
 def main():
     args = parser().parse_args()
-    sys.exit(args.handler(args))
+    try:
+        sys.exit(args.handler(args))
+    except Unreadable as error:
+        say(f"release guards: cannot read the git history: {error}; the clones fetch blobs lazily, so rerun the job instead of editing the notes")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
