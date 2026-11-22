@@ -610,33 +610,46 @@ jobs:
       REPORTS_WORK_TOKEN: ${{ secrets.REPORTS_WORK_TOKEN }}
       SERVER_URL: ${{ vars.SERVER_URL }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        with:
-          repository: Sperance/ktor-bestgame
-          token: ${{ secrets.SOURCE_TOKEN }}
-          ref: ${{ vars.SERVER_BRANCH || 'master' }}
-          sparse-checkout: scripts
       - name: Apply labels
         env:
           NUMBERS: ${{ inputs.numbers }}
           OP: ${{ inputs.op }}
         run: |
-          export REPORTS_API_URL="$SERVER_URL"
+          api() {
+            local path="$1"; shift
+            local body="$1"
+            curl -sS --fail-with-body --retry 3 --retry-all-errors --max-time 60 \
+              -H "Authorization: Bearer $REPORTS_WORK_TOKEN" \
+              -H "Content-Type: application/json" \
+              -X POST "$SERVER_URL/api/v1/reports-work/$path" \
+              -d "$body"
+          }
           code=0
           for number in $NUMBERS; do
             close_reason=""
-            label_ops=()
+            add_labels=()
+            remove_labels=()
             for item in $OP; do
               case "$item" in
                 close:*) close_reason="${item#close:}" ;;
-                *) label_ops+=("$item") ;;
+                +*) add_labels+=("${item#+}") ;;
+                -*) remove_labels+=("${item#-}") ;;
               esac
             done
             if [ -n "$close_reason" ]; then
-              bash scripts/reports.sh close "$number" "$close_reason" || code=$?
+              body=$(python3 -c "import json,sys; print(json.dumps({'number':int(sys.argv[1]),'reason':sys.argv[2],'label':'','duplicateOf':None}))" "$number" "$close_reason")
+              result=$(api close "$body") || { echo "FAIL close #$number: $result"; code=1; continue; }
+              echo "OK   close #$number as $close_reason"
             fi
-            if [ ${#label_ops[@]} -gt 0 ]; then
-              bash scripts/reports.sh label "$number" "${label_ops[@]}" || code=$?
+            if [ ${#add_labels[@]} -gt 0 ] || [ ${#remove_labels[@]} -gt 0 ]; then
+              body=$(python3 -c "
+import json,sys
+add=sys.argv[1].split(',') if sys.argv[1] else []
+rem=sys.argv[2].split(',') if sys.argv[2] else []
+print(json.dumps({'number':int(sys.argv[3]),'add':add,'remove':rem}))
+" "$(IFS=,; echo "${add_labels[*]}")" "$(IFS=,; echo "${remove_labels[*]}")" "$number")
+              result=$(api labels "$body") || { echo "FAIL labels #$number: $result"; code=1; continue; }
+              echo "OK   labels #$number add=[${add_labels[*]}] remove=[${remove_labels[*]}]"
             fi
           done
           exit $code
