@@ -610,7 +610,7 @@ jobs:
       - name: Apply labels
         env:
           REPORTS_WORK_TOKEN: ${{ secrets.REPORTS_WORK_TOKEN }}
-          SERVER_URL: ${{ vars.SERVER_URL }}
+          SERVER_URL: ${{ vars.TEST_SERVER_URL }}
           NUMBERS: ${{ inputs.numbers }}
           OP: ${{ inputs.op }}
         run: |
