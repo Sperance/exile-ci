@@ -628,7 +628,7 @@ jobs:
           for n in numbers:
               num = int(n)
               if close_reason:
-                  body = json.dumps({'number': num, 'reason': close_reason, 'label': '', 'duplicateOf': None}).encode()
+                  body = json.dumps({'number': num, 'reason': close_reason, 'label': '', 'duplicateOf': 0}).encode()
                   req = urllib.request.Request(f'{base}/api/v1/reports-work/close', data=body, headers=headers, method='POST')
                   try:
                       resp = urllib.request.urlopen(req, timeout=60)
