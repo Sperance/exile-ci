@@ -72,9 +72,9 @@ on:
   workflow_dispatch:
     inputs:
       task:
-        description: 'store-status - report the store channels to the server; cleanup - free the paid GitHub storage and trim the Actions cache; branches - delete integrated package drafts wip-<id> and session branches claude/* in the three repositories (inputs drafts, force); caches - only trim the Actions cache; scan - Trivy over the server head and its checked image (fails on CRITICAL) and the full browser crawl of the panel, every bestiary page (job panel-full); outdated - list the outdated dependencies of client and server (sealed artifact); doctor - check secrets, tokens and access'
+        description: 'store-status - report the store channels to the server; cleanup - free the paid GitHub storage and trim the Actions cache; branches - delete integrated package drafts wip-<id> and session branches claude/* in the three repositories (inputs drafts, force); caches - only trim the Actions cache; scan - Trivy over the server head and its checked image (fails on CRITICAL) and the full browser crawl of the panel, every bestiary page (job panel-full); outdated - list the outdated dependencies of client and server (sealed artifact); doctor - check secrets, tokens and access; report-labels - set/remove labels on reports (inputs numbers, op)'
         type: choice
-        options: [ store-status, cleanup, branches, caches, scan, outdated, doctor ]
+        options: [ store-status, cleanup, branches, caches, scan, outdated, doctor, report-labels ]
         default: store-status
       drafts:
         description: 'Task branches: space-separated repo:branch pairs (ExileForge:wip-n8 ktor-bestgame:wip-n8); empty - sweep all wip-* drafts and claude/* branches of the three repositories'
@@ -86,6 +86,14 @@ on:
         default: false
       caller:
         description: 'Marker of the run that waits for this one (ci/dispatch-wait.sh sets it); empty - started by hand'
+        required: false
+        default: ''
+      numbers:
+        description: 'Task report-labels: space-separated report numbers (e.g. 7 14 29 30)'
+        required: false
+        default: ''
+      op:
+        description: 'Task report-labels: label operations, space-separated (e.g. +ready -in-progress); for close: close:<reason> e.g. close:wontfix'
         required: false
         default: ''
   push:
@@ -591,3 +599,44 @@ jobs:
           docker buildx imagetools inspect "ghcr.io/sperance/ktor-bestgame:${SERVER_BRANCH//\//-}" >/dev/null 2>&1 \
             && echo "OK    exile-ci reads the GHCR package ktor-bestgame" \
             || { echo "FAIL  exile-ci has no access to the GHCR package ktor-bestgame (Package settings - Manage Actions access)"; exit 1; }
+
+  report-labels:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.task == 'report-labels' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    timeout-minutes: 10
+    env:
+      REPORTS_WORK_TOKEN: ${{ secrets.REPORTS_WORK_TOKEN }}
+      SERVER_URL: ${{ vars.SERVER_URL }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: Sperance/ktor-bestgame
+          token: ${{ secrets.SOURCE_TOKEN }}
+          ref: ${{ vars.SERVER_BRANCH || 'master' }}
+          sparse-checkout: scripts
+      - name: Apply labels
+        env:
+          NUMBERS: ${{ inputs.numbers }}
+          OP: ${{ inputs.op }}
+        run: |
+          export REPORTS_API_URL="$SERVER_URL"
+          code=0
+          for number in $NUMBERS; do
+            close_reason=""
+            label_ops=()
+            for item in $OP; do
+              case "$item" in
+                close:*) close_reason="${item#close:}" ;;
+                *) label_ops+=("$item") ;;
+              esac
+            done
+            if [ -n "$close_reason" ]; then
+              bash scripts/reports.sh close "$number" "$close_reason" || code=$?
+            fi
+            if [ ${#label_ops[@]} -gt 0 ]; then
+              bash scripts/reports.sh label "$number" "${label_ops[@]}" || code=$?
+            fi
+          done
+          exit $code
