@@ -606,50 +606,43 @@ jobs:
     permissions:
       contents: read
     timeout-minutes: 10
-    env:
-      REPORTS_WORK_TOKEN: ${{ secrets.REPORTS_WORK_TOKEN }}
-      SERVER_URL: ${{ vars.SERVER_URL }}
     steps:
       - name: Apply labels
         env:
+          REPORTS_WORK_TOKEN: ${{ secrets.REPORTS_WORK_TOKEN }}
+          SERVER_URL: ${{ vars.SERVER_URL }}
           NUMBERS: ${{ inputs.numbers }}
           OP: ${{ inputs.op }}
         run: |
-          api() {
-            local path="$1"; shift
-            local body="$1"
-            curl -sS --fail-with-body --retry 3 --retry-all-errors --max-time 60 \
-              -H "Authorization: Bearer $REPORTS_WORK_TOKEN" \
-              -H "Content-Type: application/json" \
-              -X POST "$SERVER_URL/api/v1/reports-work/$path" \
-              -d "$body"
-          }
-          code=0
-          for number in $NUMBERS; do
-            close_reason=""
-            add_labels=()
-            remove_labels=()
-            for item in $OP; do
-              case "$item" in
-                close:*) close_reason="${item#close:}" ;;
-                +*) add_labels+=("${item#+}") ;;
-                -*) remove_labels+=("${item#-}") ;;
-              esac
-            done
-            if [ -n "$close_reason" ]; then
-              body=$(python3 -c "import json,sys; print(json.dumps({'number':int(sys.argv[1]),'reason':sys.argv[2],'label':'','duplicateOf':None}))" "$number" "$close_reason")
-              result=$(api close "$body") || { echo "FAIL close #$number: $result"; code=1; continue; }
-              echo "OK   close #$number as $close_reason"
-            fi
-            if [ ${#add_labels[@]} -gt 0 ] || [ ${#remove_labels[@]} -gt 0 ]; then
-              body=$(python3 -c "
-import json,sys
-add=sys.argv[1].split(',') if sys.argv[1] else []
-rem=sys.argv[2].split(',') if sys.argv[2] else []
-print(json.dumps({'number':int(sys.argv[3]),'add':add,'remove':rem}))
-" "$(IFS=,; echo "${add_labels[*]}")" "$(IFS=,; echo "${remove_labels[*]}")" "$number")
-              result=$(api labels "$body") || { echo "FAIL labels #$number: $result"; code=1; continue; }
-              echo "OK   labels #$number add=[${add_labels[*]}] remove=[${remove_labels[*]}]"
-            fi
-          done
-          exit $code
+          cat > /tmp/apply.py << 'PYEOF'
+          import os, sys, json, urllib.request, urllib.error
+          token = os.environ['REPORTS_WORK_TOKEN']
+          base = os.environ['SERVER_URL'].rstrip('/')
+          numbers = os.environ['NUMBERS'].split()
+          ops = os.environ['OP'].split()
+          close_reason = next((o[len('close:'):] for o in ops if o.startswith('close:')), None)
+          add = [o[1:] for o in ops if o.startswith('+')]
+          remove = [o[1:] for o in ops if o.startswith('-')]
+          headers = {'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'}
+          code = 0
+          for n in numbers:
+              num = int(n)
+              if close_reason:
+                  body = json.dumps({'number': num, 'reason': close_reason, 'label': '', 'duplicateOf': None}).encode()
+                  req = urllib.request.Request(f'{base}/api/v1/reports-work/close', data=body, headers=headers, method='POST')
+                  try:
+                      resp = urllib.request.urlopen(req, timeout=60)
+                      print(f'OK   close #{num} as {close_reason}')
+                  except urllib.error.HTTPError as e:
+                      print(f'FAIL close #{num}: {e.read().decode()}'); code = 1; continue
+              if add or remove:
+                  body = json.dumps({'number': num, 'add': add, 'remove': remove}).encode()
+                  req = urllib.request.Request(f'{base}/api/v1/reports-work/labels', data=body, headers=headers, method='POST')
+                  try:
+                      resp = urllib.request.urlopen(req, timeout=60)
+                      print(f'OK   labels #{num} add={add} remove={remove}')
+                  except urllib.error.HTTPError as e:
+                      print(f'FAIL labels #{num}: {e.read().decode()}'); code = 1
+          sys.exit(code)
+          PYEOF
+          python3 /tmp/apply.py
