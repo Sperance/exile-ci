@@ -777,6 +777,11 @@ jobs:
             printf '%s\n%s\n%s\n%s\n%s\n' "$GH_ISSUES_TOKEN" "$REPORTS_WORK_TOKEN" "$REPORTS_RELAY_TOKEN" "$GOOGLE_WEB_CLIENT_ID" "$REPORTS_READ_TOKEN" | VPS_HOST=$HOST VPS_KEY_FILE="$RUNNER_TEMP/key" bash ci/quiet.sh deploy-test-legacy \
               bash ci/vps-ssh.sh "deploy $IMAGE_SHA $DIGEST"
           fi
+      - name: Verify the test report reader
+        env:
+          REPORTS_READ_TOKEN: ${{ secrets.REPORTS_READ_TOKEN }}
+          TEST_SERVER_URL: ${{ vars.TEST_SERVER_URL }}
+        run: bash ci/test-report-reader.sh "$TEST_SERVER_URL"
       # Список Issue тестовой сборки идёт на тест тем же защищённым путём, что и выкат (ci/test-build.sh): сервер теста не зависит от чтения GitHub.
       # Нет номера сборки (ручной выкат) - шаг ничего не делает; старый update.sh теста команду отвергает - предупреждение, не провал.
       - name: Send the test build issues to the test server
