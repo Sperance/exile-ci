@@ -753,6 +753,7 @@ jobs:
           KEY: ${{ secrets.DEPLOY_SSH_KEY_TEST }}
           GH_ISSUES_TOKEN: ${{ secrets.GH_ISSUES_TOKEN }}
           REPORTS_WORK_TOKEN: ${{ secrets.REPORTS_WORK_TOKEN }}
+          REPORTS_READ_TOKEN: ${{ secrets.REPORTS_READ_TOKEN }}
           REPORTS_RELAY_TOKEN: ${{ steps.relay.outputs.relay }}
           GOOGLE_WEB_CLIENT_ID: ${{ vars.GOOGLE_WEB_CLIENT_ID }}
           DIGEST: ${{ steps.image.outputs.digest }}
@@ -761,6 +762,7 @@ jobs:
           VPS_HOST_KEY: ${{ vars.VPS_HOST_KEY }}
         run: |
           [[ -n $HOST && -n $KEY ]] || { echo "::error::DEPLOY_HOST or DEPLOY_SSH_KEY_TEST is not set"; exit 1; }
+          [[ -z $REPORTS_READ_TOKEN || $REPORTS_READ_TOKEN == - || $REPORTS_READ_TOKEN =~ ^[a-f0-9]{64}$ ]] || { echo "::error::malformed test REPORTS_READ_TOKEN"; exit 1; }
           [[ $GOOGLE_WEB_CLIENT_ID =~ ^[A-Za-z0-9._-]*$ ]] || { echo "::error::malformed GOOGLE_WEB_CLIENT_ID variable"; exit 1; }
           [[ $DIGEST =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::no image digest to deploy"; exit 1; }
           [[ $IMAGE_SHA =~ ^[0-9a-f]{40}$ ]] || { echo "::error::no commit of the image to deploy"; exit 1; }
@@ -769,10 +771,10 @@ jobs:
           # Ключ теста на VPS привязан к update.sh проекта /opt/exileforge-test: боевую установку эта команда достать не может.
           # Третье слово - показываемая версия теста: update.sh кладёт её в .env как TEST_SERVER_VERSION. update.sh на VPS, ещё не знающий
           # третьего слова, отвергает команду: тогда выкат идёт прежней командой из двух слов, а сводка просит обновить update.sh теста.
-          if ! printf '%s\n%s\n%s\n%s\n' "$GH_ISSUES_TOKEN" "$REPORTS_WORK_TOKEN" "$REPORTS_RELAY_TOKEN" "$GOOGLE_WEB_CLIENT_ID" | VPS_HOST=$HOST VPS_KEY_FILE="$RUNNER_TEMP/key" bash ci/quiet.sh deploy-test \
+          if ! printf '%s\n%s\n%s\n%s\n%s\n' "$GH_ISSUES_TOKEN" "$REPORTS_WORK_TOKEN" "$REPORTS_RELAY_TOKEN" "$GOOGLE_WEB_CLIENT_ID" "$REPORTS_READ_TOKEN" | VPS_HOST=$HOST VPS_KEY_FILE="$RUNNER_TEMP/key" bash ci/quiet.sh deploy-test \
             bash ci/vps-ssh.sh "deploy $IMAGE_SHA $DIGEST${TEST_VERSION:+ $TEST_VERSION}"; then
             echo "::warning::deploy with the test version failed - retrying without it; update update.sh and compose.yaml of the test stand from deploy/test"
-            printf '%s\n%s\n%s\n%s\n' "$GH_ISSUES_TOKEN" "$REPORTS_WORK_TOKEN" "$REPORTS_RELAY_TOKEN" "$GOOGLE_WEB_CLIENT_ID" | VPS_HOST=$HOST VPS_KEY_FILE="$RUNNER_TEMP/key" bash ci/quiet.sh deploy-test-legacy \
+            printf '%s\n%s\n%s\n%s\n%s\n' "$GH_ISSUES_TOKEN" "$REPORTS_WORK_TOKEN" "$REPORTS_RELAY_TOKEN" "$GOOGLE_WEB_CLIENT_ID" "$REPORTS_READ_TOKEN" | VPS_HOST=$HOST VPS_KEY_FILE="$RUNNER_TEMP/key" bash ci/quiet.sh deploy-test-legacy \
               bash ci/vps-ssh.sh "deploy $IMAGE_SHA $DIGEST"
           fi
       # Список Issue тестовой сборки идёт на тест тем же защищённым путём, что и выкат (ci/test-build.sh): сервер теста не зависит от чтения GitHub.
