@@ -19,6 +19,13 @@ status=$(bash "$ci/retry.sh" read curl -sS --max-time 15 -o /dev/null -w '%{http
 request "$base/statuses?state=open" |
     jq -e '.success == true and (.data | type == "object") and ((.data.open // 0) | type == "number")' >/dev/null
 echo 'Report status counts verified'
+
+all_page=$(request "$base/list?state=all&sort=number&order=asc&limit=1")
+jq -e '.success == true and (.data | type == "object") and
+    ((.data.items // []) | type == "array" and length <= 1) and
+    (.data.next == null or .data.next == .data.items[0].number)' <<<"$all_page" >/dev/null
+echo 'Unfiltered report list verified'
+
 page=$(request "$base/list?state=open&sort=updated&order=desc&limit=1")
 jq -e '.success == true and ((.data.items // []) | type == "array" and length <= 1 and all((.state // "open") == "open"))' <<<"$page" >/dev/null
 

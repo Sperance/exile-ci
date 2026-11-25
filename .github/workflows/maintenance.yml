@@ -89,11 +89,11 @@ on:
         required: false
         default: ''
       numbers:
-        description: 'Task report-labels: space-separated report numbers (e.g. 7 14 29 30)'
+        description: 'Task report-labels: space-separated numbers, or number@revision for claim and unclaim'
         required: false
         default: ''
       op:
-        description: 'Task report-labels: label operations, space-separated (e.g. +ready -in-progress); for close: close:<reason> e.g. close:wontfix'
+        description: 'Task report-labels: claim:<workId>, unclaim:<workId>, space-separated label operations, or close:<reason>'
         required: false
         default: ''
   push:
@@ -615,7 +615,7 @@ jobs:
           OP: ${{ inputs.op }}
         run: |
           cat > /tmp/apply.py << 'PYEOF'
-          import os, sys, json, urllib.request, urllib.error
+          import os, re, sys, json, urllib.request, urllib.error
           token = os.environ['REPORTS_WORK_TOKEN']
           base = os.environ['SERVER_URL'].rstrip('/')
           numbers = os.environ['NUMBERS'].split()
@@ -624,6 +624,37 @@ jobs:
           add = [o[1:] for o in ops if o.startswith('+')]
           remove = [o[1:] for o in ops if o.startswith('-')]
           headers = {'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'}
+          claim_ops = [op.partition(':') for op in ops if op.partition(':')[0] in ('claim', 'unclaim')]
+          if claim_ops:
+              action, _, work_id = claim_ops[0]
+              if len(ops) != 1 or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,79}', work_id):
+                  sys.exit('Use exactly one claim:<workId> or unclaim:<workId> operation')
+              if not numbers or any(not re.fullmatch(r'[1-9][0-9]*@(0|[1-9][0-9]*)', item) for item in numbers):
+                  sys.exit('Use number@revision for each selected report')
+              accepted = {'CLAIMED', 'ALREADY_CLAIMED'} if action == 'claim' else {'RELEASED'}
+              code = 0
+              for item in numbers:
+                  raw_number, raw_revision = item.split('@')
+                  num = int(raw_number)
+                  body = json.dumps({'number': num, 'revision': int(raw_revision), 'workId': work_id, 'test': True}).encode()
+                  req = urllib.request.Request(f'{base}/api/v1/reports-work/{action}', data=body, headers=headers, method='POST')
+                  try:
+                      with urllib.request.urlopen(req, timeout=60) as response:
+                          result = json.load(response)
+                  except (OSError, ValueError) as error:
+                      print(f'FAIL {action} #{num}: {type(error).__name__}')
+                      code = 1
+                      continue
+                  data = result.get('data') or {}
+                  summary = data.get('summary') or {}
+                  status = data.get('status')
+                  if result.get('success') is True and status in accepted and summary.get('number') == num and summary.get('test') is True:
+                      print(f'OK   {action} #{num}: {status}')
+                  else:
+                      print(f'FAIL {action} #{num}: {status or "invalid response"}')
+                      code = 1
+              sys.exit(code)
+
           code = 0
           for n in numbers:
               num = int(n)

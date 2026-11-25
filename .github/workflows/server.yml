@@ -609,20 +609,20 @@ jobs:
       # Отметка выката и Issues серверных коммитов: диапазон - от ближайшего выкаченного предка (тег server-deployed/<sha>) до этого
       # коммита. Прошлый выкат считается до новой отметки. Issues закрывает только выкат сервера без клиента: при выпуске клиента их
       # закрывает job `release` client.yml (метка версии). Нет отметки прошлого выката - Issues не закрываются, отметка ставится.
-      - name: Mark the deploy and close the server issues
+      - name: Mark the deploy and close the server reports
         if: ${{ steps.client.outputs.ready == 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
-          ISSUES_TOKEN: ${{ secrets.EXILEFORGE_TOKEN }}
           REPORTS_API_URL: ${{ vars.SERVER_URL }}
+          TEST_REPORTS_API_URL: ${{ vars.TEST_SERVER_URL }}
           REPORTS_WORK_TOKEN: ${{ secrets.REPORTS_WORK_TOKEN }}
         run: |
           bash ci/retry.sh read gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/server-deployed/" --paginate --jq '.[].ref' > "$RUNNER_TEMP/deployed.txt"
-          base=$(python3 -I ci/release_state.py baseline --srv server --head "$SHA" --deployed "$RUNNER_TEMP/deployed.txt")
-          if [ -z "$VERSION" ] && [ -n "$ISSUES_TOKEN" ]; then
-            GH_TOKEN=$ISSUES_TOKEN bash ci/close-server-issues.sh Sperance/ExileForge server "$base" "$SHA" || echo "::warning::server issues were not closed"
-          fi
+          base=$(python3 -I ci/release_state.py baseline --srv server --head "$SHA" --deployed "$RUNNER_TEMP/deployed.txt" --exclude "$SHA")
           bash ci/retry.sh idem gh api -X POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/server-deployed/$SHA" -f sha="$GITHUB_SHA" >/dev/null || echo "::notice::deploy mark already exists"
+          if [ -z "$VERSION" ]; then
+            bash ci/close-server-issues.sh Sperance/ExileForge server "$base" "$SHA"
+          fi
       # Новый текст IMPORTANT.md выложенного сервера - пост в тему «Важное» группы Telegram (telegram-important.yml); после выпуска клиента
       # заголовок несёт его версию. Выкат сервера без клиента - ещё и пост новых пунктов «[сервер]» заметок (telegram-server-notes.yml).
       - name: Announce the important news

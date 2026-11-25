@@ -1020,22 +1020,7 @@ jobs:
           TAG: ${{ steps.version.outputs.tag }}
           DISPATCH_WAIT_SOFT: '1'
         run: bash ../ci/dispatch-wait.sh telegram.yml main -f tag="$TAG"
-      # Issues, что чинит релиз: коммиты клиента с прошлого релиза, что называют трейлером `Issue: #N`, и коммиты сервера между
-      # закреплёнными в клиенте серверами прошлого и этого релиза с трейлером `Refs <репо клиента>#N` (история backend/ нужна целиком) -
-      # Issue получает метку версии и закрывается выполненным, без комментария; игра увидит это синхронизацией сервера.
-      # Рабочая ветка - не основная, сам GitHub по таким словам Issues не закрывает.
-      - if: steps.version.outputs.exists == 'false'
-        name: Close the issues this release fixes
-        working-directory: src
-        env:
-          GH_TOKEN: ${{ secrets.EXILEFORGE_TOKEN }}
-          TAG: ${{ steps.version.outputs.tag }}
-          REPORTS_API_URL: ${{ vars.SERVER_URL }}
-          REPORTS_WORK_TOKEN: ${{ secrets.REPORTS_WORK_TOKEN }}
-        run: |
-          bash ../ci/retry.sh read git -C backend fetch --quiet --unshallow 2>/dev/null || true
-          bash ../ci/close-issues.sh "$CLIENT_REPO" "$TAG" "$SHA"
-      # Прямой канал сервер узнаёт отчётом: релиз GitHub вышел, доля 1.0. Новый деплой сервера (шаг выше) ещё идёт, поэтому отчёт
+      # Прямой канал сервер узнаёт отчётом: релиз GitHub вышел, доля 1.0. Новый деплой сервера ещё идёт, поэтому отчёт
       # может не дойти (маршрута нет у прежнего сервера) - это предупреждение, отчёт повторит задача store-status (после выкладки и раз в 6 часов) в maintenance.yml.
       - if: steps.version.outputs.exists == 'false'
         name: Report the direct channel to the server
@@ -1049,8 +1034,7 @@ jobs:
           bash ci/quiet.sh report-direct python3 ci/store-status.py direct update.json || code=$?
           cat "$PUBLIC_NOTES" 2>/dev/null || true
           exit $code
-      # Сервер с новым API ждёт этот релиз: деплой проверенного образа головы рабочей ветки сервера (server.yml, режим deploy) запускается последним шагом
-      # job'а, когда пост, Issues и отчёт канала уже сделаны, и job ДОЖИДАЕТСЯ его итога: красный деплой, баланс или обновление кэша - красный release
+      # Сервер с новым API ждёт этот релиз: job дожидается деплоя перед закрытием отчётов. Красный деплой, баланс или обновление кэша - красный release
       # (job'ы publish-* и gradle-cache после него не стартуют). Тупика нет: job держит группу `release`, деплой сервера идёт в группах deploy и
       # balance-transfer, обновление кэша - client.yml cache в группах client-changes-cache и gradle-cache (ни одна не общая с `release`; gradle-cache
       # этого же прогона стартует только после release).
@@ -1062,6 +1046,20 @@ jobs:
           SKIP_TEST: ${{ inputs.skip_test || false }}
           TAG: ${{ steps.version.outputs.tag }}
         run: bash ../ci/dispatch-wait.sh server.yml main -f mode=deploy -f force_breaking="$FORCE" -f skip_test="$SKIP_TEST" -f version="${TAG#v}"
+      # Повтор прогона с тем же опубликованным тегом снова сверяет и закрывает отчёты.
+      - name: Close the reports this release fixes
+        working-directory: src
+        env:
+          GH_TOKEN: ${{ secrets.EXILEFORGE_TOKEN }}
+          TAG: ${{ steps.version.outputs.tag }}
+          REPORTS_API_URL: ${{ vars.SERVER_URL }}
+          TEST_REPORTS_API_URL: ${{ vars.TEST_SERVER_URL }}
+          REPORTS_WORK_TOKEN: ${{ secrets.REPORTS_WORK_TOKEN }}
+        run: |
+          if [[ $(git -C backend rev-parse --is-shallow-repository) == true ]]; then
+            bash ../ci/retry.sh read git -C backend fetch --quiet --unshallow
+          fi
+          bash ../ci/close-issues.sh "$CLIENT_REPO" "$TAG" "$SHA"
       - name: Encrypted log
         if: failure()
         uses: ./.github/actions/upload-log
@@ -1283,7 +1281,7 @@ jobs:
           # (QA_BASE из шага «Test plan»; её нет - вся история): сервер теста по ней знает, в какой сборке исправление пришло к автору
           # (TestBuildLedger: у Issue - самая новая сборка, что его называет; повторная починка после замечания автора уходит в новую сборку).
           base=$QA_BASE; [ "$base" = - ] && base=
-          issues=$(python3 -I ci/release_state.py issues --cli src --srv src/backend --base "$base" --head "$SHA" --repo "$CLIENT_REPO" | tr -s ' ' ',')
+          issues=$(python3 -I ci/release_state.py issues --cli src --srv src/backend --base "$base" --head "$SHA" --repo "$CLIENT_REPO" --queue test | tr -s ' ' ',')
           # История обновлений теста (#1085): запись этой сборки - новые пункты «Следующей версии» с прошлой тестовой сборки с номерами Issues и пункты
           # Test-Plan - едет маркером <!-- test-update: base64 --> в тело ЭТОГО приватного предрелиза; тестовый сервер читает его тем же ключом, что номера
           # Issues выше. В публичный exile-ci и его журналы пункты не попадают (старые блобы RELEASE_NOTES.md докачиваются с ключом чтения, он замаскирован).

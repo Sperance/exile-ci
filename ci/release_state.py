@@ -69,10 +69,12 @@ def text_at(directory, ref, path):
     return data.decode("utf-8") if data is not None else ""
 
 
-def messages(directory, base, head):
+def messages(directory, base, head, strict=False):
     """Тексты коммитов base..head (base пуст - вся история head). Нет истории - пустой список."""
     span = f"{base}..{head}" if base else head
     out = run(directory, "log", "-z", "--format=%B", span)
+    if out is None and strict:
+        raise Unreadable(f"the commit range ending at {head[:12]} cannot be read")
     return [part for part in (out or b"").decode("utf-8", "replace").split(SPLIT) if part.strip()]
 
 
@@ -81,20 +83,24 @@ def trailer_values(texts, name):
     return [m.group(1).strip() for text in texts for m in pattern.finditer(text)]
 
 
-def pin(cli, ref):
+def pin(cli, ref, strict=False):
     out = run(cli, "ls-tree", ref, "backend")
     fields = (out or b"").decode().split()
-    return fields[2] if len(fields) >= 3 and re.fullmatch(r"[0-9a-f]{40}", fields[2]) else ""
+    if len(fields) >= 3 and re.fullmatch(r"[0-9a-f]{40}", fields[2]):
+        return fields[2]
+    if strict:
+        raise Unreadable(f"the backend pin at {ref[:12]} cannot be read")
+    return ""
 
 
-def release_messages(cli, srv, base, head):
+def release_messages(cli, srv, base, head, strict=False):
     """Тексты коммитов с прошлого выпуска: клиента base..head и сервера - от сервера, закреплённого на base, до закреплённого на head."""
     server = []
     if base:
-        old, new = pin(cli, base), pin(cli, head)
+        old, new = pin(cli, base, strict), pin(cli, head, strict)
         if old and new and old != new:
-            server = messages(srv, old, new)
-    return messages(cli, base, head), server
+            server = messages(srv, old, new, strict)
+    return messages(cli, base, head, strict), server
 
 
 def issue_numbers(client, server, repo):
@@ -105,6 +111,20 @@ def issue_numbers(client, server, repo):
     refs = re.compile(rf"^Refs {re.escape(repo)}#(\d+)", re.MULTILINE)
     for text in server:
         found.update(int(n) for n in refs.findall(text))
+    return sorted(found)
+
+
+def qualified_issue_numbers(client, server, repo, queue):
+    found = set()
+    for texts, ref in ((client, r"Issue: #(\d+)"), (server, rf"Refs {re.escape(repo)}#(\d+)")):
+        pattern = re.compile(rf"^{ref}[ \t]*$", re.MULTILINE)
+        for message in texts:
+            queues = set(trailer_values([message], "Report-Queue"))
+            numbers = pattern.findall(message)
+            if numbers and queues and (len(queues) != 1 or not queues <= {"test", "prod"}):
+                raise Unreadable("an issue commit has an invalid or ambiguous Report-Queue trailer")
+            if queues == {queue}:
+                found.update(map(int, numbers))
     return sorted(found)
 
 
@@ -307,14 +327,22 @@ def command_preview(args):
 
 
 def command_issues(args):
-    client, server = release_messages(args.cli, args.srv, args.base, args.head)
-    print(" ".join(str(n) for n in issue_numbers(client, server, args.repo)))
+    client, server = release_messages(args.cli, args.srv, args.base, args.head, strict=bool(args.queue))
+    print_issues(client, server, args)
     return 0
 
 
 def command_server_issues(args):
-    print(" ".join(str(n) for n in issue_numbers([], messages(args.srv, args.base, args.head), args.repo)))
+    print_issues([], messages(args.srv, args.base, args.head, strict=bool(args.queue)), args)
     return 0
+
+
+def print_issues(client, server, args):
+    if args.queue:
+        values = qualified_issue_numbers(client, server, args.repo, args.queue)
+    else:
+        values = issue_numbers(client, server, args.repo)
+    print(" ".join(map(str, values)))
 
 
 def command_trailer(args):
@@ -325,7 +353,7 @@ def command_trailer(args):
 
 
 def command_baseline(args):
-    print(deployed_baseline(args.srv, args.head, listed(args.deployed)))
+    print(deployed_baseline(args.srv, args.head, listed(args.deployed) - {args.exclude}))
     return 0
 
 
@@ -343,12 +371,14 @@ def parser():
     add("preview", command_preview, "cli", "srv", "base", "head", "srv-head", "last", "repo", "out", "summary", "posted-important", "posted-server", "deployed")
     add("issues", command_issues, "cli", "srv", "base", "head", "repo")
     add("server-issues", command_server_issues, "srv", "base", "head", "repo")
+    for name in ("issues", "server-issues"):
+        sub.choices[name].add_argument("--queue", choices=("test", "prod"), default="")
     p = sub.add_parser("trailer")
     p.add_argument("name")
     for option in ("cli", "srv", "base", "head"):
         p.add_argument(f"--{option}", default="")
     p.set_defaults(handler=command_trailer)
-    add("baseline", command_baseline, "srv", "head", "deployed")
+    add("baseline", command_baseline, "srv", "head", "deployed", "exclude")
     return root
 
 
