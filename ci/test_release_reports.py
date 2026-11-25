@@ -22,6 +22,12 @@ class ReleaseReportTest(unittest.TestCase):
         self.assertEqual(release_state.qualified_issue_numbers(client, [], "owner/client", "test"), [43])
         self.assertEqual(release_state.qualified_issue_numbers(client, [], "owner/client", "test", closing=True), [42, 43])
 
+    def test_new_qa_reference_requires_an_explicit_queue(self):
+        client = ["Issue: #32"]
+        with self.assertRaisesRegex(release_state.Unreadable, "no Report-Queue"):
+            release_state.qualified_issue_numbers(client, [], "owner/client", "test", require_queue=True)
+        self.assertEqual(release_state.qualified_issue_numbers(client, [], "owner/client", "test"), [])
+
     def test_ambiguous_origin_and_unreadable_history_fail_closed(self):
         with self.assertRaises(release_state.Unreadable):
             release_state.qualified_issue_numbers(["Issue: #42\nReport-Queue: test\nReport-Queue: prod"], [], "owner/client", "test")

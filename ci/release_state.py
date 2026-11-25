@@ -41,6 +41,10 @@ class Unreadable(Exception):
     недочитанные заметки в «все строки потеряны»."""
 
 
+class InvalidReportReference(Unreadable):
+    pass
+
+
 def run(directory, *args):
     done = net.run(net.READ, ["git", "-C", directory, *args], capture_output=True)
     return done.stdout if done.returncode == 0 else None
@@ -116,7 +120,7 @@ def issue_numbers(client, server, repo):
     return sorted(found)
 
 
-def qualified_issue_numbers(client, server, repo, queue, closing=False):
+def qualified_issue_numbers(client, server, repo, queue, closing=False, require_queue=False):
     found = set()
     for texts, ref in ((client, r"Issue: #(\d+)"), (server, rf"Refs {re.escape(repo)}#(\d+)")):
         trailer = rf"(?:{ref}|Report-Release: #(\d+))" if closing else ref
@@ -124,8 +128,10 @@ def qualified_issue_numbers(client, server, repo, queue, closing=False):
         for message in texts:
             queues = set(trailer_values([message], "Report-Queue"))
             numbers = [next(n for n in match.groups() if n is not None) for match in pattern.finditer(message)]
+            if numbers and require_queue and not queues:
+                raise InvalidReportReference("a new issue reference has no Report-Queue trailer (test or prod)")
             if numbers and queues and (len(queues) != 1 or not queues <= {"test", "prod"}):
-                raise Unreadable("an issue commit has an invalid or ambiguous Report-Queue trailer")
+                raise InvalidReportReference("an issue commit has an invalid or ambiguous Report-Queue trailer")
             if queues == {queue}:
                 found.update(map(int, numbers))
     return sorted(found)
@@ -342,7 +348,7 @@ def command_server_issues(args):
 
 def print_issues(client, server, args):
     if args.queue:
-        values = qualified_issue_numbers(client, server, args.repo, args.queue, args.closing)
+        values = qualified_issue_numbers(client, server, args.repo, args.queue, args.closing, args.require_queue)
     else:
         values = issue_numbers(client, server, args.repo)
     print(" ".join(map(str, values)))
@@ -377,6 +383,7 @@ def parser():
     for name in ("issues", "server-issues"):
         sub.choices[name].add_argument("--queue", choices=("test", "prod"), default="")
         sub.choices[name].add_argument("--closing", action="store_true")
+        sub.choices[name].add_argument("--require-queue", action="store_true")
     p = sub.add_parser("trailer")
     p.add_argument("name")
     for option in ("cli", "srv", "base", "head"):
@@ -390,6 +397,9 @@ def main():
     args = parser().parse_args()
     try:
         sys.exit(args.handler(args))
+    except InvalidReportReference as error:
+        say(f"report registry: {error}")
+        sys.exit(1)
     except Unreadable as error:
         say(f"release guards: cannot read the git history: {error}; the clones fetch blobs lazily, so rerun the job instead of editing the notes")
         sys.exit(1)
