@@ -81,6 +81,7 @@ REPORTS_WORK_TOKEN=fixture close_issues https://example.test "$test" v1.2.3 42
 
     def test_release_closure_defers_work_and_new_author_replies(self):
         for fields, detail in (
+            ({}, {}),
             ({"labels": ["disputed"]}, {}),
             ({"labels": ["in-progress"]}, {}),
             ({"workId": "active"}, {}),

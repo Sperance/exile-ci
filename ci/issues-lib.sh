@@ -34,7 +34,7 @@ elif state != "open":
     sys.exit(1)
 elif labels & {"disputed", "in-progress"} or s.get("workId") or detail.get("authorReplyAfterVerificationAt", 0) > 0:
     print("waiting")
-elif not s.get("test", False) and "ready" not in labels:
+elif "ready" not in labels and not (s.get("test", False) and "verified" in labels):
     print("waiting")
 else:
     print(int(s["revision"]), int(s.get("readyBuild", 0)))
