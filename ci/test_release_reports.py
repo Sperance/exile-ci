@@ -16,6 +16,11 @@ class ReleaseReportTest(unittest.TestCase):
         self.assertEqual(release_state.qualified_issue_numbers(client, server, repo, "prod"), [42, 43])
         self.assertEqual(release_state.issue_numbers(client, server, repo), [42, 43, 44, 45])
 
+    def test_historical_fix_is_selected_only_for_closure(self):
+        client = ["Report-Release: #42\nIssue: #43\nReport-Queue: test"]
+        self.assertEqual(release_state.qualified_issue_numbers(client, [], "owner/client", "test"), [43])
+        self.assertEqual(release_state.qualified_issue_numbers(client, [], "owner/client", "test", closing=True), [42, 43])
+
     def test_ambiguous_origin_and_unreadable_history_fail_closed(self):
         with self.assertRaises(release_state.Unreadable):
             release_state.qualified_issue_numbers(["Issue: #42\nReport-Queue: test\nReport-Queue: prod"], [], "owner/client", "test")

@@ -11,10 +11,10 @@ here=$(dirname "${BASH_SOURCE[0]}")
 . "$here/issues-lib.sh"
 
 [ -n "$base" ] || { echo "no previous deploy mark: no server issues closed"; exit 0; }
-prod=$(python3 -I "$here/release_state.py" server-issues --srv "$server" --base "$base" --head "$SHA" --repo "$repo" --queue prod)
-test=$(python3 -I "$here/release_state.py" server-issues --srv "$server" --base "$base" --head "$SHA" --repo "$repo" --queue test)
+prod=$(python3 -I "$here/release_state.py" server-issues --srv "$server" --base "$base" --head "$SHA" --repo "$repo" --queue prod --closing)
+test=$(python3 -I "$here/release_state.py" server-issues --srv "$server" --base "$base" --head "$SHA" --repo "$repo" --queue test --closing)
 day=$(date -u +%F)
 failed=0
 close_issues "${REPORTS_API_URL:-}" false "сервер $day" "$prod" || failed=1
-close_issues "${TEST_REPORTS_API_URL:-}" true "сервер $day" "$test" || failed=1
+close_issues "${TEST_REPORTS_API_URL:-}" true "сервер $day" "$test" "$SHA" "$server" "$repo" || failed=1
 exit "$failed"

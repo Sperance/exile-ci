@@ -616,6 +616,7 @@ jobs:
           REPORTS_API_URL: ${{ vars.SERVER_URL }}
           TEST_REPORTS_API_URL: ${{ vars.TEST_SERVER_URL }}
           REPORTS_WORK_TOKEN: ${{ secrets.REPORTS_WORK_TOKEN }}
+          QA_SOURCE_TOKEN: ${{ secrets.SOURCE_TOKEN }}
         run: |
           bash ci/retry.sh read gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/server-deployed/" --paginate --jq '.[].ref' > "$RUNNER_TEMP/deployed.txt"
           base=$(python3 -I ci/release_state.py baseline --srv server --head "$SHA" --deployed "$RUNNER_TEMP/deployed.txt" --exclude "$SHA")

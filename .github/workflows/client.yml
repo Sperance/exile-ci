@@ -1040,6 +1040,7 @@ jobs:
       # этого же прогона стартует только после release).
       - if: steps.version.outputs.exists == 'false'
         name: Deploy the server and wait for it
+        id: deploy
         env:
           GH_TOKEN: ${{ github.token }}
           FORCE: ${{ inputs.force_breaking || false }}
@@ -1055,7 +1056,15 @@ jobs:
           REPORTS_API_URL: ${{ vars.SERVER_URL }}
           TEST_REPORTS_API_URL: ${{ vars.TEST_SERVER_URL }}
           REPORTS_WORK_TOKEN: ${{ secrets.REPORTS_WORK_TOKEN }}
+          DEPLOY_OUTCOME: ${{ steps.deploy.outcome }}
+          DEPLOY_READ_TOKEN: ${{ github.token }}
         run: |
+          if [ "$DEPLOY_OUTCOME" != success ]; then
+            pin=$(git ls-tree "$SHA" backend | awk '$1 == "160000" {print $3}')
+            [[ $pin =~ ^[0-9a-f]{40}$ ]] || exit 1
+            GH_TOKEN="$DEPLOY_READ_TOKEN" bash ../ci/retry.sh read gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/server-deployed/$pin" --silent \
+              || { echo "::error::the server pinned by this release has no confirmed deploy"; exit 1; }
+          fi
           if [[ $(git -C backend rev-parse --is-shallow-repository) == true ]]; then
             bash ../ci/retry.sh read git -C backend fetch --quiet --unshallow
           fi

@@ -71,6 +71,8 @@ def text_at(directory, ref, path):
 
 def messages(directory, base, head, strict=False):
     """Тексты коммитов base..head (base пуст - вся история head). Нет истории - пустой список."""
+    if strict and base and run(directory, "merge-base", "--is-ancestor", base, head) is None:
+        raise Unreadable(f"the baseline is not a known ancestor of {head[:12]}")
     span = f"{base}..{head}" if base else head
     out = run(directory, "log", "-z", "--format=%B", span)
     if out is None and strict:
@@ -114,13 +116,14 @@ def issue_numbers(client, server, repo):
     return sorted(found)
 
 
-def qualified_issue_numbers(client, server, repo, queue):
+def qualified_issue_numbers(client, server, repo, queue, closing=False):
     found = set()
     for texts, ref in ((client, r"Issue: #(\d+)"), (server, rf"Refs {re.escape(repo)}#(\d+)")):
-        pattern = re.compile(rf"^{ref}[ \t]*$", re.MULTILINE)
+        trailer = rf"(?:{ref}|Report-Release: #(\d+))" if closing else ref
+        pattern = re.compile(rf"^{trailer}[ \t]*$", re.MULTILINE)
         for message in texts:
             queues = set(trailer_values([message], "Report-Queue"))
-            numbers = pattern.findall(message)
+            numbers = [next(n for n in match.groups() if n is not None) for match in pattern.finditer(message)]
             if numbers and queues and (len(queues) != 1 or not queues <= {"test", "prod"}):
                 raise Unreadable("an issue commit has an invalid or ambiguous Report-Queue trailer")
             if queues == {queue}:
@@ -339,7 +342,7 @@ def command_server_issues(args):
 
 def print_issues(client, server, args):
     if args.queue:
-        values = qualified_issue_numbers(client, server, args.repo, args.queue)
+        values = qualified_issue_numbers(client, server, args.repo, args.queue, args.closing)
     else:
         values = issue_numbers(client, server, args.repo)
     print(" ".join(map(str, values)))
@@ -373,6 +376,7 @@ def parser():
     add("server-issues", command_server_issues, "srv", "base", "head", "repo")
     for name in ("issues", "server-issues"):
         sub.choices[name].add_argument("--queue", choices=("test", "prod"), default="")
+        sub.choices[name].add_argument("--closing", action="store_true")
     p = sub.add_parser("trailer")
     p.add_argument("name")
     for option in ("cli", "srv", "base", "head"):
