@@ -1,4 +1,5 @@
 import os
+import subprocess
 import sys
 import unittest
 from unittest.mock import patch
@@ -27,3 +28,21 @@ class ReleaseReportTest(unittest.TestCase):
         with patch.object(release_state, "run", return_value=None):
             with self.assertRaises(release_state.Unreadable):
                 release_state.messages("client", "base", "head", strict=True)
+
+    def test_release_closure_accepts_omitted_open_state(self):
+        result = subprocess.run(
+            ["bash", "-eu", "-c", """
+source "$1"
+netcall() {
+  case $1 in
+    read) echo '{"data":{"summary":{"number":42,"revision":9}}}' ;;
+    idem) echo '{"data":{"number":42,"state":"closed","stateReason":"completed","labels":["v1.2.3"]}}' ;;
+    *) return 1 ;;
+  esac
+}
+REPORTS_WORK_TOKEN=fixture close_issues https://example.test false v1.2.3 42
+""", "fixture", os.path.join(os.path.dirname(__file__), "issues-lib.sh")],
+            capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("closed in v1.2.3", result.stdout)

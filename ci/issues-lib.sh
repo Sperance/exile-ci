@@ -23,9 +23,9 @@ import json, sys
 s = json.load(sys.stdin)["data"]["summary"]
 if s.get("test", False) != (sys.argv[1] == "true") or s["number"] != int(sys.argv[2]):
     sys.exit(1)
-if s["state"] == "closed" and s.get("stateReason") == "completed" and sys.argv[3] in s.get("labels", []):
+if s.get("state", "open") == "closed" and s.get("stateReason") == "completed" and sys.argv[3] in s.get("labels", []):
     print("done")
-elif s["state"] == "closed":
+elif s.get("state", "open") == "closed":
     print("kept")
 else:
     print(int(s["revision"]), int(s.get("readyBuild", 0)))
@@ -49,7 +49,7 @@ else:
   printf '%s' "$reply" | python3 -I -c '
 import json, sys
 s = json.load(sys.stdin)["data"]
-sys.exit(0 if s["number"] == int(sys.argv[1]) and s["state"] == "closed" and s.get("stateReason") == "completed" and sys.argv[2] in s.get("labels", []) else 1)
+sys.exit(0 if s["number"] == int(sys.argv[1]) and s.get("state") == "closed" and s.get("stateReason") == "completed" and sys.argv[2] in s.get("labels", []) else 1)
 ' "$n" "$label" || return 1
   echo "#$n ($test): closed in $label"
 }
