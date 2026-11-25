@@ -1247,11 +1247,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          prev=$(bash ci/retry.sh read gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq '.[] | select(.prerelease) | .tag_name' | grep -E '^qa-[0-9]+$' | sort -t- -k2 -n | tail -1 || true)
+          prev=$(bash ci/retry.sh read gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq '[.[] | select(.prerelease and (.tag_name | test("^qa-[0-9]+$"))) | .tag_name] | sort_by(split("-")[1] | tonumber) | last // ""')
           old=-
-          if [ -n "$prev" ]; then
-            short=$(bash ci/retry.sh read gh release view "$prev" -R "$GITHUB_REPOSITORY" --json body --jq .body | sed -n -e 's/.*commit \([0-9a-f]\{7\}\).*/\1/p' -e 's/.*+\([0-9a-f]\{7\}\) .*/\1/p' | head -1)
-            [ -z "$short" ] || old=$(git -C src rev-parse --verify --quiet "$short^{commit}" || echo -)
+          if [ -n "$prev" ] && ! old=$(git -C src rev-parse --verify --quiet "refs/tags/$prev^{commit}"); then
+            body=$(bash ci/retry.sh read gh release view "$prev" -R "$GITHUB_REPOSITORY" --json body --jq .body)
+            short=$(sed -n -e 's/.*commit \([0-9a-f]\{7\}\).*/\1/p' -e 's/.*+\([0-9a-f]\{7\}\) .*/\1/p' <<<"$body" | head -1)
+            if [ -z "$short" ] || ! old=$(git -C src rev-parse --verify --quiet "$short^{commit}"); then
+              echo "::error::the source commit of the previous published QA $prev cannot be read"
+              exit 1
+            fi
           fi
           python3 -I ci/qa-files.py plan src "$old" "$SHA" "$RUNNER_TEMP/plan.txt"
           echo "QA_BASE=$old" >> "$GITHUB_ENV"

@@ -15,25 +15,45 @@ qa_in_release() {
   git -C "$checkout" merge-base --is-ancestor "$commit" "$released"
 }
 
-queue_close() {
-  local url=$1 test=$2 n=$3 label=$4 released=$5 checkout=$6 private_repo=$7 head state revision ready_build body reply code
+queue_release_state() {
+  local url=$1 test=$2 n=$3 label=$4 head
   head=$(netcall read curl -sS --fail -G -H "Authorization: Bearer $REPORTS_WORK_TOKEN" --data "number=$n" "$url/get") || return 1
-  state=$(printf '%s' "$head" | python3 -I -c '
+  printf '%s' "$head" | python3 -I -c '
 import json, sys
-s = json.load(sys.stdin)["data"]["summary"]
+detail = json.load(sys.stdin)["data"]
+s = detail["summary"]
 if s.get("test", False) != (sys.argv[1] == "true") or s["number"] != int(sys.argv[2]):
     sys.exit(1)
-if s.get("state", "open") == "closed" and s.get("stateReason") == "completed" and sys.argv[3] in s.get("labels", []):
+state = s.get("state", "open")
+labels = set(s.get("labels", []))
+if state == "closed" and s.get("stateReason") == "completed" and sys.argv[3] in labels:
     print("done")
-elif s.get("state", "open") == "closed":
+elif state == "closed":
     print("kept")
+elif state != "open":
+    sys.exit(1)
+elif labels & {"disputed", "in-progress"} or s.get("workId") or detail.get("authorReplyAfterVerificationAt", 0) > 0:
+    print("waiting")
+elif not s.get("test", False) and "ready" not in labels:
+    print("waiting")
 else:
     print(int(s["revision"]), int(s.get("readyBuild", 0)))
-' "$test" "$n" "$label") || return 1
-  if [[ $state == done || $state == kept ]]; then
-    echo "#$n ($test): $state"
-    return 0
-  fi
+' "$test" "$n" "$label"
+}
+
+release_state_unchanged() {
+  local state=$1 n=$2 test=$3
+  case $state in
+    done|kept) echo "#$n ($test): $state" ;;
+    waiting) echo "#$n ($test): work or author response is pending, keeping the report open" ;;
+    *) return 1 ;;
+  esac
+}
+
+queue_close() {
+  local url=$1 test=$2 n=$3 label=$4 released=$5 checkout=$6 private_repo=$7 state revision ready_build body reply code
+  state=$(queue_release_state "$url" "$test" "$n" "$label") || return 1
+  if release_state_unchanged "$state" "$n" "$test"; then return 0; fi
   read -r revision ready_build <<<"$state"
   if [[ $test == true ]]; then
     code=0
@@ -45,13 +65,16 @@ else:
     [[ $code == 0 ]] || return 1
   fi
   body=$(python3 -I -c 'import json, sys; print(json.dumps({"number": int(sys.argv[1]), "revision": int(sys.argv[2]), "test": sys.argv[3] == "true", "label": sys.argv[4], "readyBuild": int(sys.argv[5])}))' "$n" "$revision" "$test" "$label" "$ready_build") || return 1
-  reply=$(netcall idem curl -sS --fail -X POST -H "Authorization: Bearer $REPORTS_WORK_TOKEN" -H 'Content-Type: application/json' --data-binary "$body" "$url/release-close") || return 1
-  printf '%s' "$reply" | python3 -I -c '
+  if reply=$(netcall idem curl -sS --fail -X POST -H "Authorization: Bearer $REPORTS_WORK_TOKEN" -H 'Content-Type: application/json' --data-binary "$body" "$url/release-close") && printf '%s' "$reply" | python3 -I -c '
 import json, sys
 s = json.load(sys.stdin)["data"]
 sys.exit(0 if s["number"] == int(sys.argv[1]) and s.get("state") == "closed" and s.get("stateReason") == "completed" and sys.argv[2] in s.get("labels", []) else 1)
-' "$n" "$label" || return 1
-  echo "#$n ($test): closed in $label"
+' "$n" "$label"; then
+    echo "#$n ($test): closed in $label"
+    return 0
+  fi
+  state=$(queue_release_state "$url" "$test" "$n" "$label") || return 1
+  release_state_unchanged "$state" "$n" "$test"
 }
 
 close_issues() {
