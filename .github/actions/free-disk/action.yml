@@ -1,0 +1,21 @@
+# Место на раннере: образ ubuntu-24.04 несёт Android SDK, Haskell, dotnet и boost, а сборке сервера они не нужны. На занятом раннере
+# Gradle падает «Problems writing to Binary store ...» - места не хватает, и сборка образа (Gradle плюс Docker) - самый тяжёлый job.
+# Шаг печатает свободное место до и после чистки: следующий красный прогон покажет, хватило ли места.
+name: Free the disk
+description: Frees the disk of the runner before a heavy build of the server and prints the free space
+inputs:
+  android:
+    description: "'true' - keep the Android SDK of the runner image (the client build needs it)"
+    default: 'false'
+runs:
+  using: composite
+  steps:
+    - name: Free the disk
+      shell: bash
+      run: |
+        echo "disk before: $(df -h / | tail -1)"
+        sudo rm -rf /opt/ghc /usr/share/dotnet /usr/local/share/boost
+        if [ "${{ inputs.android }}" != "true" ]; then
+          sudo rm -rf /usr/local/lib/android/sdk /usr/local/lib/android/tools /usr/local/lib/android/platform-tools
+        fi
+        echo "disk after: $(df -h / | tail -1)"

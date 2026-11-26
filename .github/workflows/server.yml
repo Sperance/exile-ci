@@ -196,6 +196,8 @@ jobs:
       cancel-in-progress: ${{ needs.resolve.outputs.mode != 'check-wip' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      # Место на раннере: Gradle на занятом раннере падает «Problems writing to Binary store ...»
+      - uses: ./.github/actions/free-disk
       # Версию сервера Gradle считает по истории (patch - число коммитов после правки server-version)
       - uses: ./.github/actions/source
         with:
@@ -241,6 +243,8 @@ jobs:
       cancel-in-progress: ${{ needs.resolve.outputs.mode != 'check-wip' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      # Место на раннере: сборка панели ставит Chromium и запускает сервер
+      - uses: ./.github/actions/free-disk
       - uses: ./.github/actions/source
         with:
           repo: ${{ env.SERVER_REPO }}
@@ -319,6 +323,9 @@ jobs:
           bash ci/quiet.sh oldest-client python3 ci/oldest-client.py server/rules/src/main/kotlin/com/sperance/exileforge/rules/wire/Protocol.kt || code=$?
           cat "$PUBLIC_NOTES" 2>/dev/null || true
           exit $code
+      # Место на раннере: job собирает сервер и тянет образ Mongo
+      - if: ${{ steps.oldest.outputs.tag != '' }}
+        uses: ./.github/actions/free-disk
       - if: ${{ steps.oldest.outputs.tag != '' }}
         uses: ./.github/actions/source
         with:
@@ -397,6 +404,10 @@ jobs:
             echo "digest=$digest" >> "$GITHUB_OUTPUT"
             echo "image of ${SHA:0:12} is already built and checked: no rebuild"
           fi
+      # Место на раннере: сборка образа (Gradle плюс Docker) - самый тяжёлый job, а Gradle на занятом раннере падает
+      # «Problems writing to Binary store ...». Чистка идёт до сборки, свободное место печатается в журнал.
+      - if: steps.existing.outputs.digest == ''
+        uses: ./.github/actions/free-disk
       # Вся история: patch версии - число коммитов после правки server-version, плюс список изменений в метке образа
       - if: steps.existing.outputs.digest == ''
         uses: ./.github/actions/source

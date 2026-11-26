@@ -37,6 +37,11 @@ inputs:
 runs:
   using: composite
   steps:
+    # Место на раннере: Gradle на занятом раннере падает «Problems writing to Binary store ...». Образ раннера несёт Haskell, dotnet и
+    # boost - сборке они не нужны. Android SDK остаётся: клиент собирает на нём.
+    - uses: ./.github/actions/free-disk
+      with:
+        android: 'true'
     - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       with:
         repository: ${{ inputs.repo }}
