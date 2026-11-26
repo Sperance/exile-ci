@@ -6,7 +6,9 @@
            тестовой сборки, каждый с подразделом (`section`: Новое, Изменения, Исправления, Техническое; пусто - пункт вне подразделов; прежняя приставка
            «Техническое: » снимается, пункт уходит в подраздел «Техническое»; пункты сервера несут метку «[сервер]»; номера Issues - трейлеры `Issue: #N` коммита,
            что добавил пункт) и пункты Test-Plan с check=true; нет новых пунктов, а с прошлой тестовой сборки в клиенте или закреплённом сервере есть
-           коммиты feat:/fix:/refactor:/perf: - ошибка (сборка только из ci:/docs:/style:/test:/chore: служебная и проходит без заметок)
+           коммиты feat:/fix:/refactor:/perf: - ошибка (сборка только из ci:/docs:/style:/test:/chore: служебная и проходит без заметок); коммит службы CI
+           с номером версии (`feat: release X`, трейлер `Verified: ci`) игровым изменением не считается - он меняет только номер версии и заголовок
+           заметок, и заметки игроку не нужны
     python3 -I ci/test-history.py marker <файл записи>
         -> строка `<!-- test-update: <base64> -->` для тела приватного предрелиза
 
@@ -29,6 +31,8 @@ ISSUE_TRAILER = re.compile(r"^Issue: #(\d+)", re.MULTILINE)
 FALLBACK_COMMITS = 30
 SERVER_PATH = "backend"
 GAME_TYPES = re.compile(r"^(feat|fix|refactor|perf)(\([^)]*\))?!?:", re.IGNORECASE)
+SERVICE_TYPES = re.compile(r"^(feat|fix|chore|build|docs|style|test|refactor|perf): release \d", re.IGNORECASE)
+SERVICE_TRAILER = re.compile(r"^Verified: ci\s*$", re.MULTILINE)
 ITEM_LIMIT = 300
 ITEMS_LIMIT = 80
 SPLIT = "\x00"
@@ -74,9 +78,21 @@ def commits(clone, old, new):
     return found
 
 
-def subjects(clone, old, new):
-    out = git(clone, "log", "--format=%s", f"{old}..{new}")
-    return None if out is None else [line for line in out.splitlines() if line.strip()]
+def messages(clone, old, new):
+    out = git(clone, "log", "--format=%s%x00%b%x00%x01", f"{old}..{new}")
+    if out is None:
+        return None
+    found = []
+    for block in out.split("\x01"):
+        parts = block.strip("\n").split(SPLIT)
+        if len(parts) >= 2 and parts[0].strip():
+            found.append((parts[0].strip(), parts[1]))
+    return found
+
+
+def is_service(subject, body):
+    """Коммит службы CI с номером версии меняет только номер версии и заголовок заметок: игру он не меняет, и заметки игроку не нужны."""
+    return bool(SERVICE_TYPES.match(subject) or SERVICE_TRAILER.search(body or ""))
 
 
 def pinned(clone, ref):
@@ -85,17 +101,17 @@ def pinned(clone, ref):
 
 
 def game_commits(clone, old, new):
-    found = [subject for subject in subjects(clone, old, new) or [] if GAME_TYPES.match(subject)]
+    found = [subject for subject, body in messages(clone, old, new) or [] if GAME_TYPES.match(subject) and not is_service(subject, body)]
     server_old, server_new = pinned(clone, old), pinned(clone, new)
     if server_old and server_new and server_old != server_new:
         server = os.path.join(clone, SERVER_PATH)
-        listed = subjects(server, server_old, server_new)
+        listed = messages(server, server_old, server_new)
         if listed is None:
             git(server, "fetch", "--quiet", "origin", server_old, server_new)
-            listed = subjects(server, server_old, server_new)
+            listed = messages(server, server_old, server_new)
         if listed is None:
             print("::warning::the commits of the pinned server could not be read: only client commits were checked for update notes")
-        found += [subject for subject in listed or [] if GAME_TYPES.match(subject)]
+        found += [subject for subject, body in listed or [] if GAME_TYPES.match(subject) and not is_service(subject, body)]
     return found
 
 
@@ -149,4 +165,5 @@ def main():
         fail("usage: test-history.py record <clone> <from|-> <to> <name> <build> <plan file|-> <out> | marker <file>")
 
 
-main()
+if __name__ == "__main__":
+    main()

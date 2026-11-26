@@ -4,7 +4,8 @@
 #   syntax   YAML каждого файла .github/**.yml разбирается, каждый блок run проходит `bash -n` (ci/check-syntax.py; нужен модуль yaml)
 #   shell    `bash -n` каждого ci/**.sh и shellcheck (уровень error), если он есть на машине
 #   python   компиляция (синтаксис) каждого ci/**.py
-#   unittests самопроверка ci/test_notes.py (выжимка «Что нового» магазинов), python -m unittest
+#   unittests самопроверка ci/test_notes.py (выжимка «Что нового» магазинов), ci/test_history.py (коммит номера версии - не игровое изменение),
+#            ci/test_guard_permissions.py (права вызывающего и вызываемого workflow), python -m unittest
 #   guards   сторожа публичного репозитория: ci/guard-network.py (голая сеть вне retry.sh и net.py), ci/guard-parity.py (карта «шаг CI -> шаг precheck»),
 #            ci/guard-test-vps.py (тестовый стенд без боевых ключей), ci/guard-releases.py (служебный релиз только предрелизом), ci/guard-test-version.py (формат версии теста x.y.z_test),
 #            ci/guard-dispatch.py (запуск workflow только через ci/dispatch-wait.sh, у запускаемого вход caller в run-name),
