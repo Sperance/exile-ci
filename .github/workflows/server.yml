@@ -622,7 +622,8 @@ jobs:
         run: |
           bash ci/retry.sh read gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/server-deployed/" --paginate --jq '.[].ref' > "$RUNNER_TEMP/deployed.txt"
           base=$(python3 -I ci/release_state.py baseline --srv server --head "$SHA" --deployed "$RUNNER_TEMP/deployed.txt" --exclude "$SHA")
-          bash ci/retry.sh idem gh api -X POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/server-deployed/$SHA" -f sha="$GITHUB_SHA" >/dev/null || echo "::notice::deploy mark already exists"
+          bash ci/retry.sh idem gh api -X POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/server-deployed/$SHA" -f sha="$GITHUB_SHA" >/dev/null 2>"$RUNNER_TEMP/mark.err" \
+            || { if grep -qi 'already exists' "$RUNNER_TEMP/mark.err"; then echo "::notice::the deploy mark of this server commit exists"; else echo "::warning::the deploy mark of this server commit was not created: $(cat "$RUNNER_TEMP/mark.err") - the server reports of this release stay open until the mark appears"; fi; }
           if [ -z "$VERSION" ]; then
             bash ci/close-server-issues.sh Sperance/ExileForge server "$base" "$SHA"
           fi
