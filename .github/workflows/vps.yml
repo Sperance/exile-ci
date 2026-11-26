@@ -373,6 +373,8 @@ jobs:
           rm -f "$tmp/key"
           # Адрес боя не отдаёт тестовый стенд (ci/prod-route.sh): строка route идёт в тот же разбор, что и проверки update.sh
           ((code)) || bash ci/prod-route.sh "$SERVER_URL" >>"$tmp/out.txt" || true
+          # Стенд отдаёт Google-клиента: без него клиент молча прячет строку «Войти через Google».
+          ((code)) || bash ci/google-client.sh "$SERVER_URL" >>"$tmp/out.txt" || true
           python3 ci/vps_health.py "$tmp/out.txt" "$code"
           bash ci/encrypt-log.sh "$tmp/out.txt" logs/vps-health.log.enc
           rm -f "$tmp/out.txt"

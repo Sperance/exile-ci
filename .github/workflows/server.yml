@@ -609,7 +609,7 @@ jobs:
           IMAGE_SHA: ${{ steps.image.outputs.sha }}
           VPS_HOST_KEY: ${{ vars.VPS_HOST_KEY }}
         run: |
-          [[ $GOOGLE_WEB_CLIENT_ID =~ ^[A-Za-z0-9._-]*$ ]] || { echo "::error::malformed GOOGLE_WEB_CLIENT_ID variable"; exit 1; }
+          [[ $GOOGLE_WEB_CLIENT_ID =~ ^[A-Za-z0-9._-]+$ ]] || { echo "::error::the GOOGLE_WEB_CLIENT_ID variable is empty or malformed: the stand would start without the Google sign-in"; exit 1; }
           [[ $DIGEST =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::no image digest to deploy"; exit 1; }
           [[ $IMAGE_SHA =~ ^[0-9a-f]{40}$ ]] || { echo "::error::no commit of the image to deploy"; exit 1; }
           install -m 600 /dev/null "$RUNNER_TEMP/key" && printf '%s\n' "$KEY" > "$RUNNER_TEMP/key"
@@ -619,6 +619,12 @@ jobs:
           # Токен GitHub Issues (0.14.1, GH-ISSUES) - первой строкой stdin, ключи очереди отчётов REPORTS_WORK_TOKEN и REPORTS_RELAY_TOKEN - второй и третьей: в строку команды и журналы они не попадают.
           printf '%s\n%s\n%s\n%s\n' "$GH_ISSUES_TOKEN" "$REPORTS_WORK_TOKEN" "$REPORTS_RELAY_TOKEN" "$GOOGLE_WEB_CLIENT_ID" | VPS_HOST=$HOST VPS_KEY_FILE="$RUNNER_TEMP/key" bash ci/quiet.sh deploy \
             bash ci/vps-ssh.sh "deploy $IMAGE_SHA $DIGEST"
+      # Стенд отдаёт Google-клиента: без него клиент молча прячет строку «Войти через Google» (вход через Google выключен).
+      - name: Google client id on the stand
+        if: ${{ steps.client.outputs.ready == 'true' }}
+        env:
+          SERVER_URL: ${{ vars.SERVER_URL }}
+        run: bash ci/google-client.sh "$SERVER_URL"
       # Отметка выката и Issues серверных коммитов: диапазон - от ближайшего выкаченного предка (тег server-deployed/<sha>) до этого
       # коммита. Прошлый выкат считается до новой отметки. Issues закрывает только выкат сервера без клиента: при выпуске клиента их
       # закрывает job `release` client.yml (метка версии). Нет отметки прошлого выката - Issues не закрываются, отметка ставится.
@@ -778,7 +784,7 @@ jobs:
         run: |
           [[ -n $HOST && -n $KEY ]] || { echo "::error::DEPLOY_HOST or DEPLOY_SSH_KEY_TEST is not set"; exit 1; }
           [[ -z $REPORTS_READ_TOKEN || $REPORTS_READ_TOKEN == - || $REPORTS_READ_TOKEN =~ ^[a-f0-9]{64}$ ]] || { echo "::error::malformed test REPORTS_READ_TOKEN"; exit 1; }
-          [[ $GOOGLE_WEB_CLIENT_ID =~ ^[A-Za-z0-9._-]*$ ]] || { echo "::error::malformed GOOGLE_WEB_CLIENT_ID variable"; exit 1; }
+          [[ $GOOGLE_WEB_CLIENT_ID =~ ^[A-Za-z0-9._-]+$ ]] || { echo "::error::the GOOGLE_WEB_CLIENT_ID variable is empty or malformed: the stand would start without the Google sign-in"; exit 1; }
           [[ $DIGEST =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::no image digest to deploy"; exit 1; }
           [[ $IMAGE_SHA =~ ^[0-9a-f]{40}$ ]] || { echo "::error::no commit of the image to deploy"; exit 1; }
           [[ -z $TEST_VERSION || $TEST_VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+_test$ ]] || { echo "::error::malformed test server version"; exit 1; }
@@ -792,6 +798,11 @@ jobs:
             printf '%s\n%s\n%s\n%s\n%s\n' "$GH_ISSUES_TOKEN" "$REPORTS_WORK_TOKEN" "$REPORTS_RELAY_TOKEN" "$GOOGLE_WEB_CLIENT_ID" "$REPORTS_READ_TOKEN" | VPS_HOST=$HOST VPS_KEY_FILE="$RUNNER_TEMP/key" bash ci/quiet.sh deploy-test-legacy \
               bash ci/vps-ssh.sh "deploy $IMAGE_SHA $DIGEST"
           fi
+      # Тест отдаёт Google-клиента: без него клиент молча прячет строку «Войти через Google».
+      - name: Google client id on the test stand
+        env:
+          TEST_SERVER_URL: ${{ vars.TEST_SERVER_URL }}
+        run: bash ci/google-client.sh "$TEST_SERVER_URL"
       - name: Verify the test report reader
         env:
           REPORTS_READ_TOKEN: ${{ secrets.REPORTS_READ_TOKEN }}
