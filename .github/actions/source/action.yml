@@ -73,3 +73,12 @@ runs:
         cache-cleanup: ${{ inputs.cache-writer == 'true' && 'on-success' || 'never' }}
         # Сводка job'а перечисляла бы задачи Gradle в публичном журнале
         add-job-summary: never
+    # Временные файлы Gradle: «Problems writing to Binary store ... (exist: true)» - это не место на диске (свободно
+    # 106 ГБ), а залипший файл в ~/.gradle/.tmp от прерванного демона: сборка падает на ровном месте, первый раз - вследствие
+    # обрыва прогона. Чистим перед каждой тяжёлой сборкой и печатаем место и иноды.
+    - if: ${{ inputs.gradle == 'true' }}
+      shell: bash
+      run: |
+        rm -rf "$HOME/.gradle/.tmp"
+        df -h / | tail -1
+        df -i / | tail -1

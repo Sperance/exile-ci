@@ -435,7 +435,15 @@ jobs:
           SHA: ${{ needs.resolve.outputs.sha }}
           SOURCE_DATE_EPOCH: 0
         run: |
-          bash ../ci/quiet.sh layout bash gradlew dockerLayers
+          # Сборка слоёв образа: если Gradle падает на залипшем временном файле, чистим и повторяем один раз
+          code=0
+          bash ../ci/quiet.sh layout bash gradlew dockerLayers || code=$?
+          if [ "$code" != 0 ]; then
+            rm -rf "$HOME/.gradle/.tmp"
+            code=0
+            bash ../ci/quiet.sh layout bash gradlew dockerLayers || code=$?
+          fi
+          [ "$code" = 0 ] || exit "$code"
           # Версию посчитал Gradle из git (server-version.properties) - та же, что сервер отдаёт в манифесте.
           SERVER_VERSION=$(sed -n 's/^version=//p' build/generated/serverVersion/server-version.properties)
           [[ -n $SERVER_VERSION && $SERVER_VERSION != *-dev ]] || { echo "::error::server version not resolved from git history"; exit 1; }
