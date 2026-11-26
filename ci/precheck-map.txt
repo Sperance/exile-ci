@@ -1,7 +1,7 @@
 # Карта «шаг CI -> шаг scripts/precheck.sh»: у каждого job и шага server.yml, client.yml и check-wip.yml есть решение. Сторож: ci/guard-parity.py
 # (job guards в check-wip.yml, шаг «CI scripts guards» в job'ах changes client.yml и resolve server.yml): шаг без строки или строка без шага - красное.
 # Формат: `ключ => precheck:<client|server>:<шаг>[,<шаг>]` либо `ключ => ci-only: <причина>`; ключ - `workflow/job[/имя шага]`, `*` разрешён только у ci-only.
-# Шаги precheck: сервер - format, comment-style-compile-content, snapshots, rules-version, notes-edit, js, tests; клиент - notes-edit, format, guards-compile, tests, meta-combat.
+# Шаги precheck: сервер - format, comment-style-compile-content, snapshots, rules-version, notes-edit, js, panel, tests; клиент - notes-edit, format, guards-compile, tests, meta-combat.
 # Новый шаг CI: либо шаг в precheck и строка precheck здесь, либо ci-only с причиной, почему локально его не повторить («Причины красного CI» в rules-md/server/ci.md).
 
 # --- сервер (server.yml)
@@ -9,7 +9,9 @@ server/resolve* => ci-only: выбор коммита и режима прого
 server/checks => precheck:server:format,comment-style-compile-content,snapshots,rules-version,js,tests
 server/checks/One rules version per release => precheck:server:rules-version
 server/checks/Content and contract checks => precheck:server:format,comment-style-compile-content,snapshots,js,tests
-server/panel* => ci-only: браузерная проверка графиков панели (Playwright и Chromium), в сессии браузера нет
+server/panel => ci-only: job панели целиком (Playwright, Chromium, образ) остаётся в CI
+server/panel/Playwright and Chromium => ci-only: установка Playwright и Chromium в CI, локально ставит разработчик
+server/panel/Browser check of the panel charts => precheck:server:panel
 server/compat* => ci-only: контрактные тесты старейшего клиента окна ревизий, нужны MongoDB и исходники релиза клиента
 server/image* => ci-only: сборка и публикация образа в ghcr, нужен Docker и права на пакеты
 server/mark* => ci-only: метка проверенного образа в ghcr
