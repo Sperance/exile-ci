@@ -46,6 +46,7 @@ client/mark-green* => ci-only: метки зелёных деревьев в к�
 client/release* => ci-only: публикация релиза, подпись update.json, деплой сервера, закрытие Issues
 client/publish-play* => ci-only: выкладка в Google Play, секреты магазина
 client/publish-rustore* => ci-only: выкладка в RuStore, секреты магазина
+client/publish-rustore/Track the version waiting for the store => ci-only: Issue о версии, ждущей модерации магазина, нужен токен Issues ExileForge
 client/store-status* => ci-only: опрос каналов магазинов
 client/gradle-cache* => ci-only: сборка архивов кэша Gradle для сессий агента
 client/gradle-toolchain* => ci-only: архив JDK и Android SDK для сессий агента

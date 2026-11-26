@@ -115,9 +115,15 @@ def report_rustore(catalog):
         return
     availability = store.availability(version)
     post_report("RUSTORE", True, entry_build(update, availability))
+    latest = catalog.latest()
     if os.environ.get("EXILEFORGE_TOKEN", "").strip():
         from rustore_manual import retry
-        retry(store, catalog.latest())
+        retry(store, latest)
+    # Сторож: последний выпущенный релиз должен быть в магазине. Нет - красная строка, повтор выкладки (retry) разберётся сам
+    if latest is not None:
+        codes = {str(v.get("versionCode")) for v in store.versions()}
+        if str(latest["versionCode"]) not in codes:
+            say(f"::error::RUSTORE: the release {latest['versionName']} is not in the store yet")
     say(f"RUSTORE: {update['versionName']} status {version.get('versionStatus')}, reported at {availability:.0%}")
 
 

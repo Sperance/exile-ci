@@ -1460,11 +1460,24 @@ jobs:
           cat "$PUBLIC_NOTES" 2>/dev/null || true
           # Файл состояния RuStore есть - магазин требует ручной загрузки или ждёт модерации прошлой версии: APK - в релиз, владельцу - Issue
           if [ "$code" = 0 ] && [ -s "$RUSTORE_STATE" ]; then
-            echo "manual=true" >> "$GITHUB_OUTPUT"
-            echo "apk=$RUSTORE_APK" >> "$GITHUB_OUTPUT"
+            reason=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get("reason", ""))' "$RUSTORE_STATE")
+            if [ "$reason" = busy ]; then
+              echo "waiting=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "manual=true" >> "$GITHUB_OUTPUT"
+              echo "apk=$RUSTORE_APK" >> "$GITHUB_OUTPUT"
+            fi
             exit 0
           fi
           exit $code
+      - if: steps.upload.outputs.waiting == 'true'
+        name: Track the version waiting for the store
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_TOKEN: ${{ secrets.EXILEFORGE_TOKEN }}
+        run: |
+          version=$(python3 -c 'import json;print(json.load(open("update.json"))["versionName"])')
+          EXILEFORGE_TOKEN="$ISSUE_TOKEN" bash ci/quiet.sh rustore-wait python3 ci/rustore_manual.py wait "$version" "$RUNNER_TEMP/rustore-state.json"
       - if: steps.upload.outputs.manual == 'true'
         name: Hand the APK over for a manual RuStore upload
         env:

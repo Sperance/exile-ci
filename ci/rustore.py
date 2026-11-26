@@ -24,12 +24,18 @@ BASE = "https://public-api.rustore.ru"
 NOTES_LIMIT = 4000
 # Версия в магазине у игроков: ACTIVE - опубликована; остальные статусы (DRAFT, MODERATION, APPROVED до публикации, REJECTED) - ещё нет
 LIVE = {"ACTIVE", "PUBLISHED"}
-# Не на модерации: черновик, отказ, снятая с публикации или живая версия; остальное (MODERATION, APPROVED до публикации) - ждёт магазина
-SETTLED = LIVE | {"DRAFT", "REJECTED", "DECLINED", "ARCHIVED", "INACTIVE"}
+# Магазин модерирует версию: пока она не опубликована, новая не отправляется (RuStore архивирует ожидающую, если отправить поверх).
+# Список разрешающий: неизвестный статус не должен молча блокировать выкладку - как PREVIOUS_ACTIVE (прошлая версия) у версий, залитых через консоль.
+IN_REVIEW = {"MODERATION", "APPROVED", "READY_FOR_PUBLICATION", "PENDING_PUBLICATION"}
+# Версия больше не в счёте: черновик, отказ, архив, снятая с публикации, прошлая (PREVIOUS_ACTIVE)
+DONE = {"DRAFT", "REJECTED", "DECLINED", "ARCHIVED", "INACTIVE", "PREVIOUS_ACTIVE"}
 # priorityUpdate коммита версии: 0..5, обязательный релиз - наибольший
 MANDATORY_PRIORITY = 5
 # Код выхода «магазин требует ручной загрузки»: новое чувствительное разрешение в APK объявляется только в консоли RuStore
 MANUAL_UPLOAD_EXIT = 3
+# Причина в файле состояния: магазин требует ручной загрузки / магазин модерирует прошлую версию и новая ждёт
+REASON_MANUAL = "manual"
+REASON_BUSY = "busy"
 
 
 class RuStoreError(RuntimeError):
@@ -44,6 +50,45 @@ class Queued(Exception):
 
 class ManualUploadNeeded(RuStoreError):
     """APK несёт новое чувствительное разрешение: API его не примет, пока разрешение не объявлено в консоли."""
+
+
+def status_of(version):
+    """Статус версии в магазине заглавными буквами."""
+    return str(version.get("versionStatus", "")).upper()
+
+
+def in_review(version):
+    """Магазин модерирует эту версию: новая версия ждёт её."""
+    return status_of(version) in IN_REVIEW
+
+
+def submitted(versions, version_code):
+    """Версия с таким кодом уже отправлена (черновик и архив не считаются)."""
+    return any(str(v.get("versionCode")) == str(version_code) and status_of(v) not in {"DRAFT", "ARCHIVED"} for v in versions)
+
+
+def blocking(versions):
+    """Версии, которые магазин сейчас модерирует: пока они ждут, новая не отправляется."""
+    return [v for v in versions if in_review(v)]
+
+
+def standing_of(versions):
+    """Что в магазине сейчас: наибольший versionId живой версии (0 - нет) и коды версий, ждущих модерации."""
+    live = max((int(v["versionId"]) for v in versions if status_of(v) in LIVE and v.get("versionId")), default=0)
+    waiting = sorted(int(v.get("versionCode") or 0) for v in versions if in_review(v))
+    return live, waiting
+
+
+def describe(version):
+    """Версия для сообщения: «0.25.0 (код 437)» или «версия без названия (код -1)»."""
+    name = version.get("versionName") or "версия без названия"
+    return f"{name} (код {version.get('versionCode')})"
+
+
+def write_state(path, code, live, waiting, reason):
+    """Файл состояния выкладки: что в магазине, что ждёт и почему выкладка не прошла."""
+    with open(path, "w", encoding="utf-8") as file:
+        json.dump({"code": int(code), "live": int(live), "waiting": list(waiting), "reason": reason}, file)
 
 
 def load_key(text):
@@ -109,26 +154,27 @@ class RuStore:
     def standing(self):
         """Что в магазине сейчас: наибольший versionId живой версии (0 - нет) и коды версий, ждущих модерации или публикации.
         Живую версию отмечаем по versionId, а не по versionCode: у версий, загруженных через консоль, магазин отдаёт versionCode -1."""
-        versions = self.versions()
-        live = max((int(v["versionId"]) for v in versions if str(v.get("versionStatus", "")).upper() in LIVE and v.get("versionId")), default=0)
-        waiting = sorted(int(v.get("versionCode") or 0) for v in versions if str(v.get("versionStatus", "")).upper() not in SETTLED)
-        return live, waiting
+        return standing_of(self.versions())
+
+    def has_version(self, version_code):
+        """Версия с таким кодом в магазине (черновик и архив не считаются)."""
+        return submitted(self.versions(), version_code)
 
     @staticmethod
     def availability(version):
-        return 1.0 if str(version.get("versionStatus", "")).upper() in LIVE else 0.0
+        return 1.0 if status_of(version) in LIVE else 0.0
 
     def submit(self, apk, version_code, notes, mandatory=False):
         """Черновик версии, APK и отправка на модерацию; публикация сразу после неё (publishType INSTANTLY)."""
         existing = self.versions()
-        if any(str(v.get("versionCode")) == str(version_code) and str(v.get("versionStatus", "")).upper() not in {"DRAFT", "ARCHIVED"} for v in existing):
+        if submitted(existing, version_code):
             say(f"RuStore: version {version_code} is already submitted")
             return
         # Новая версия поверх ждущей модерации отправляет ту в архив, и до игроков не доходит ни одна: пока магазин модерирует
         # другую версию, эта ждёт; после публикации почасовая store-status сама отправит самую свежую (rustore_manual.retry)
-        busy = [v for v in existing if str(v.get("versionStatus", "")).upper() not in SETTLED]
+        busy = blocking(existing)
         if busy:
-            say(f"::notice::RuStore: {busy[0].get('versionName')} is still in review, {version_code} waits and goes out after its publication")
+            say(f"::warning::RuStore: {describe(busy[0])} is still in review, {version_code} waits and goes out after its publication")
             raise Queued()
         # Черновик не правится, только удаляется: брошенный прошлым прогоном уходит перед новым
         for draft in (v for v in existing if str(v.get("versionStatus", "")).upper() == "DRAFT"):
@@ -170,20 +216,26 @@ def main():
         fail("usage: rustore.py upload <app.apk> <update.json>")
     apk, update = sys.argv[2], load_update(sys.argv[3])
     store = RuStore(os.environ["RUSTORE_KEY_ID"].strip(), os.environ["RUSTORE_PRIVATE_KEY"], os.environ["APP_ID"])
+    state = os.environ.get("RUSTORE_STATE", "").strip()
     try:
         store.submit(apk, update["versionCode"], update.get("notes", ""), bool(update.get("mandatory")))
     except Queued:
+        # Магазин модерирует прошлую версию: эта ждёт. Состояние пишется всегда, если путь задан, - по нему шаг выпуска заводит Issue.
+        if state:
+            live, waiting = store.standing()
+            write_state(state, update["versionCode"], live, waiting, REASON_BUSY)
         return
     except ManualUploadNeeded as error:
         say(f"::warning::RuStore needs a manual upload of {update['versionName']}: {error.reason}")
         # Для шага выдачи APK: ждёт ли магазин модерации прошлой версии (тогда руками ничего не нужно) и что живо сейчас
-        state = os.environ.get("RUSTORE_STATE", "").strip()
         if state:
             live, waiting = store.standing()
-            with open(state, "w") as file:
-                json.dump({"code": int(update["versionCode"]), "live": live, "waiting": waiting}, file)
+            write_state(state, update["versionCode"], live, waiting, REASON_MANUAL)
             return
         sys.exit(MANUAL_UPLOAD_EXIT)
+    # Версия должна быть в магазине: тихо ушедшая выкладка (или отказ магазина) больше не остаётся незамеченной
+    if not store.has_version(update["versionCode"]):
+        fail(f"RuStore: version {update['versionCode']} is not in the store after the upload")
     say(f"RuStore: {update['versionName']} ({update['versionCode']}) sent to review with auto-publish")
 
 
