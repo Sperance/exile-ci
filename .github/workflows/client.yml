@@ -983,17 +983,17 @@ jobs:
           # Карты сжатые (в ~10 раз меньше): сервер читает mapping.txt.gz (прямой APK), mapping-play.txt.gz и mapping-rustore.txt.gz
           # (сборки магазинов; нужную выбирает по pg_map_id), у старых релизов - mapping.txt (ReleaseMappings)
           gzip -9 -kf mapping.txt mapping-play.txt mapping-rustore.txt
-          if bash ../ci/retry.sh read gh release view "$TAG" -R "$CLIENT_REPO" >/dev/null 2>&1; then
-            bash ../ci/retry.sh idem gh release upload "$TAG" mapping.txt.gz mapping-play.txt.gz mapping-rustore.txt.gz -R "$CLIENT_REPO" --clobber
+          if bash ci/retry.sh read gh release view "$TAG" -R "$CLIENT_REPO" >/dev/null 2>&1; then
+            bash ci/retry.sh idem gh release upload "$TAG" mapping.txt.gz mapping-play.txt.gz mapping-rustore.txt.gz -R "$CLIENT_REPO" --clobber
           else
             # player-release
-            bash ../ci/retry.sh once gh release create "$TAG" mapping.txt.gz mapping-play.txt.gz mapping-rustore.txt.gz -R "$CLIENT_REPO" --target "$SHA" --title "ExileForge ${TAG#v}" --notes "R8 mapping of ${TAG#v}"
+            bash ci/retry.sh once gh release create "$TAG" mapping.txt.gz mapping-play.txt.gz mapping-rustore.txt.gz -R "$CLIENT_REPO" --target "$SHA" --title "ExileForge ${TAG#v}" --notes "R8 mapping of ${TAG#v}"
           fi
           # Карты хранятся у 10 последних релизов v*: у старших ассеты mapping*.txt* удаляются (сам релиз и тег остаются)
           # Порядок - по дате выхода, не по номеру: среди тегов есть старая схема v4.x, старше нынешних v0.x
-          bash ../ci/retry.sh read gh api --paginate "repos/$CLIENT_REPO/releases?per_page=100" --jq '.[] | select(.tag_name | test("^v[0-9]")) | [.created_at, .tag_name, ([.assets[] | select(.name | startswith("mapping")) | .id] | join(" "))] | @tsv' \
+          bash ci/retry.sh read gh api --paginate "repos/$CLIENT_REPO/releases?per_page=100" --jq '.[] | select(.tag_name | test("^v[0-9]")) | [.created_at, .tag_name, ([.assets[] | select(.name | startswith("mapping")) | .id] | join(" "))] | @tsv' \
             | sort -r | tail -n +11 | while IFS=$'\t' read -r _ old ids; do
-                for id in $ids; do bash ../ci/retry.sh idem gh api -X DELETE "repos/$CLIENT_REPO/releases/assets/$id" >/dev/null || echo "::warning::mapping of $old was not deleted"; done
+                for id in $ids; do bash ci/retry.sh idem gh api -X DELETE "repos/$CLIENT_REPO/releases/assets/$id" >/dev/null || echo "::warning::mapping of $old was not deleted"; done
               done
       # Подпись описания: Ed25519 над байтами update.json как есть, 128 hex в update.json.sig (клиент: ManifestSignature)
       - if: steps.version.outputs.exists == 'false'
@@ -1010,7 +1010,7 @@ jobs:
         run: |
           sig=(); [ -s update.json.sig ] && sig=(update.json.sig)
           # player-release
-          bash ../ci/retry.sh once gh release create "$TAG" "$APK" update.json "${sig[@]}" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "ExileForge ${TAG#v}" --notes-file RELEASE_NOTES.md --latest
+          bash ci/retry.sh once gh release create "$TAG" "$APK" update.json "${sig[@]}" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "ExileForge ${TAG#v}" --notes-file RELEASE_NOTES.md --latest
       # Пост с заметками в группу Telegram (telegram.yml). Не запустился или упал - релиз не держит (предупреждение со ссылкой): повторить можно через Release → telegram.
       - if: steps.version.outputs.exists == 'false'
         name: Announce in Telegram
@@ -1019,7 +1019,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.version.outputs.tag }}
           DISPATCH_WAIT_SOFT: '1'
-        run: bash ../ci/dispatch-wait.sh telegram.yml main -f tag="$TAG"
+        run: bash ci/dispatch-wait.sh telegram.yml main -f tag="$TAG"
       # Прямой канал сервер узнаёт отчётом: релиз GitHub вышел, доля 1.0. Новый деплой сервера ещё идёт, поэтому отчёт
       # может не дойти (маршрута нет у прежнего сервера) - это предупреждение, отчёт повторит задача store-status (после выкладки и раз в 6 часов) в maintenance.yml.
       - if: steps.version.outputs.exists == 'false'
@@ -1046,7 +1046,7 @@ jobs:
           FORCE: ${{ inputs.force_breaking || false }}
           SKIP_TEST: ${{ inputs.skip_test || false }}
           TAG: ${{ steps.version.outputs.tag }}
-        run: bash ../ci/dispatch-wait.sh server.yml main -f mode=deploy -f force_breaking="$FORCE" -f skip_test="$SKIP_TEST" -f version="${TAG#v}"
+        run: bash ci/dispatch-wait.sh server.yml main -f mode=deploy -f force_breaking="$FORCE" -f skip_test="$SKIP_TEST" -f version="${TAG#v}"
       # Повтор прогона с тем же опубликованным тегом снова сверяет и закрывает отчёты.
       - name: Close the reports this release fixes
         working-directory: src
