@@ -152,6 +152,7 @@ jobs:
           python3 -I ci/guard-dispatch.py
           python3 -I ci/guard-age.py
           python3 -I ci/guard-paths.py
+          python3 -I ci/guard-permissions.py
       - name: Target commit
         id: target
         env:
@@ -988,8 +989,11 @@ jobs:
     # Включает ожидание client.yml cache (job gradle-cache до 90 минут)
     timeout-minutes: 110
     permissions:
-      contents: read
+      contents: write
       actions: write
+      packages: write
+      pages: write
+      id-token: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:

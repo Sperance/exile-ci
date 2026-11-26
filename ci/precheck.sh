@@ -8,7 +8,8 @@
 #   guards   сторожа публичного репозитория: ci/guard-network.py (голая сеть вне retry.sh и net.py), ci/guard-parity.py (карта «шаг CI -> шаг precheck»),
 #            ci/guard-test-vps.py (тестовый стенд без боевых ключей), ci/guard-releases.py (служебный релиз только предрелизом), ci/guard-test-version.py (формат версии теста x.y.z_test),
 #            ci/guard-dispatch.py (запуск workflow только через ci/dispatch-wait.sh, у запускаемого вход caller в run-name),
-#            ci/guard-age.py (каждая зовущаяся утилита age ставится ensure_age), ci/guard-paths.py (путь к файлу этого репозитория считается от рабочего каталога шага и не ведёт наружу)
+#            ci/guard-age.py (каждая зовущаяся утилита age ставится ensure_age), ci/guard-paths.py (путь к файлу этого репозитория считается от рабочего каталога шага и не ведёт наружу),
+#            ci/guard-permissions.py (вызываемый workflow не просит прав на запись, которых не даёт вызывающий)
 # В конце печатается таблица времён шагов; любой упавший шаг даёт код 1, остальные шаги всё равно идут.
 set -uo pipefail
 
@@ -70,6 +71,7 @@ guards() {
     python3 -I ci/guard-age.py || code=1
     python3 -I ci/guard-edge.py || code=1
     python3 -I ci/guard-paths.py || code=1
+    python3 -I ci/guard-permissions.py || code=1
     return "$code"
 }
 

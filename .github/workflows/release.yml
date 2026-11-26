@@ -64,7 +64,11 @@ on:
 
 permissions:
   actions: write
-  contents: read
+  contents: write
+  # Запускаемые отсюда workflow просят права на запись: сервер тянет образ из ghcr, посты в Telegram кладут баннер в Pages
+  packages: write
+  pages: write
+  id-token: write
 
 jobs:
   dispatch:
@@ -131,6 +135,9 @@ jobs:
       actions: write
       contents: write
       packages: write
+      # Баннер поста в Telegram в Pages
+      pages: write
+      id-token: write
     env:
       LOG_AGE_RECIPIENT: ${{ vars.LOG_AGE_RECIPIENT }}
     steps:

@@ -168,6 +168,7 @@ jobs:
           python3 -I ci/guard-dispatch.py
           python3 -I ci/guard-age.py
           python3 -I ci/guard-paths.py
+          python3 -I ci/guard-permissions.py
       - name: Target commit
         id: target
         env:
@@ -911,6 +912,10 @@ jobs:
       contents: write
       # Запуск деплоя сервера (server.yml) после релиза
       actions: write
+      # Пакет образа в ghcr (сервер тянет свой образ) и баннер в Pages (пост в Telegram)
+      packages: write
+      pages: write
+      id-token: write
     concurrency:
       group: release
       cancel-in-progress: false
@@ -1203,6 +1208,11 @@ jobs:
     permissions:
       contents: write
       actions: write
+      # Пакет образа в ghcr: сервер теста выкатывает образ клиента
+      packages: write
+      # Баннер поста в Telegram в Pages
+      pages: write
+      id-token: write
     concurrency:
       group: client-qa-release
       cancel-in-progress: false
@@ -1489,7 +1499,9 @@ jobs:
     timeout-minutes: 25
     permissions:
       actions: write
-      contents: read
+      contents: write
+      # Пакет образа в ghcr: maintenance.yml чистит старые образы
+      packages: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
