@@ -105,7 +105,9 @@ jobs:
       mode: check-wip
       sha: ${{ needs.resolve.outputs.server }}
     secrets: inherit
-    # Права вызываемого workflow не выше вызывающего: server.yml просит packages и actions: write у job'ов образа и деплоя (в check-wip они пропущены)
+    # Права вызываемого workflow не выше вызывающего: вызванный workflow идёт с токеном вызывающего, и GitHub проверяет права
+    # статически - workflow с недостающими правами не запускается вовсе. server.yml просит contents, packages и actions: write
+    # (создание метки выката, пакет образа в ghcr, запуск постов в Telegram).
     permissions:
       contents: write
       packages: write
@@ -118,9 +120,12 @@ jobs:
       mode: check-wip
       sha: ${{ needs.resolve.outputs.client }}
     secrets: inherit
+    # Права вызываемого workflow не выше вызывающего: client.yml просит contents, actions и packages: write (релиз, запуск
+    # деплоя и постов, чтение пакетов образа в ghcr).
     permissions:
       contents: write
       actions: write
+      packages: write
 
   # Сухой прогон вычисления версий теста на свежих данных GitHub: ТОЧНО тот же код, что у deploy-test (ci/test-server-version.sh) и у шага «Test build target»
   # client.yml (ci/qa-version.sh), без выкладки: метки server-deployed, образ боя, живой манифест боя и запись о стенде только читаются, во временный файл
@@ -274,9 +279,12 @@ jobs:
       mode: test-wip
       sha: ${{ needs.resolve.outputs.client }}
     secrets: inherit
+    # Права вызываемого workflow не выше вызывающего: client.yml просит contents, actions и packages: write (тестовая сборка,
+    # запуск выката теста и постов, чтение пакетов образа в ghcr).
     permissions:
       contents: write
       actions: write
+      packages: write
 
   record:
     needs: [ resolve, server, client, guards, test-dry-run ]

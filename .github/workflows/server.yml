@@ -990,11 +990,9 @@ jobs:
     # Включает ожидание client.yml cache (job gradle-cache до 90 минут)
     timeout-minutes: 110
     permissions:
-      contents: write
+      contents: read
+      # Запуск пересборки кэша Gradle (client.yml, режим cache): права запускаемого workflow берутся из его файла
       actions: write
-      packages: write
-      pages: write
-      id-token: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:

@@ -3,10 +3,16 @@
 
     python3 -I ci/guard-permissions.py [корень репозитория]
 
-Каждый job объявляет свои права (`permissions`), а прогон вызванного workflow идёт с токеном вызывающего: право,
-которого у вызывающего нет, у вызванного не будет - шаг упадёт с 403. Сторож идёт по цепочкам запусков внутри
-этого репозитория (`gh workflow run` и `ci/dispatch-wait.sh` с токеном прогона) и требует, чтобы каждый job
-вызванного workflow получил права на запись, которые просит.
+Два вида запусков workflow внутри этого репозитория, и права у них разные:
+
+  - Вызов workflow (`uses: ./.github/workflows/<файл>.yml` в job): прогон вызванного workflow идёт с токеном вызывающего,
+    и GitHub проверяет права статически, до запуска. Вызванный job не может просить право на запись, которого у вызывающего
+    нет: workflow с таким вызовом не запускается вовсе ("Invalid workflow file ... is only allowed 'pages: none'"). Сторож
+    требует, чтобы вызывающий дал вызванному все права на запись, которые вызванный просит (права вызванного job'а -
+    пересечение прав вызывающего и его собственных).
+  - Запуск workflow (`gh workflow run`, ci/dispatch-wait.sh): запущенный workflow идёт со своим токеном и берёт права из
+    своего файла, а не от вызывающего (проверено на посте в Telegram: telegram.yml получил pages: write, хотя вызывающий
+    клиент такого права не давал). Вызывающему нужно только право `actions: write` на сам запуск.
 
 Красное - строкой ::error:: и код 1 (job guards в check-wip.yml, шаг «CI scripts guards» client.yml и server.yml; precheck).
 """
@@ -19,7 +25,22 @@ import yaml
 
 ROOT = os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 DISPATCH = re.compile(r"(?:gh\s+workflow\s+run|dispatch-wait\.sh)\s+([\w.-]+\.yml)\b")
-WRITE = re.compile(r"write")
+REUSABLE = re.compile(r"^\./\.github/workflows/([\w.-]+\.yml)$")
+WRITE_ALL = {
+    "actions",
+    "attestations",
+    "checks",
+    "contents",
+    "deployments",
+    "discussions",
+    "id-token",
+    "issues",
+    "packages",
+    "pages",
+    "pull-requests",
+    "security-events",
+    "statuses",
+}
 errors = []
 
 
@@ -32,7 +53,7 @@ def scopes(permissions):
         return None
     result = set()
     for key, value in permissions.items():
-        if value == "write" or (key == "write-all"):
+        if value == "write" or key == "write-all":
             result.add(key)
         elif key != "write-all" and value == "read":
             continue
@@ -44,7 +65,7 @@ def declared(job, workflow_permissions):
     if own is None:
         own = workflow_permissions
     if own == "write-all":
-        return {"contents", "packages", "actions", "issues", "checks", "deployments", "discussions", "id-token", "pull-requests", "security-events", "statuses"}
+        return set(WRITE_ALL)
     if own == "read-all" or own is None:
         return set()
     return scopes(own) or set()
@@ -60,6 +81,7 @@ def load(path):
         result[name] = {
             "scopes": declared(body, workflow_permissions),
             "dispatched": dispatched(body),
+            "called": called(body),
         }
     return result
 
@@ -79,6 +101,21 @@ def dispatched(job):
     return found
 
 
+def called(job):
+    uses = job.get("uses")
+    if not isinstance(uses, str):
+        return None
+    match = REUSABLE.match(uses.strip())
+    return match.group(1) if match else None
+
+
+def required(target_jobs):
+    result = set()
+    for data in target_jobs.values():
+        result |= data["scopes"]
+    return result
+
+
 def main():
     paths = {os.path.basename(path): path for path in sorted(glob.glob(os.path.join(ROOT, ".github", "workflows", "*.yml")))}
     workflows = {name: load(path) for name, path in paths.items()}
@@ -89,11 +126,18 @@ def main():
                 if target not in workflows:
                     fail(f"{name}: job {job} starts {target}, which does not exist")
                     continue
-                given = data["scopes"]
-                for other, target_data in workflows[target].items():
-                    for scope in sorted(target_data["scopes"]):
-                        if scope not in given:
-                            fail(f"{name}: job {job} starts {target}, whose job {other} asks for {scope}: write, but the caller gives {sorted(given) or 'no write rights'}")
+                if "actions" not in data["scopes"]:
+                    fail(f"{name}: job {job} starts {target} and needs actions: write, but the caller gives {sorted(data['scopes']) or 'no write rights'}")
+            target = data["called"]
+            if target is None:
+                continue
+            if target not in workflows:
+                fail(f"{name}: job {job} calls {target}, which does not exist")
+                continue
+            given = data["scopes"]
+            for scope in sorted(required(workflows[target])):
+                if scope not in given:
+                    fail(f"{name}: job {job} calls {target}, whose jobs ask for {scope}: write, but the caller gives {sorted(given) or 'no write rights'}")
     if errors:
         for message in errors:
             print(f"::error::{message}")

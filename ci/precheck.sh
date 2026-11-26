@@ -4,12 +4,12 @@
 #   syntax   YAML каждого файла .github/**.yml разбирается, каждый блок run проходит `bash -n` (ci/check-syntax.py; нужен модуль yaml)
 #   shell    `bash -n` каждого ci/**.sh и shellcheck (уровень error), если он есть на машине
 #   python   компиляция (синтаксис) каждого ci/**.py
-#   unittests самопроверка ci/test_notes.py (выжимка «Что нового» магазинов, python -m unittest)
+#   unittests самопроверка ci/test_notes.py (выжимка «Что нового» магазинов), python -m unittest
 #   guards   сторожа публичного репозитория: ci/guard-network.py (голая сеть вне retry.sh и net.py), ci/guard-parity.py (карта «шаг CI -> шаг precheck»),
 #            ci/guard-test-vps.py (тестовый стенд без боевых ключей), ci/guard-releases.py (служебный релиз только предрелизом), ci/guard-test-version.py (формат версии теста x.y.z_test),
 #            ci/guard-dispatch.py (запуск workflow только через ci/dispatch-wait.sh, у запускаемого вход caller в run-name),
 #            ci/guard-age.py (каждая зовущаяся утилита age ставится ensure_age), ci/guard-paths.py (путь к файлу этого репозитория считается от рабочего каталога шага и не ведёт наружу),
-#            ci/guard-permissions.py (вызываемый workflow не просит прав на запись, которых не даёт вызывающий)
+#            ci/guard-permissions.py (вызываемый workflow не просит прав на запись, которых не даёт вызывающий; запускаемый workflow берёт права из своего файла)
 # В конце печатается таблица времён шагов; любой упавший шаг даёт код 1, остальные шаги всё равно идут.
 set -uo pipefail
 
