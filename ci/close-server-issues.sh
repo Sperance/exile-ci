@@ -16,5 +16,5 @@ test=$(python3 -I "$here/release_state.py" server-issues --srv "$server" --base 
 day=$(date -u +%F)
 failed=0
 close_issues "${REPORTS_API_URL:-}" false "сервер $day" "$prod" || failed=1
-close_issues "${TEST_REPORTS_API_URL:-}" true "сервер $day" "$test" "$SHA" "$server" "$repo" || failed=1
+close_issues "${REPORTS_API_URL:-}" true "сервер $day" "$test" "$SHA" "$server" "$repo" || failed=1
 exit "$failed"

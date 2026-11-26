@@ -1058,7 +1058,6 @@ jobs:
           GH_TOKEN: ${{ secrets.EXILEFORGE_TOKEN }}
           TAG: ${{ steps.version.outputs.tag }}
           REPORTS_API_URL: ${{ vars.SERVER_URL }}
-          TEST_REPORTS_API_URL: ${{ vars.TEST_SERVER_URL }}
           REPORTS_WORK_TOKEN: ${{ secrets.REPORTS_WORK_TOKEN }}
           DEPLOY_OUTCOME: ${{ steps.deploy.outcome }}
           DEPLOY_READ_TOKEN: ${{ github.token }}

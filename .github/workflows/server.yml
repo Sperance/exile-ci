@@ -633,7 +633,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REPORTS_API_URL: ${{ vars.SERVER_URL }}
-          TEST_REPORTS_API_URL: ${{ vars.TEST_SERVER_URL }}
           REPORTS_WORK_TOKEN: ${{ secrets.REPORTS_WORK_TOKEN }}
           QA_SOURCE_TOKEN: ${{ secrets.SOURCE_TOKEN }}
         run: |

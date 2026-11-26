@@ -18,6 +18,7 @@ done)
 prod=$(python3 -I "$here/release_state.py" issues --cli . --srv backend --base "${prev:-}" --head "$SHA" --repo "$repo" --queue prod --closing)
 test=$(python3 -I "$here/release_state.py" issues --cli . --srv backend --base "${prev:-}" --head "$SHA" --repo "$repo" --queue test --closing)
 failed=0
+# Обе очереди - одна на бою: записи тестовых отчётов лежат там же, различаются меткой стенда.
 close_issues "${REPORTS_API_URL:-}" false "$TAG" "$prod" || failed=1
-close_issues "${TEST_REPORTS_API_URL:-}" true "$TAG" "$test" "$SHA" . "" || failed=1
+close_issues "${REPORTS_API_URL:-}" true "$TAG" "$test" "$SHA" . "" || failed=1
 exit "$failed"
