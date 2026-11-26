@@ -126,9 +126,11 @@ jobs:
       group: release-client
       cancel-in-progress: false
     permissions:
+      # Права вызываемого workflow не выше вызывающего: client.yml в режиме release публикует релиз этого репозитория
+      # (contents: write) и зовёт server.yml, которому нужен пакет образа (packages).
       actions: write
-      contents: read
-      packages: read
+      contents: write
+      packages: write
     env:
       LOG_AGE_RECIPIENT: ${{ vars.LOG_AGE_RECIPIENT }}
     steps:
