@@ -360,6 +360,7 @@ jobs:
         working-directory: src
         run: |
           [ -f scripts/client_server_test.py ] || { echo "::notice::the oldest client has no scripts/client_server_test.py: compat check skipped"; exit 0; }
+          bash ../ci/compat-patch.sh
           bash ../ci/quiet.sh compat python3 scripts/client_server_test.py
       - name: Seal reports
         if: ${{ always() && steps.oldest.outputs.tag != '' }}

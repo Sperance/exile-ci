@@ -9,8 +9,8 @@
 (apiRevision, rules, contentSchema). Для каждой сборки считается, играет ли она с живым сервером и с сервером после деплоя.
 
 Сборка играет, если: её apiRevision не ниже minRevision сервера (сервер без окна, minRevision 0, - только своя ревизия); activeRules
-сервера лежит в [rules-1..rules] (спящие правила; сборка без contentSchema - только rules); форма контента сервера лежит в
-[contentSchema-1..contentSchema] при minSchema не выше contentSchema (сборка без contentSchema - только форма 3).
+сервера лежит в [rules-1..rules] (спящие правила; сборка без contentSchema - только rules); форма контента сборки лежит в
+[minSchema..schema] - окне форм, что сервер отдаёт (сборка без contentSchema - только форма 3).
 
 Сервер после деплоя: minRevision и activeRules живого окна; MIN_API_REVISION_FORCED=true при MIN_API_REVISION выше живого минимума
 поднимает минимум до MIN_API_REVISION и activeRules до RULES_VERSION разом (ClientWindows.raise: при прежнем минимуме окно не
@@ -87,10 +87,8 @@ def problems(update, server):
             found.append(f"server rules {server.active_rules} differ from {own_rules}")
         return found
     own_schema = int(update["contentSchema"])
-    if not own_schema - 1 <= server.schema <= own_schema:
-        found.append(f"server content schema {server.schema} is outside {own_schema - 1}..{own_schema}")
-    if server.min_schema > own_schema:
-        found.append(f"server minimum schema {server.min_schema} is above {own_schema}")
+    if not server.min_schema <= own_schema <= server.schema:
+        found.append(f"the server content form {own_schema} is outside {server.min_schema}..{server.schema}")
     if not own_rules - 1 <= server.active_rules <= own_rules:
         found.append(f"server active rules {server.active_rules} are outside {own_rules - 1}..{own_rules}")
     return found

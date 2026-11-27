@@ -31,11 +31,15 @@ def revisions(protocol):
 
 
 def has_client_tag(tag):
+    """Есть ли метка релиза в приватном репозитории клиента: через API токеном (тот же доступ, что у чтения исходников)."""
     token = os.environ.get("SOURCE_TOKEN", "")
     if not token:
         return True
-    url = f"https://x-access-token:{token}@github.com/{CLIENT_REPO}.git"
-    return net.run(net.READ, ["git", "ls-remote", "--exit-code", "--tags", url, f"refs/tags/{tag}"], capture_output=True).returncode == 0
+    try:
+        get_json(f"https://api.github.com/repos/{CLIENT_REPO}/git/ref/tags/{tag}", token)
+        return True
+    except Exception:
+        return False
 
 
 def main():
@@ -57,8 +61,11 @@ def main():
     tag = next((t for t in reversed(window) if has_client_tag(t)), "")
     if tag:
         say(f"oldest supported client: {tag} (window {low}..{api}, {len(window)} release(s) in it)")
+    elif window:
+        fail(f"none of the {len(window)} released client(s) in the revision window {low}..{api} has a source tag: "
+             f"the compatibility check did not run (the oldest client is untested)")
     else:
-        say(f"::notice::no released client in the revision window {low}..{api} has a source tag: compat check skipped")
+        say(f"::notice::no released client in the revision window {low}..{api}: compat check skipped")
     with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
         out.write(f"tag={tag}\n")
 
