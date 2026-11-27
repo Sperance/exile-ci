@@ -1,7 +1,7 @@
 # Карта «шаг CI -> шаг scripts/precheck.sh»: у каждого job и шага server.yml, client.yml и check-wip.yml есть решение. Сторож: ci/guard-parity.py
 # (job guards в check-wip.yml, шаг «CI scripts guards» в job'ах changes client.yml и resolve server.yml): шаг без строки или строка без шага - красное.
 # Формат: `ключ => precheck:<client|server>:<шаг>[,<шаг>]` либо `ключ => ci-only: <причина>`; ключ - `workflow/job[/имя шага]`, `*` разрешён только у ci-only.
-# Шаги precheck: сервер - format, comment-style-compile-content, snapshots, rules-version, notes-edit, js, panel, tests; клиент - notes-edit, format, guards-compile, tests, meta-combat.
+# Шаги precheck: сервер - format, comment-style-compile-content, snapshots, rules-version, notes-edit, js, panel, tests; клиент - notes-edit, format, guards-compile, lint, tests, meta-combat.
 # Новый шаг CI: либо шаг в precheck и строка precheck здесь, либо ci-only с причиной, почему локально его не повторить («Причины красного CI» в rules-md/server/ci.md).
 
 # --- сервер (server.yml)
@@ -28,8 +28,8 @@ client/core => precheck:client:format,guards-compile,tests,meta-combat
 client/core/Core checks => precheck:client:format,guards-compile,tests,meta-combat
 client/app-fast => precheck:client:format,guards-compile
 client/app-fast/Fast Android guards => precheck:client:format,guards-compile
-client/app => ci-only: Android Lint (:app:lintDirectRelease) собирает все варианты с SDK раннера, в precheck не входит
-client/app/Android Lint => ci-only: Android Lint (:app:lintDirectRelease) собирает все варианты с SDK раннера, в precheck не входит
+client/app => precheck:client:guards-compile,lint
+client/app/Android Lint => precheck:client:lint
 client/app/Release flavor compile => precheck:client:guards-compile
 client/app/QA flavor compiles => precheck:client:guards-compile
 client/minified* => ci-only: сборки uiTest и minifiedTest (R8) для эмулятора
