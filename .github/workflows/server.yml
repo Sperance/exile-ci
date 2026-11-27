@@ -278,6 +278,8 @@ jobs:
             bash ../ci/retry.sh read npm install --no-save --no-audit --no-fund --prefix "$dir" playwright@1.55.0
             bash ../ci/retry.sh read node "$dir/node_modules/playwright/cli.js" install chromium
           fi
+          # Репозиторий Microsoft отдаёт раннеру 403 - apt-get update падает на нём, а Chromium оттуда не нужен: убираем источник.
+          sudo rm -f /etc/apt/sources.list.d/microsoft-prod.list /etc/apt/sources.list.d/microsoft-prod.sources || true
           bash ../ci/retry.sh read node "$dir/node_modules/playwright/cli.js" install-deps chromium
           echo "PANEL_CHECK_PLAYWRIGHT=$PWD/$dir/node_modules/playwright" >> "$GITHUB_ENV"
       - name: Browser check of the panel charts
