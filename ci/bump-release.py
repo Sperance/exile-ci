@@ -9,6 +9,7 @@ versionCode - текущий в app/build.gradle.kts плюс один. Разд
 """
 import os
 import re
+import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -58,11 +59,26 @@ def rename_notes(path: str, version: str) -> None:
     open(path, "w", encoding="utf-8").write("\n".join(lines))
 
 
+def check_notes(src: str, heading: str) -> None:
+    """Структура заметок - тем же скриптом, что и локально в precheck клиента: один раздел, подразделы по порядку.
+
+    Раньше здесь проверялся только раздел «## Следующая версия», а весь файл - только в конце релиза: мелочь (например, забытый
+    раздел прошлой версии) падала через тринадцать минут сборки. Теперь это первая минута прогона.
+    """
+    script = os.path.join(src, "scripts", "check-release-notes.py")
+    if not os.path.exists(script):
+        sys.exit(f"::error::{script} is missing: the release notes check belongs to the client")
+    check = subprocess.run([sys.executable, script, os.path.join(src, "RELEASE_NOTES.md"), heading], capture_output=True, text=True)
+    if check.returncode != 0:
+        sys.exit((check.stdout + check.stderr).strip())
+
+
 def main() -> None:
     src, bump, tag = sys.argv[1:4]
     version = next_version(tag, bump)
     code = bump_gradle(f"{src}/app/build.gradle.kts", version)
     rename_notes(f"{src}/RELEASE_NOTES.md", version)
+    check_notes(src, f"## {version}")
     print(f"version {version}, code {code}")
     with open(sys.argv[4] if len(sys.argv) > 4 else "/dev/null", "a", encoding="utf-8") as out:
         out.write(f"version={version}\ncode={code}\n")
