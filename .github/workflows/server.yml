@@ -340,7 +340,17 @@ jobs:
       - name: Build the new server
         if: ${{ steps.oldest.outputs.tag != '' }}
         working-directory: server
-        run: bash ../ci/quiet.sh server-dist bash gradlew installDist
+        run: |
+          # Сборка без кэша конфигурации (Gradle пишет «Problems writing to Binary store ...», когда резолвится classpath
+          # и падает кэш конфигурации) и с одним повтором после чистки временных файлов.
+          code=0
+          bash ../ci/quiet.sh server-dist bash gradlew --no-configuration-cache installDist || code=$?
+          if [ "$code" != 0 ]; then
+            rm -rf "$HOME/.gradle/.tmp"
+            code=0
+            bash ../ci/quiet.sh server-dist bash gradlew --no-configuration-cache installDist || code=$?
+          fi
+          [ "$code" = 0 ] || exit "$code"
       - if: ${{ steps.oldest.outputs.tag != '' }}
         uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.9.1
         with:
