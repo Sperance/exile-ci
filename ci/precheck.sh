@@ -73,6 +73,16 @@ guards() {
     python3 -I ci/guard-edge.py || code=1
     python3 -I ci/guard-paths.py || code=1
     python3 -I ci/guard-permissions.py || code=1
+    # Сторожа с файлами репозиториев: в check-wip идут копии файлов из клонов, локально - сами локальные клоны.
+    # Без них (нет EXILE_CLIENT/EXILE_SERVER) эти проверки пропускаются: их файлов на машине нет.
+    if [ -n "${EXILE_CLIENT:-}" ] && [ -n "${EXILE_SERVER:-}" ]; then
+        python3 -I ci/guard-parity.py --client-precheck "$EXILE_CLIENT/scripts/precheck.sh" --server-precheck "$EXILE_SERVER/scripts/precheck.sh" || code=1
+        python3 -I ci/guard-test-version.py --update-sh "$EXILE_SERVER/deploy/update.sh" || code=1
+        python3 -I ci/guard-edge.py --snippet "$EXILE_SERVER/deploy/test/Caddyfile.snippet" --install "$EXILE_SERVER/deploy/test/install.sh" || code=1
+        python3 -I ci/docs-only.py parity "$EXILE_SERVER/scripts/docs-only.sh" || code=1
+    else
+        echo "   EXILE_CLIENT/EXILE_SERVER не заданы: сторожа с файлами репозиториев (паритет с precheck, формат теста, edge, список документов) пропущены"
+    fi
     return "$code"
 }
 

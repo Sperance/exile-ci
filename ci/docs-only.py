@@ -42,7 +42,7 @@ def parity(script):
     differ = []
     for kind in ("client", "server"):
         for path in SAMPLES:
-            shell = subprocess.run(["bash", script, "classify", kind], input=path + "\n", text=True, capture_output=True).returncode == 0
+            shell = subprocess.run(["bash", script, "classify", kind], input=path.encode() + b"\n", capture_output=True).returncode == 0
             if shell != is_doc(kind, path):
                 differ.append(f"{kind} {path}: docs-only.sh {shell}, docs-only.py {is_doc(kind, path)}")
     for line in differ:
