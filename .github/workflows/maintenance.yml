@@ -109,7 +109,10 @@ env:
 
 jobs:
   store-status:
-    if: ${{ (github.event_name == 'schedule' && github.event.schedule == '17 */6 * * *') || (github.event_name == 'workflow_dispatch' && inputs.task == 'store-status') }}
+    # Опрос магазинов и повтор выкладки - на любом тике расписания: привязка к одной cron-строке
+    # теряла задачу, когда планировщик GitHub сдвигал или пропускал этот тик (версия оставалась в
+    # магазине на часы после модерации прошлой). Сторож ci/guard-schedule.py следит за этим.
+    if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.task == 'store-status') }}
     runs-on: ubuntu-24.04
     permissions:
       contents: read

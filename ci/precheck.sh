@@ -73,6 +73,7 @@ guards() {
     python3 -I ci/guard-edge.py || code=1
     python3 -I ci/guard-paths.py || code=1
     python3 -I ci/guard-permissions.py || code=1
+    python3 -I ci/guard-schedule.py || code=1
     # Сторожа с файлами репозиториев: в check-wip идут копии файлов из клонов, локально - сами локальные клоны.
     # Без них (нет EXILE_CLIENT/EXILE_SERVER) эти проверки пропускаются: их файлов на машине нет.
     if [ -n "${EXILE_CLIENT:-}" ] && [ -n "${EXILE_SERVER:-}" ]; then
