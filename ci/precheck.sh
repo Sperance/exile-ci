@@ -10,7 +10,8 @@
 #            ci/guard-test-vps.py (тестовый стенд без боевых ключей), ci/guard-releases.py (служебный релиз только предрелизом), ci/guard-test-version.py (формат версии теста x.y.z_test),
 #            ci/guard-dispatch.py (запуск workflow только через ci/dispatch-wait.sh, у запускаемого вход caller в run-name),
 #            ci/guard-age.py (каждая зовущаяся утилита age ставится ensure_age), ci/guard-paths.py (путь к файлу этого репозитория считается от рабочего каталога шага и не ведёт наружу),
-#            ci/guard-permissions.py (вызываемый workflow не просит прав на запись, которых не даёт вызывающий; запускаемый workflow берёт права из своего файла)
+#            ci/guard-permissions.py (вызываемый workflow не просит прав на запись, которых не даёт вызывающий; запускаемый workflow берёт права из своего файла),
+#            ci/guard-gradle-repos.py (зеркало Maven Central в pluginManagement обоих корней Gradle и правил раньше портала Gradle)
 # В конце печатается таблица времён шагов; любой упавший шаг даёт код 1, остальные шаги всё равно идут.
 set -uo pipefail
 
@@ -80,6 +81,7 @@ guards() {
         python3 -I ci/guard-parity.py --client-precheck "$EXILE_CLIENT/scripts/precheck.sh" --server-precheck "$EXILE_SERVER/scripts/precheck.sh" || code=1
         python3 -I ci/guard-test-version.py --update-sh "$EXILE_SERVER/deploy/update.sh" || code=1
         python3 -I ci/guard-edge.py --snippet "$EXILE_SERVER/deploy/test/Caddyfile.snippet" --install "$EXILE_SERVER/deploy/test/install.sh" || code=1
+        python3 -I ci/guard-gradle-repos.py --server "$EXILE_SERVER/settings.gradle.kts" --server-rules "$EXILE_SERVER/rules/settings.gradle.kts" --client "$EXILE_CLIENT/settings.gradle.kts" || code=1
         python3 -I ci/docs-only.py parity "$EXILE_SERVER/scripts/docs-only.sh" || code=1
     else
         echo "   EXILE_CLIENT/EXILE_SERVER не заданы: сторожа с файлами репозиториев (паритет с precheck, формат теста, edge, список документов) пропущены"

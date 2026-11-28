@@ -334,6 +334,9 @@ jobs:
           sha: ${{ steps.oldest.outputs.tag }}
           token: ${{ secrets.SOURCE_TOKEN }}
           java: '21'
+          # Кэш Gradle в этом job пишущий: job собирает сервер, а восстановленный кэш чужой (клиентский) и read-only - серверу
+          # некуда писать свои зависимости, и Gradle падает «Problems writing to Binary store ...». Пишущий кэш эту ошибку снимает.
+          cache-writer: 'true'
       - name: Start the Mongo image pull
         if: ${{ steps.oldest.outputs.tag != '' }}
         run: (docker pull -q mirror.gcr.io/library/mongo:8.0 >/dev/null 2>&1 || true) &
@@ -342,13 +345,14 @@ jobs:
         working-directory: server
         run: |
           # Сборка без кэша конфигурации (Gradle пишет «Problems writing to Binary store ...», когда резолвится classpath
-          # и падает кэш конфигурации) и с одним повтором после чистки временных файлов.
+          # и падает кэш конфигурации) и с одним повтором после чистки временных файлов. Стектрейс - в шифрованный журнал,
+          # чтобы следующее падение читалось без догадок.
           code=0
-          bash ../ci/quiet.sh server-dist bash gradlew --no-configuration-cache installDist || code=$?
+          bash ../ci/quiet.sh server-dist bash gradlew --no-configuration-cache --stacktrace installDist || code=$?
           if [ "$code" != 0 ]; then
             rm -rf "$HOME/.gradle/.tmp"
             code=0
-            bash ../ci/quiet.sh server-dist bash gradlew --no-configuration-cache installDist || code=$?
+            bash ../ci/quiet.sh server-dist bash gradlew --no-configuration-cache --stacktrace installDist || code=$?
           fi
           [ "$code" = 0 ] || exit "$code"
       - if: ${{ steps.oldest.outputs.tag != '' }}

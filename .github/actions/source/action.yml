@@ -29,7 +29,7 @@ inputs:
     description: History depth (0 - all, with tags)
     default: '1'
   cache-writer:
-    description: "'true' - the job saves the Gradle cache (build cache included); the writers are core, app, ui-build (client) and checks (server), all other jobs only read it"
+    description: "'true' - the job saves the Gradle cache (build cache included); the writers are core, app, ui-build (client), checks (server) and the jobs that build the server against a foreign cache (client-server, compat) - a read-only cache leaves the server no place to write its dependencies, all other jobs only read it"
     default: 'false'
   gradle:
     description: "'false' - no JDK and Gradle setup (a job that does not run Gradle: the post step of setup-gradle alone costs 15-25 s)"

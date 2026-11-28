@@ -22,6 +22,8 @@
 #      ci/guard-age.py - утилита age (age-keygen и др.) зовётся, но ensure_age (ci/crypt.sh, AGE_TOOLS) её не ставит;
 #      ci/guard-paths.py - ссылка на файл этого репозитория (путь с ci/) из шага ведёт наружу репозитория или на несуществующий файл: путь считается от рабочего каталога шага;
 #      ci/guard-permissions.py - вызываемый workflow просит права на запись, которых не даёт вызывающий: прогон вызванного идёт с токеном вызывающего;
+#      ci/guard-gradle-repos.py - в pluginManagement корня сервера, правил сервера и корня клиента нет зеркала Maven Central или портал Gradle стоит раньше него: buildscript-классpath
+#      тогда идёт через портал, который отдаёт 429, а Gradle прячет это под «Problems writing to Binary store ...»;
 #      ci/docs-only.py parity - список «только документы» exile-ci разошёлся с scripts/docs-only.sh сервера (хук pre-push и precheck);
 #   3a. test-dry-run: сухой прогон вычисления версий теста на свежих данных GitHub (ci/test-server-version.sh - тот же код, что у deploy-test сервера, и ci/qa-version.sh - как у тестовой
 #      сборки клиента) без выкладки и записи; красное тут - красное и у настоящего deploy-test, поэтому оно роняет и статус check-wip;
@@ -227,6 +229,9 @@ jobs:
           bash ci/retry.sh read git -C srv show "$SERVER:deploy/test/install.sh" > "$RUNNER_TEMP/install.sh"
           bash ci/retry.sh read git -C srv show "$SERVER:deploy/update.sh" > "$RUNNER_TEMP/update.sh"
           bash ci/retry.sh read git -C srv show "$SERVER:scripts/docs-only.sh" > "$RUNNER_TEMP/docs-only.sh"
+          bash ci/retry.sh read git -C srv show "$SERVER:settings.gradle.kts" > "$RUNNER_TEMP/server-settings.gradle.kts"
+          bash ci/retry.sh read git -C srv show "$SERVER:rules/settings.gradle.kts" > "$RUNNER_TEMP/server-rules-settings.gradle.kts"
+          bash ci/retry.sh read git -C cli show "$CLIENT:settings.gradle.kts" > "$RUNNER_TEMP/client-settings.gradle.kts"
           python3 -I ci/guard-network.py
           python3 -I ci/guard-parity.py --client-precheck "$RUNNER_TEMP/precheck-client.sh" --server-precheck "$RUNNER_TEMP/precheck-server.sh"
           python3 -I ci/guard-test-vps.py
@@ -235,6 +240,7 @@ jobs:
           python3 -I ci/guard-dispatch.py
           python3 -I ci/guard-age.py
           python3 -I ci/guard-edge.py --snippet "$RUNNER_TEMP/Caddyfile.snippet" --install "$RUNNER_TEMP/install.sh"
+          python3 -I ci/guard-gradle-repos.py --server "$RUNNER_TEMP/server-settings.gradle.kts" --server-rules "$RUNNER_TEMP/server-rules-settings.gradle.kts" --client "$RUNNER_TEMP/client-settings.gradle.kts"
           python3 -I ci/guard-paths.py
           python3 -I ci/guard-permissions.py
           python3 -I ci/docs-only.py parity "$RUNNER_TEMP/docs-only.sh"
